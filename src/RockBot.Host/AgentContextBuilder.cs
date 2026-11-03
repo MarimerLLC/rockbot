@@ -41,7 +41,8 @@ public sealed class AgentContextBuilder(
     IOptions<AgentHostOptions>? agentHostOptions = null,
     IOptions<WorkingMemoryOptions>? workingMemoryOptions = null,
     ISessionWorkRegistry? sessionWorkRegistry = null,
-    SkillRecallPicker? skillRecallPicker = null)
+    SkillRecallPicker? skillRecallPicker = null,
+    ISavedResponseStore? savedResponseStore = null)
 #pragma warning restore CS9113
 {
     /// <summary>Picks which recalled skill gets its full body (rank-1 without a decision model).</summary>
@@ -908,6 +909,27 @@ public sealed class AgentContextBuilder(
                 chatMessages.Add(new ChatMessage(ChatRole.System, subagentContext).Tag(ContextCategory.SubagentResearch));
                 logger.LogInformation("Injected {Count} subagent index entries into context (of {Total} total, {ContentCount} content chunks available)",
                     selected.Distinct().Count(), indexEntries.Count, nonIndexCount);
+            }
+        }
+
+        // #418: saved results matching the request, so "the comparison you did earlier" is answered
+        // from the saved copy rather than redone after conversation history expired.
+        if (isUserSession && savedResponseStore is not null && !string.IsNullOrWhiteSpace(currentUserContent))
+        {
+            try
+            {
+                var matches = SavedResultsContext.SelectMatches(await savedResponseStore.ListAsync(), currentUserContent);
+                var savedContext = SavedResultsContext.Render(matches);
+                if (savedContext is not null)
+                {
+                    chatMessages.Add(new ChatMessage(ChatRole.System, savedContext).Tag(ContextCategory.SavedResults));
+                    logger.LogInformation("Injected {Count} matching saved result(s) for session {SessionId}: {Ids}",
+                        matches.Count, sessionId, string.Join(", ", matches.Select(m => m.Id)));
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Could not read saved results for session {SessionId}", sessionId);
             }
         }
 

@@ -68,7 +68,9 @@ internal sealed class UserMessageHandler(
     TrailingOfferStripper? offerStripper = null,
     TierRoutingRefiner? tierRefiner = null,
     IncompleteReplyCheck? incompleteCheck = null,
-    CompletionCheckClassifier? completionCheck = null) : IMessageHandler<UserMessage>
+    CompletionCheckClassifier? completionCheck = null,
+    ISavedResponseStore? savedResponseStore = null,
+    ResultArchive? resultArchive = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -87,6 +89,10 @@ internal sealed class UserMessageHandler(
     private readonly TrailingOfferStripper _offerStripper = offerStripper ?? new TrailingOfferStripper();
     private readonly IncompleteReplyCheck _incompleteCheck = incompleteCheck ?? new IncompleteReplyCheck();
     private readonly CompletionCheckClassifier _completionCheck = completionCheck ?? new CompletionCheckClassifier();
+
+    // This turn's saved-response tools (the handler is scoped per message), so the reply isn't
+    // auto-saved again when it only hands back a saved result (#418).
+    private SavedResponseTools? _savedResponseTools;
 
     /// <summary>
     /// Writes a <see cref="FeedbackSignalType.Correction"/> entry when the message corrects the
@@ -272,9 +278,17 @@ internal sealed class UserMessageHandler(
             var registryTools = toolRegistry.BuildAgentToolFunctions(
                 sessionNamespace, batchId, ToolProfiles.Main, logger: logger);
 
+            // #418: saved results outlive conversation history — find earlier work instead of redoing it.
+            _savedResponseTools = savedResponseStore is null
+                ? null
+                : new SavedResponseTools(savedResponseStore, message.SessionId,
+                    agentNameHolder.DisplayName ?? agent.Name, logger);
+            IEnumerable<AITool> savedResponseTools = _savedResponseTools?.Tools ?? [];
+
             var allTools = memoryTools.Tools
                 .Concat(sessionWorkingMemoryTools.Tools)
                 .Concat(attachmentReplyTools.Tools)
+                .Concat(savedResponseTools)
                 .Concat(sessionSkillTools.Tools)
                 .Concat(rulesTools.Tools)
                 .Concat(toolGuideTools.Tools)
@@ -641,6 +655,7 @@ internal sealed class UserMessageHandler(
             // subagents, their Phase 2 synthesis will arrive later as a separate
             // unsolicited final bubble — that's the consolidated answer.
             await PublishReplyAsync(text, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
+            await ArchiveReplyAsync(userPrompt, text, nativeDiag.ToolCalls, sessionId, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
             turnActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -795,6 +810,7 @@ internal sealed class UserMessageHandler(
                 ct);
 
             await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
+            await ArchiveReplyAsync(userPrompt, finalContent, bgDiag.ToolCalls, sessionId, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
             turnActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -834,6 +850,17 @@ internal sealed class UserMessageHandler(
             turnActivity?.Dispose();
         }
     }
+
+    /// <summary>
+    /// #418: a long answer that took tool work is a result worth finding after the conversation
+    /// expires; short or tool-free replies are left out (the archive decides). A reply that handed
+    /// back a saved result is already saved.
+    /// </summary>
+    private Task ArchiveReplyAsync(string userPrompt, string content, int toolCalls, string sessionId, CancellationToken ct) =>
+        resultArchive is null || _savedResponseTools?.ServedSavedContent == true
+            ? Task.CompletedTask
+            : resultArchive.ArchiveReplyAsync(
+                SummarizePrompt(userPrompt), content, toolCalls, agentNameHolder.DisplayName ?? agent.Name, sessionId, ct);
 
     private async Task PublishReplyAsync(
         string content, string replyTo, string? correlationId,

@@ -312,7 +312,7 @@
                             <div class="saved-item d-flex justify-content-between align-items-center p-2 mb-1 rounded">
                                 <div class="saved-item-info" @onclick="() => LoadSavedItem(item.Id)" style="cursor:pointer;" title="Insert into chat">
                                     <strong>@item.Label</strong>
-                                    <small class="saved-item-meta d-block">@item.AgentName — @TimeZoneInfo.ConvertTime(item.SavedAt, _displayZone).ToString("MMM d, yyyy h:mm tt")</small>
+                                    <small class="saved-item-meta d-block">@item.AgentName@(DescribeSavedSource(item.Source)) — @TimeZoneInfo.ConvertTime(item.SavedAt, _displayZone).ToString("MMM d, yyyy h:mm tt")</small>
                                 </div>
                                 <div class="d-flex gap-1">
                                     <button class="btn btn-sm btn-outline-secondary" @onclick="() => ViewSavedItem(item.Id)" title="View">👁️</button>
@@ -425,6 +425,19 @@
     private string _saveLabel = string.Empty;
     private bool _showSavedModal;
     private IReadOnlyList<SavedResponseSummary>? _savedItems;
+
+    /// <summary>
+    /// Marks entries the user didn't save themselves (#418): results saved automatically when
+    /// background work finished, and the agent's own saves.
+    /// </summary>
+    internal static string DescribeSavedSource(string? source) => source switch
+    {
+        null or "" or "user" => string.Empty,
+        "agent" => " · saved by agent",
+        "background-task" => " · auto-saved (background task)",
+        "a2a" => " · auto-saved (agent reply)",
+        _ => $" · auto-saved ({source})",
+    };
     private GetSavedResponseResponse? _viewingItem;
 
     private string? _lastRenderedAgentName;

@@ -27,7 +27,7 @@ internal sealed class ListSavedResponsesRequestHandler(
         }
 
         var all = await store.ListAsync(ct);
-        var summaries = all.Select(r => new SavedResponseSummary(r.Id, r.Label, r.AgentName, r.SavedAt)).ToList();
+        var summaries = all.Select(r => new SavedResponseSummary(r.Id, r.Label, r.AgentName, r.SavedAt, r.Source)).ToList();
 
         var response = new ListSavedResponsesResponse { Items = summaries };
         var envelope = response.ToEnvelope<ListSavedResponsesResponse>(

@@ -238,6 +238,9 @@ public static class AgentMemoryExtensions
             builder.Services.Configure<SavedResponseOptions>(_ => { });
 
         builder.Services.AddSingleton<ISavedResponseStore, FileSavedResponseStore>();
+        // #418: background results are saved automatically so they outlive conversation history.
+        builder.Services.AddSingleton<ResultArchive>();
+        builder.Services.AddSingleton<RockBot.Tools.IToolSkillProvider, SavedResponsesSkillProvider>();
 
         return builder;
     }

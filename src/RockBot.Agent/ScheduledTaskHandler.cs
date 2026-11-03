@@ -33,7 +33,8 @@ internal sealed class ScheduledTaskHandler(
     ILogger<ScheduledTaskHandler> logger,
     ISkillUsageStore? skillUsageStore = null,
     IMcpSkillSurface? mcpSkillSurface = null,
-    IOptions<WorkingMemoryOptions>? workingMemoryOptions = null) : IMessageHandler<ScheduledTaskMessage>
+    IOptions<WorkingMemoryOptions>? workingMemoryOptions = null,
+    ResultArchive? resultArchive = null) : IMessageHandler<ScheduledTaskMessage>
 {
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
@@ -197,5 +198,11 @@ internal sealed class ScheduledTaskHandler(
 
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
+
+        // #418: keep the report after it scrolls out of every client. Labelled by task name, so the
+        // store keeps only a task's latest runs. An error reply is not a report.
+        if (succeeded && resultArchive is not null)
+            await resultArchive.ArchiveAsync(
+                SavedResponseSources.Scheduled, message.TaskName, finalText, agent.Name, replySessionId, ct);
     }
 }

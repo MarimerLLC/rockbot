@@ -33,6 +33,7 @@ public static class ContextCategory
     public const string SharedWorkingMemory = "shared-working-memory";
     public const string SubagentResearch = "subagent-research";
     public const string WorkProducts = "work-products";
+    public const string SavedResults = "saved-results";
     public const string Lineage = "lineage";
     public const string McpOrientation = "mcp-orientation";
     public const string DeferredTools = "deferred-tools";

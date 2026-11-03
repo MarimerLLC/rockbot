@@ -511,7 +511,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
     agent.HandleMessage<AgentInfoRequest, AgentInfoRequestHandler>();
     agent.HandleMessage<ActiveStatusRequest, ActiveStatusRequestHandler>();
-    agent.WithSavedResponses();
+    agent.WithSavedResponses(opts => builder.Configuration.GetSection("SavedResponses").Bind(opts));
     agent.HandleMessage<SaveResponseRequest, SaveResponseRequestHandler>();
     agent.HandleMessage<ListSavedResponsesRequest, ListSavedResponsesRequestHandler>();
     agent.HandleMessage<GetSavedResponseRequest, GetSavedResponseRequestHandler>();
