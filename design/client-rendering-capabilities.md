@@ -375,16 +375,22 @@ These are deliberately out of scope for v1:
   them. Adding them is opportunistic upgrade work in each proxy (e.g., a
   Discord proxy detecting a heading + body + table and rendering as an
   embed). Agent stays format-agnostic; proxy decides.
-- **`SavedResponseTools`** for agent-callable saved-response writes. The
-  `ISavedResponseStore` and four message handlers exist
-  (`SaveResponseRequestHandler.cs:10` explicitly says "deterministic — no LLM
-  invocation"), but no `AIFunction`-backed tool is registered today. The
-  only sender of `SaveResponseRequest` is the Blazor UI's save button
-  (`Chat.razor:625`). Adding `save_response` as an LLM tool would unlock the
-  "scheduled chart task saves rich output, sends short notice on broadcast,
-  user reads it later from any capable client" pattern. Defer until the
-  "I missed the chart because I was on CLI when the patrol fired" pain
-  actually shows up.
+- **`SavedResponseTools`** — ✅ **implemented** (issue #418), wider than first planned. The pain
+  that showed up was not the CLI missing a chart but results vanishing outright: conversation
+  history expires after an idle hour (`ConversationMemoryOptions.SessionIdleTimeout`) or is wiped
+  by Clear Context, so the UI showed nothing and the agent had no record of the work. Now:
+  - `ResultArchive` saves finished work to `ISavedResponseStore` with no model decision —
+    consolidated subagent results, scheduled-task reports (a delegating patrol's synthesis counts
+    as its task's report), A2A result replies, finished MCP background-task replies, and direct
+    replies of 1,000+ chars from turns that used tools. Short status lines and chat stay out.
+  - `SavedResponseTools` (`list_saved_responses`, `get_saved_response`, `save_response`) on the
+    primary's interactive turns, with a `saved-responses` tool guide: check saved results before
+    redoing earlier work.
+  - The store is self-maintaining (`SavedResponseOptions`, config section `SavedResponses`):
+    content capped at 100k chars; automatic entries kept 30 days, the latest 3 runs per scheduled
+    task, at most 200; explicit saves (user or `save_response`) no age limit, at most 500. Limits
+    apply on load and on every save.
+  - The Blazor saved-responses panel marks automatic and agent saves.
 - **Per-schedule audience filter / targeted delivery** — only send a
   scheduled reply to proxies whose declared capability set matches the task's.
   Possible but requires the broadcast topic to carry capability metadata and

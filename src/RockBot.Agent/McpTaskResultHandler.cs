@@ -54,7 +54,8 @@ internal sealed class McpTaskResultHandler(
     SessionOriginStore? originStore = null,
     IMcpSkillSurface? mcpSkillSurface = null,
     IHostApplicationLifetime? lifetime = null,
-    IWipTracker? wipTracker = null) : IMessageHandler<McpTaskResult>
+    IWipTracker? wipTracker = null,
+    ResultArchive? resultArchive = null) : IMessageHandler<McpTaskResult>
 {
     /// <summary>Who the turns this handler writes are attributed to.</summary>
     internal const string BridgeTurnAgentName = "mcp-bridge";
@@ -222,6 +223,7 @@ internal sealed class McpTaskResultHandler(
     {
         var sessionNamespace = $"session/{conversationId}";
         string finalContent;
+        var responded = false; // #418: only the agent's actual reply is a result worth saving
         try
         {
             // Wait for any turn in progress to finish its reply rather than cancel it.
@@ -260,6 +262,7 @@ internal sealed class McpTaskResultHandler(
                     // request's authorization (#685): a task started by an information-only
                     // question doesn't get to make external changes on the way back.
                     actionGate: ActionGateScope.FromRelayed(message.RunOrigin, message.UserAskedFor));
+                responded = true;
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -288,6 +291,15 @@ internal sealed class McpTaskResultHandler(
 
         logger.LogInformation("Replied to background task {TaskId}'s {Kind} in {Session} ({Length} chars)",
             message.TaskId, message.Kind, conversationId, finalContent.Length);
+
+        // #418: keep a finished task's result after conversation history expires. A question is
+        // waiting on the user, not a result.
+        if (resultArchive is not null && responded
+            && message.Kind is not (McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion))
+            await resultArchive.ArchiveAsync(
+                SavedResponseSources.BackgroundTask,
+                $"{message.ServerName}/{message.ToolName} result",
+                finalContent, agent.Name, conversationId, ct);
     }
 
     /// <summary>What the delivery is about, for the fixed texts used when the agent can't respond.</summary>

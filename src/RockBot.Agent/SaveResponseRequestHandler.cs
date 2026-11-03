@@ -32,7 +32,8 @@ internal sealed class SaveResponseRequestHandler(
             Content: message.Content,
             AgentName: message.AgentName,
             SessionId: message.SessionId,
-            SavedAt: DateTimeOffset.UtcNow);
+            SavedAt: DateTimeOffset.UtcNow,
+            Source: SavedResponseSources.User);
 
         await store.SaveAsync(saved, ct);
 

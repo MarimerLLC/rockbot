@@ -52,4 +52,30 @@ public class SubagentResultHandlerDegradedReplyTests
         StringAssert.Contains(content, "Subagent only");
         StringAssert.Contains(content, "(no output)");
     }
+
+    // ── #418: how a consolidated result is saved ────────────────────────────
+
+    [TestMethod]
+    public void ArchiveSourceAndLabel_PatrolSession_IsTheScheduledTasksReport()
+    {
+        var (source, label) = SubagentResultHandler.ArchiveSourceAndLabel(
+            "patrol/morning-briefing", [MakeResult("a1", true, "x")], origin: null);
+
+        Assert.AreEqual(SavedResponseSources.Scheduled, source);
+        Assert.AreEqual("morning-briefing", label);
+    }
+
+    [TestMethod]
+    public void ArchiveSourceAndLabel_UserSession_PrefersTheSpawningRequestOverTheSessionOrigin()
+    {
+        var result = MakeResult("a1", true, "x") with { OriginatingUserRequest = "Compare the vendors" };
+        var origin = new RockBot.UserProxy.ReplyOrigin("blazor", "first prompt of the session", DateTimeOffset.UtcNow, "s1");
+
+        var (source, label) = SubagentResultHandler.ArchiveSourceAndLabel("s1", [result], origin);
+        Assert.AreEqual(SavedResponseSources.Subagent, source);
+        Assert.AreEqual("Compare the vendors", label);
+
+        var (_, fallback) = SubagentResultHandler.ArchiveSourceAndLabel("s1", [MakeResult("b2", true, "x")], origin);
+        Assert.AreEqual("first prompt of the session", fallback);
+    }
 }

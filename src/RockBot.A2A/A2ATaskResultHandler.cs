@@ -43,7 +43,8 @@ internal sealed class A2ATaskResultHandler(
     SessionOriginStore originStore,
     A2ALateReplyFolder lateReplyFolder,
     ILogger<A2ATaskResultHandler> logger,
-    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<AgentTaskResult>
+    IMcpSkillSurface? mcpSkillSurface = null,
+    ResultArchive? resultArchive = null) : IMessageHandler<AgentTaskResult>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
 
@@ -363,6 +364,13 @@ internal sealed class A2ATaskResultHandler(
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
+
+            // #418: keep the result after conversation history expires.
+            if (resultArchive is not null)
+                await resultArchive.ArchiveAsync(
+                    SavedResponseSources.A2A,
+                    $"{pending.TargetAgent}: {pending.Skill}",
+                    finalContent, DisplayName, rawSessionId, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

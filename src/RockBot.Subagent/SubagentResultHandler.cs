@@ -38,7 +38,8 @@ internal sealed class SubagentResultHandler(
     SessionTierHistory? tierHistory = null,
     ISessionWorkRegistry? sessionWorkRegistry = null,
     IOptions<AgentHostOptions>? hostOptions = null,
-    IncompleteReplyCheck? incompleteCheck = null) : IMessageHandler<SubagentResultMessage>
+    IncompleteReplyCheck? incompleteCheck = null,
+    ResultArchive? resultArchive = null) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
     {
@@ -311,6 +312,8 @@ internal sealed class SubagentResultHandler(
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
+
+            await ArchiveSynthesisAsync(rawSessionId, reply, batchedResults, ct);
         }
         // An HTTP timeout surfaces as TaskCanceledException without ct being cancelled. Treat it
         // like any other synthesis failure: rethrowing dead-letters the message and the user
@@ -359,6 +362,9 @@ internal sealed class SubagentResultHandler(
             };
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
+
+            // The stitched per-subagent outputs are still the work's result.
+            await ArchiveSynthesisAsync(rawSessionId, reply, batchedResults, ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -367,6 +373,31 @@ internal sealed class SubagentResultHandler(
                 rawSessionId);
         }
     }
+
+    /// <summary>
+    /// #418: keeps the consolidated result after conversation history expires. A scheduled task
+    /// that delegated (a <c>patrol/</c> session) is saved as that task's report, under its name,
+    /// so the store keeps only its latest runs; otherwise the label is the user request(s) behind
+    /// the spawn. The session's origin prompt is only a fallback: it is the session's first
+    /// prompt, not necessarily this work's.
+    /// </summary>
+    private Task ArchiveSynthesisAsync(
+        string rawSessionId, AgentReply reply, IReadOnlyList<SubagentResultMessage> batchedResults,
+        CancellationToken ct)
+    {
+        if (resultArchive is null)
+            return Task.CompletedTask;
+
+        var (source, label) = ArchiveSourceAndLabel(rawSessionId, batchedResults, reply.Origin);
+        return resultArchive.ArchiveAsync(source, label, reply.Content, reply.AgentName, rawSessionId, ct);
+    }
+
+    /// <summary>How a consolidated result is saved: see <see cref="ArchiveSynthesisAsync"/>.</summary>
+    internal static (string Source, string? Label) ArchiveSourceAndLabel(
+        string rawSessionId, IReadOnlyList<SubagentResultMessage> batchedResults, ReplyOrigin? origin) =>
+        rawSessionId.StartsWith(WellKnownSessions.ScheduledTaskPrefix, StringComparison.Ordinal)
+            ? (SavedResponseSources.Scheduled, rawSessionId[WellKnownSessions.ScheduledTaskPrefix.Length..])
+            : (SavedResponseSources.Subagent, CombineOriginatingRequests(batchedResults) ?? origin?.PromptSummary);
 
     /// <summary>
     /// The user request(s) behind a batch of results, for the synthesis turn's completion check

@@ -68,7 +68,9 @@ internal sealed class UserMessageHandler(
     TrailingOfferStripper? offerStripper = null,
     TierRoutingRefiner? tierRefiner = null,
     IncompleteReplyCheck? incompleteCheck = null,
-    CompletionCheckClassifier? completionCheck = null) : IMessageHandler<UserMessage>
+    CompletionCheckClassifier? completionCheck = null,
+    ISavedResponseStore? savedResponseStore = null,
+    ResultArchive? resultArchive = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -272,9 +274,16 @@ internal sealed class UserMessageHandler(
             var registryTools = toolRegistry.BuildAgentToolFunctions(
                 sessionNamespace, batchId, ToolProfiles.Main, logger: logger);
 
+            // #418: saved results outlive conversation history — find earlier work instead of redoing it.
+            IEnumerable<AITool> savedResponseTools = savedResponseStore is null
+                ? []
+                : new SavedResponseTools(savedResponseStore, message.SessionId,
+                    agentNameHolder.DisplayName ?? agent.Name, logger).Tools;
+
             var allTools = memoryTools.Tools
                 .Concat(sessionWorkingMemoryTools.Tools)
                 .Concat(attachmentReplyTools.Tools)
+                .Concat(savedResponseTools)
                 .Concat(sessionSkillTools.Tools)
                 .Concat(rulesTools.Tools)
                 .Concat(toolGuideTools.Tools)
@@ -641,6 +650,7 @@ internal sealed class UserMessageHandler(
             // subagents, their Phase 2 synthesis will arrive later as a separate
             // unsolicited final bubble — that's the consolidated answer.
             await PublishReplyAsync(text, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
+            await ArchiveReplyAsync(userPrompt, text, nativeDiag.ToolCalls, sessionId, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
             turnActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -795,6 +805,7 @@ internal sealed class UserMessageHandler(
                 ct);
 
             await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
+            await ArchiveReplyAsync(userPrompt, finalContent, bgDiag.ToolCalls, sessionId, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
             turnActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -834,6 +845,16 @@ internal sealed class UserMessageHandler(
             turnActivity?.Dispose();
         }
     }
+
+    /// <summary>
+    /// #418: a long answer that took tool work is a result worth finding after the conversation
+    /// expires; short or tool-free replies are left out (the archive decides).
+    /// </summary>
+    private Task ArchiveReplyAsync(string userPrompt, string content, int toolCalls, string sessionId, CancellationToken ct) =>
+        resultArchive is null
+            ? Task.CompletedTask
+            : resultArchive.ArchiveReplyAsync(
+                SummarizePrompt(userPrompt), content, toolCalls, agentNameHolder.DisplayName ?? agent.Name, sessionId, ct);
 
     private async Task PublishReplyAsync(
         string content, string replyTo, string? correlationId,
