@@ -20,44 +20,46 @@ internal sealed class PersonaStep(
     IResearchClient research,
     IWorkingMemory workingMemory,
     IOptions<CouncilOptions> options,
-    ILogger<PersonaStep> logger)
+    ILogger<PersonaStep> logger,
+    ResearchReuse? researchReuse = null)
 {
     public async Task<PersonaView> RunAsync(
         Persona persona,
-        string question,
+        CouncilRequest request,
         string taskId,
         CancellationToken ct)
     {
+        var question = request.RenderBrief();
         var shared = await workingMemory.GetAsync($"council/{taskId}/shared");
         var userPrompt = shared is null
             ? question
-            : $"Use the following pre-research findings as context. Do not contradict facts in them.\n\n--- Pre-research findings ---\n{shared}\n--- End findings ---\n\nQuestion: {question}";
+            : $"{SharedFindingsNote}\n\n--- Pre-research findings ---\n{shared}\n--- End findings ---\n\nQuestion: {question}";
 
         var messages = new List<ChatMessage>
         {
-            new(ChatRole.System, persona.SystemPrompt),
+            new(ChatRole.System, persona.SystemPrompt + PositionProtocol),
             new(ChatRole.User, userPrompt)
         };
 
         // Lambda (not method group) so the research client is only dereferenced when the
         // tool is actually invoked. Tests that don't exercise the research path can pass
         // null! for it without constructing one.
-        var researchContext =
-            $"Background research for an advisor council, asked from the '{persona.Id}' perspective. " +
-            $"The council's question: {question}";
+        var researchContext = BuildResearchContext(persona, request);
         var scopedTool = new PersonaScopedResearchTool(
             research: (q, c) => research.InvokeAsync(q, researchContext, c),
             wm: workingMemory,
             taskId: taskId,
             personaId: persona.Id,
             maxCalls: options.Value.MaxResearchCallsPerPersona,
-            logger: logger);
+            logger: logger,
+            reuse: researchReuse is { IsEnabled: true } ? (q, c) => researchReuse.FindAsync(q, taskId, c) : null);
         var chatOptions = new ChatOptions { Tools = [scopedTool] };
 
         try
         {
             var response = await chatClient.GetResponseAsync(messages, chatOptions, ct);
             var text = response.Text?.Trim() ?? string.Empty;
+            logger.LogInformation("Council {Task}: {Persona} → {Position}", taskId, persona.Id, PositionOf(text));
 
             try
             {
@@ -87,6 +89,77 @@ internal sealed class PersonaStep(
     }
 
     /// <summary>
+    /// How a persona reads the shared pre-research: as facts, not as a recommendation. Every persona
+    /// gets the same findings; if they are read as a conclusion, every persona reaches it.
+    /// </summary>
+    internal const string SharedFindingsNote =
+        "The pre-research findings below were gathered for the whole council. They are facts and evidence, " +
+        "not a recommendation: do not contradict the facts in them, but ignore any conclusion or recommendation " +
+        "they contain, and reach your position from your own lens.";
+
+    /// <summary>
+    /// How every persona gives its view, whatever its lens: one committed position, argued from that
+    /// lens alone. Added in code so it holds for operator-written personas too.
+    /// </summary>
+    /// <remarks>
+    /// Without it the personas each did the council's balancing on their own: on three contested
+    /// questions in a row (including an outright ban argued between an ethicist and an economist)
+    /// all four landed on the same compromise, the decision model rated the views as agreeing
+    /// (p ≤ 0.009), and critique and the synthesis had no real disagreement to work with.
+    /// </remarks>
+    internal const string PositionProtocol =
+        """
+
+
+        ## How to give your view
+
+        You are one voice on a council. Other advisors own the other lenses, and a synthesis step
+        weighs everyone. Your job is not to be balanced: it is to make the strongest honest case
+        from your lens.
+
+        - Start with one line: **Position:** the course your lens favours, stated plainly. When
+          options are named, pick one of them (or say which you would rule out).
+        - Argue it from your lens only. Do not hedge on behalf of considerations another advisor
+          owns (cost, ethics, feasibility, the people affected, the long run, the evidence:
+          whichever is not yours). Leave the trade-offs to the synthesis.
+        - Do not default to the middle option. Choose it only if your lens, on its own terms,
+          favours it, and then say what your lens demands of it that a compromise would likely drop.
+        - Say what the likely consensus would get wrong or underweight, seen from your lens.
+        - End with one line: **Would change my mind:** the specific fact or condition that would
+          flip your position.
+        - If your lens genuinely has no stake in the question, say so in the Position line rather
+          than inventing one.
+        """;
+
+    /// <summary>
+    /// The view's <c>**Position:**</c> line (see <see cref="PositionProtocol"/>), or its first line
+    /// when it has none, shortened for a log line. Lets an operator see at a glance whether the
+    /// personas actually took different positions.
+    /// </summary>
+    internal static string PositionOf(string view)
+    {
+        const int max = 200;
+        var lines = view.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var line = lines.FirstOrDefault(l => l.Contains("Position:", StringComparison.OrdinalIgnoreCase))
+                   ?? lines.FirstOrDefault()
+                   ?? "(empty)";
+        line = line.Replace("**", "").Trim();
+        return line.Length <= max ? line : line[..max] + "…";
+    }
+
+    /// <summary>
+    /// The <c>context</c> of a persona's research calls: the asking lens, the council's question and
+    /// the caller's own context, which also settles most of research's clarifying questions.
+    /// </summary>
+    internal static string BuildResearchContext(Persona persona, CouncilRequest request)
+    {
+        var context =
+            $"Background research for an advisor council, asked from the '{persona.Id}' perspective. " +
+            $"The council's question: {request.Question}";
+        return request.Context is null ? context : $"{context}\nThe asker's context: {request.Context}";
+    }
+
+    /// <summary>
     /// Per-call wrapper around the research invocation delegate. Enforces the per-persona
     /// research budget and persists successful results to working memory under
     /// <c>council/{taskId}/{personaId}/research/{n}</c>. Takes a delegate rather than the
@@ -104,16 +177,23 @@ internal sealed class PersonaStep(
         private readonly string _personaId;
         private readonly int _maxCalls;
         private readonly ILogger _logger;
+        private readonly Func<string, CancellationToken, Task<string?>>? _reuse;
         private int _callCount;
 
+        /// <param name="reuse">
+        /// Checks the council's existing research first (<see cref="ResearchReuse"/>); a non-null
+        /// answer is returned instead of a new research call, and doesn't use the persona's budget.
+        /// </param>
         public PersonaScopedResearchTool(
             Func<string, CancellationToken, Task<string>> research,
             IWorkingMemory wm,
             string taskId,
             string personaId,
             int maxCalls,
-            ILogger logger)
+            ILogger logger,
+            Func<string, CancellationToken, Task<string?>>? reuse = null)
         {
+            _reuse = reuse;
             _research = research;
             _wm = wm;
             _taskId = taskId;
@@ -139,6 +219,15 @@ internal sealed class PersonaStep(
                 question = v?.ToString();
             if (string.IsNullOrWhiteSpace(question))
                 return "Error: missing required argument 'question'.";
+
+            // Research the council already holds may answer it: no new call, no budget spent, and
+            // nothing written back (it is in working memory already).
+            if (_reuse is not null && await _reuse(question!, cancellationToken) is { } reused)
+            {
+                _logger.LogInformation(
+                    "Persona {Persona} on council {Task}: reused existing research instead of a new call", _personaId, _taskId);
+                return reused;
+            }
 
             var n = Interlocked.Increment(ref _callCount);
             if (n > _maxCalls)

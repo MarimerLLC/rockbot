@@ -3,8 +3,22 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RockBot.AdvisorCouncil.Personas;
 using RockBot.AdvisorCouncil.Schema;
+using RockBot.Host;
 
 namespace RockBot.AdvisorCouncil.Council;
+
+/// <summary>
+/// The council, in the two halves the <c>advise</c> tool needs: Select (cheap, and the only place
+/// a clarifying question can come from) and the deliberation that follows.
+/// </summary>
+internal interface ICouncil
+{
+    /// <summary>Step 1: which personas, whether to pre-research and critique, and what is missing.</summary>
+    Task<SelectorOutput> SelectAsync(CouncilRequest request, CancellationToken ct);
+
+    /// <summary>Steps 2–5 for a selection already made.</summary>
+    Task<CouncilResponse> DeliberateAsync(CouncilRequest request, SelectorOutput selection, string runId, CancellationToken ct);
+}
 
 /// <summary>
 /// Runs the council pipeline:
@@ -22,20 +36,57 @@ internal sealed class CouncilOrchestrator(
     SynthesizeStep synthesizeStep,
     PersonaRegistry personaRegistry,
     IOptions<CouncilOptions> options,
-    ILogger<CouncilOrchestrator> logger)
+    ILogger<CouncilOrchestrator> logger,
+    IWorkingMemory? workingMemory = null,
+    CritiqueGate? critiqueGate = null) : ICouncil
 {
-    public async Task<CouncilResponse> RunAsync(string question, string taskId, CancellationToken ct)
+    /// <summary>Select, then deliberate, with no question in between.</summary>
+    public async Task<CouncilResponse> RunAsync(CouncilRequest request, string runId, CancellationToken ct)
+    {
+        var selection = await SelectAsync(request, ct);
+        return await DeliberateAsync(request with { Unresolved = selection.Missing ?? [] }, selection, runId, ct);
+    }
+
+    public async Task<SelectorOutput> SelectAsync(CouncilRequest request, CancellationToken ct)
+    {
+        var selection = await selectStep.RunAsync(request, ct);
+        logger.LogInformation(
+            "Council: selected {Count} personas (preResearch={Pre}, critique={Crit}, missing=[{Missing}], tooThin={Thin}). Rationale: {Rat}",
+            selection.Personas.Count, selection.PreResearch, selection.Critique,
+            string.Join(",", selection.Missing ?? []), selection.TooThin, selection.Rationale);
+        return selection;
+    }
+
+    public async Task<CouncilResponse> DeliberateAsync(
+        CouncilRequest request, SelectorOutput selection, string runId, CancellationToken ct)
+    {
+        try
+        {
+            return await DeliberateCoreAsync(request, selection, runId, ct);
+        }
+        finally
+        {
+            // A long-lived server runs many councils; each one's working memory goes when it ends.
+            if (workingMemory is not null)
+            {
+                try
+                {
+                    await workingMemory.ClearAsync($"council/{runId}/");
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Council {RunId}: could not clear its working memory", runId);
+                }
+            }
+        }
+    }
+
+    private async Task<CouncilResponse> DeliberateCoreAsync(
+        CouncilRequest request, SelectorOutput selection, string runId, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
-        var modelCalls = 0;
+        var modelCalls = 1; // Select
         var personas = personaRegistry.Personas;
-
-        // ── 1. Select ──────────────────────────────────────────────────────────
-        var selection = await selectStep.RunAsync(question, ct);
-        modelCalls++;
-        logger.LogInformation(
-            "Council task {TaskId}: selected {Count} personas (preResearch={Pre}, critique={Crit}). Rationale: {Rat}",
-            taskId, selection.Personas.Count, selection.PreResearch, selection.Critique, selection.Rationale);
 
         var selectedPersonas = selection.Personas
             .Where(p => personas.ContainsKey(p.Id))
@@ -43,16 +94,16 @@ internal sealed class CouncilOrchestrator(
             .ToList();
 
         if (selectedPersonas.Count == 0)
-            return EmptyResponse(question, "No personas selected. The persona registry may be empty or the selector returned no valid ids.", sw.Elapsed, modelCalls);
+            return EmptyResponse(request, "No personas selected. The persona registry may be empty or the selector returned no valid ids.", sw.Elapsed, modelCalls);
 
         // ── 2. PreResearch (conditional) ───────────────────────────────────────
-        // Persona-aware research that writes to WM at council/{taskId}/shared; personas
+        // Persona-aware research that writes to WM at council/{runId}/shared; personas
         // read from there in step 3. The boolean tells us whether to flag preResearchRun
         // in metadata.
         var preResearchRun = false;
         if (selection.PreResearch)
         {
-            preResearchRun = await preResearchStep.RunAsync(question, selectedPersonas, taskId, ct);
+            preResearchRun = await preResearchStep.RunAsync(request, selectedPersonas, runId, ct);
             if (preResearchRun) modelCalls++;
         }
 
@@ -64,7 +115,7 @@ internal sealed class CouncilOrchestrator(
             personaCts.CancelAfter(perPersonaTimeout);
             try
             {
-                return await personaStep.RunAsync(persona, question, taskId, personaCts.Token);
+                return await personaStep.RunAsync(persona, request, runId, personaCts.Token);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
@@ -77,8 +128,18 @@ internal sealed class CouncilOrchestrator(
         modelCalls += personaViews.Length; // approximate — research path may do more calls
 
         // ── 4. Critique (conditional, per-persona parallel) ────────────────────
+        // Select chose critique from the question alone; now that the views exist, the decision
+        // model may skip it when they already agree. A caller's critique: on always runs it.
         var critiqueTensions = new List<Tension>();
-        if (selection.Critique && personaViews.Length > 1)
+        var critiqueSelected = selection.Critique && personaViews.Length > 1;
+        var critiqueSkipped = critiqueSelected
+            && request.Critique != CouncilToggle.On
+            && critiqueGate is not null
+            && !await critiqueGate.ShouldCritiqueAsync(request, personaViews, ct);
+        if (critiqueSkipped)
+            logger.LogInformation("Council {RunId}: critique skipped — the views already agree", runId);
+
+        if (critiqueSelected && !critiqueSkipped)
         {
             var critiqueTasks = personaViews.Select(async (own, idx) =>
             {
@@ -88,7 +149,7 @@ internal sealed class CouncilOrchestrator(
                 critCts.CancelAfter(perPersonaTimeout);
                 try
                 {
-                    return await critiqueStep.RunAsync(persona, question, taskId, own, siblings, critCts.Token);
+                    return await critiqueStep.RunAsync(persona, request, runId, own, siblings, critCts.Token);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
@@ -107,7 +168,7 @@ internal sealed class CouncilOrchestrator(
 
         // ── 5. Synthesize ──────────────────────────────────────────────────────
         var synthesis = await synthesizeStep.RunAsync(
-            new SynthesizeStep.SynthesisInput(question, personaViews, critiqueTensions),
+            new SynthesizeStep.SynthesisInput(request, personaViews, critiqueTensions),
             ct);
         modelCalls++;
 
@@ -120,13 +181,13 @@ internal sealed class CouncilOrchestrator(
             .ToList();
 
         return new CouncilResponse(
-            Question: question,
+            Question: request.Question,
             Personas: personaViews,
             Tensions: synthesis.Tensions,
             Synthesis: synthesis.Synthesis,
             Confidence: synthesis.Confidence,
             Metadata: new CouncilMetadata(
-                CritiqueRun: selection.Critique && personaViews.Length > 1,
+                CritiqueRun: critiqueSelected && !critiqueSkipped,
                 PreResearchRun: preResearchRun,
                 PersonaCount: personaViews.Length,
                 DurationMs: sw.ElapsedMilliseconds,
@@ -134,12 +195,15 @@ internal sealed class CouncilOrchestrator(
                 PersonaSetHash: personaRegistry.PersonaSetHash,
                 SelectorRationale: selection.Rationale,
                 PersonasContributed: contributedCount,
-                PersonasMissing: missingIds));
+                PersonasMissing: missingIds,
+                Clarification: request.Clarification,
+                CritiqueSkipped: critiqueSkipped),
+            Assumptions: synthesis.Assumptions ?? []);
     }
 
-    private CouncilResponse EmptyResponse(string question, string reason, TimeSpan duration, int modelCalls) =>
+    private CouncilResponse EmptyResponse(CouncilRequest request, string reason, TimeSpan duration, int modelCalls) =>
         new(
-            Question: question,
+            Question: request.Question,
             Personas: [],
             Tensions: [],
             Synthesis: reason,
@@ -151,5 +215,7 @@ internal sealed class CouncilOrchestrator(
                 DurationMs: (long)duration.TotalMilliseconds,
                 ModelCalls: modelCalls,
                 PersonaSetHash: personaRegistry.PersonaSetHash,
-                SelectorRationale: reason));
+                SelectorRationale: reason,
+                Clarification: request.Clarification),
+            Assumptions: []);
 }

@@ -3,17 +3,22 @@ using System.Text.Json.Serialization;
 namespace RockBot.AdvisorCouncil.Schema;
 
 /// <summary>
-/// Full structured output of a council run. Returned as a JSON data part on the
-/// AgentTaskResult; the synthesis prose is also returned as a separate text part for
-/// callers that only consume prose.
+/// Full structured output of a council run. The <c>advise</c> tool returns it as the result's
+/// <c>structuredContent</c>; the synthesis prose is also the result's text content, for callers
+/// that only read prose.
 /// </summary>
+/// <param name="Assumptions">
+/// What the council assumed for anything it was not told (asked and declined, or never asked).
+/// The synthesis is only as good as these, so the caller should see them.
+/// </param>
 internal sealed record CouncilResponse(
     [property: JsonPropertyName("question")] string Question,
     [property: JsonPropertyName("personas")] IReadOnlyList<PersonaView> Personas,
     [property: JsonPropertyName("tensions")] IReadOnlyList<Tension> Tensions,
     [property: JsonPropertyName("synthesis")] string Synthesis,
     [property: JsonPropertyName("confidence")] string Confidence,
-    [property: JsonPropertyName("metadata")] CouncilMetadata Metadata);
+    [property: JsonPropertyName("metadata")] CouncilMetadata Metadata,
+    [property: JsonPropertyName("assumptions")] IReadOnlyList<string>? Assumptions = null);
 
 internal sealed record PersonaView(
     [property: JsonPropertyName("id")] string Id,
@@ -49,4 +54,6 @@ internal sealed record CouncilMetadata(
     [property: JsonPropertyName("persona_set_hash")] string PersonaSetHash,
     [property: JsonPropertyName("selector_rationale")] string SelectorRationale,
     [property: JsonPropertyName("personas_contributed")] int PersonasContributed = 0,
-    [property: JsonPropertyName("personas_missing")] IReadOnlyList<string>? PersonasMissing = null);
+    [property: JsonPropertyName("personas_missing")] IReadOnlyList<string>? PersonasMissing = null,
+    [property: JsonPropertyName("clarification")] string Clarification = ClarificationStatus.NotAsked,
+    [property: JsonPropertyName("critique_skipped")] bool CritiqueSkipped = false);

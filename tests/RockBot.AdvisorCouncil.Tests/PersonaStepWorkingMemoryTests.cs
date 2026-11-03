@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.AdvisorCouncil.Council;
 using RockBot.AdvisorCouncil.Personas;
+using RockBot.AdvisorCouncil.Schema;
 
 namespace RockBot.AdvisorCouncil.Tests;
 
@@ -31,7 +32,7 @@ public class PersonaStepWorkingMemoryTests
         var opts = Options.Create(new CouncilOptions());
         var step = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
 
-        var view = await step.RunAsync(MakePersona(), "Original question?", "task-99", CancellationToken.None);
+        var view = await step.RunAsync(MakePersona(), new CouncilRequest("Original question?"), "task-99", CancellationToken.None);
 
         Assert.AreEqual("persona response text", view.View);
         var lastCall = chat.Calls[^1];
@@ -39,6 +40,48 @@ public class PersonaStepWorkingMemoryTests
         StringAssert.Contains(userMessage, "Pre-existing baseline findings about X.");
         StringAssert.Contains(userMessage, "Original question?");
         StringAssert.Contains(userMessage, "Pre-research findings");
+        StringAssert.Contains(userMessage, "not a recommendation", "the findings are framed as facts, not a verdict");
+        StringAssert.Contains(userMessage, "reach your position from your own lens");
+    }
+
+    [TestMethod]
+    public async Task PersonaStep_EveryPersona_GetsThePositionProtocol()
+    {
+        var chat = new FakeChatClient().EnqueueResponse("**Position:** Option A.");
+        var step = new PersonaStep(chat, research: null!, new InMemoryWorkingMemory(),
+            Options.Create(new CouncilOptions()), NullLogger<PersonaStep>.Instance);
+
+        await step.RunAsync(MakePersona("economist"), new CouncilRequest("Q?"), "task-p", CancellationToken.None);
+
+        var system = chat.Calls[^1].Messages.First(m => m.Role == ChatRole.System).Text ?? string.Empty;
+        StringAssert.StartsWith(system, "economist system prompt", "the persona's own prompt comes first");
+        StringAssert.Contains(system, "**Position:**");
+        StringAssert.Contains(system, "Do not default to the middle option");
+        StringAssert.Contains(system, "**Would change my mind:**");
+    }
+
+    [TestMethod]
+    [DataRow("Intro paragraph.\n\n**Position:** Ban outright.\n\nBecause...", "Position: Ban outright.")]
+    [DataRow("No position line here.\nSecond line.", "No position line here.")]
+    [DataRow("", "(empty)")]
+    public void PositionOf_FindsThePositionLine(string view, string expected) =>
+        Assert.AreEqual(expected, PersonaStep.PositionOf(view));
+
+    [TestMethod]
+    public async Task CritiqueStep_KeepsThePositionUnlessASiblingDefeatsIt()
+    {
+        var chat = new FakeChatClient().EnqueueResponse(
+            """{ "revised_view": "revised", "key_points": [], "tensions": [] }""");
+        var step = new CritiqueStep(chat, new InMemoryWorkingMemory(), NullLogger<CritiqueStep>.Instance);
+
+        await step.RunAsync(MakePersona("skeptic"), new CouncilRequest("Q?"), "task-q",
+            new RockBot.AdvisorCouncil.Schema.PersonaView("skeptic", "**Position:** B.", [], []),
+            [new RockBot.AdvisorCouncil.Schema.PersonaView("engineer", "**Position:** A.", [], [])],
+            CancellationToken.None);
+
+        var system = chat.Calls[^1].Messages.First(m => m.Role == ChatRole.System).Text ?? string.Empty;
+        StringAssert.Contains(system, "Keep your **Position:** line");
+        StringAssert.Contains(system, "Agreeing for the sake of consensus is not a reason.");
     }
 
     [TestMethod]
@@ -49,7 +92,7 @@ public class PersonaStepWorkingMemoryTests
         var opts = Options.Create(new CouncilOptions());
         var step = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
 
-        await step.RunAsync(MakePersona("skeptic"), "Q?", "task-7", CancellationToken.None);
+        await step.RunAsync(MakePersona("skeptic"), new CouncilRequest("Q?"), "task-7", CancellationToken.None);
 
         var stored = await wm.GetAsync("council/task-7/skeptic/view");
         Assert.AreEqual("My view as the skeptic.", stored);
@@ -63,7 +106,7 @@ public class PersonaStepWorkingMemoryTests
         var opts = Options.Create(new CouncilOptions());
         var step = new PersonaStep(chat, research: null!, wm, opts, NullLogger<PersonaStep>.Instance);
 
-        await step.RunAsync(MakePersona(), "Just the question.", "task-x", CancellationToken.None);
+        await step.RunAsync(MakePersona(), new CouncilRequest("Just the question."), "task-x", CancellationToken.None);
 
         var userMessage = chat.Calls[^1].Messages.Last(m => m.Role == ChatRole.User).Text ?? string.Empty;
         Assert.AreEqual("Just the question.", userMessage);
@@ -158,7 +201,7 @@ public class PersonaStepWorkingMemoryTests
         var own = new RockBot.AdvisorCouncil.Schema.PersonaView("skeptic", "Skeptic view text.", [], []);
         var siblings = new[] { new RockBot.AdvisorCouncil.Schema.PersonaView("engineer", "Engineer view.", [], []) };
 
-        await step.RunAsync(MakePersona("skeptic"), "Question?", taskId, own, siblings, CancellationToken.None);
+        await step.RunAsync(MakePersona("skeptic"), new CouncilRequest("Question?"), taskId, own, siblings, CancellationToken.None);
 
         var userMessage = chat.Calls[^1].Messages.Last(m => m.Role == ChatRole.User).Text ?? string.Empty;
         StringAssert.Contains(userMessage, "Research findings available to the council");
@@ -180,7 +223,7 @@ public class PersonaStepWorkingMemoryTests
         var own = new RockBot.AdvisorCouncil.Schema.PersonaView("skeptic", "before", [], []);
         var siblings = new[] { new RockBot.AdvisorCouncil.Schema.PersonaView("engineer", "engineer view", [], []) };
 
-        await step.RunAsync(MakePersona("skeptic"), "Q?", taskId, own, siblings, CancellationToken.None);
+        await step.RunAsync(MakePersona("skeptic"), new CouncilRequest("Q?"), taskId, own, siblings, CancellationToken.None);
 
         var stored = await wm.GetAsync($"council/{taskId}/skeptic/view-revised");
         Assert.AreEqual("post-rebuttal text", stored);

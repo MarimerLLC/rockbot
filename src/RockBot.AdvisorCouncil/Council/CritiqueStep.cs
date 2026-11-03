@@ -26,7 +26,7 @@ internal sealed class CritiqueStep(
 
     public async Task<CritiqueOutput> RunAsync(
         Persona persona,
-        string question,
+        CouncilRequest request,
         string taskId,
         PersonaView ownView,
         IReadOnlyList<PersonaView> siblingViews,
@@ -39,12 +39,15 @@ internal sealed class CritiqueStep(
             "Revise your view in light of the sibling views below. Be explicit when you disagree — " +
             "name what you disagree with and why. Identify tensions between your framing and others'. " +
             "Stay in your persona's framing; do not adopt another persona's view wholesale. " +
+            "Keep your **Position:** line at the top of the revised view. Change it only if a sibling's " +
+            "argument defeats yours on your own lens's terms, and if you change it, say which argument did. " +
+            "Agreeing for the sake of consensus is not a reason. " +
             "Respond ONLY with JSON of the form: " +
             "{ \"revised_view\": \"markdown prose\", \"key_points\": [\"...\"], \"tensions\": " +
             "[{\"with\":\"sibling_id\",\"description\":\"...\",\"stakes\":\"...\"}] }";
 
         var researchPool = await BuildResearchPoolAsync(taskId, ct);
-        var user = BuildUserPrompt(question, ownView, siblingViews, researchPool);
+        var user = BuildUserPrompt(request, ownView, siblingViews, researchPool);
 
         var messages = new List<ChatMessage>
         {
@@ -97,13 +100,13 @@ internal sealed class CritiqueStep(
     }
 
     private static string BuildUserPrompt(
-        string question,
+        CouncilRequest request,
         PersonaView ownView,
         IReadOnlyList<PersonaView> siblings,
         IReadOnlyList<(string Key, string Snippet)> researchPool)
     {
         var sb = new StringBuilder();
-        sb.Append("Question: ").AppendLine(question).AppendLine();
+        sb.Append("Question: ").AppendLine(request.RenderBrief()).AppendLine();
         sb.AppendLine("Your earlier view:");
         sb.AppendLine(ownView.View).AppendLine();
         sb.AppendLine("Sibling persona views:");

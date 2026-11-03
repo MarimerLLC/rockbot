@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.AdvisorCouncil.Council;
 using RockBot.AdvisorCouncil.Personas;
+using RockBot.AdvisorCouncil.Schema;
 
 namespace RockBot.AdvisorCouncil.Tests;
 
@@ -44,7 +45,7 @@ public class CouncilOrchestratorTests
 
         var orchestrator = BuildOrchestrator(registry, chat);
 
-        var response = await orchestrator.RunAsync("Should we adopt MAF for orchestration?", "task-1", CancellationToken.None);
+        var response = await orchestrator.RunAsync(new CouncilRequest("Should we adopt MAF for orchestration?"), "task-1", CancellationToken.None);
 
         Assert.AreEqual(2, response.Personas.Count);
         Assert.AreEqual("medium", response.Confidence);
@@ -71,7 +72,7 @@ public class CouncilOrchestratorTests
             .WhenUserContains("Engineer body", "Initial engineer view.");
 
         var orchestrator = BuildOrchestrator(registry, chat);
-        var response = await orchestrator.RunAsync("Should we adopt MAF?", "task-2", CancellationToken.None);
+        var response = await orchestrator.RunAsync(new CouncilRequest("Should we adopt MAF?"), "task-2", CancellationToken.None);
 
         Assert.IsTrue(response.Metadata.CritiqueRun);
         Assert.IsTrue(response.Tensions.Count >= 1);
@@ -91,7 +92,7 @@ public class CouncilOrchestratorTests
             .WhenUserContains("Skeptic body", "Persona view.");
 
         var orchestrator = BuildOrchestrator(registry, chat);
-        var response = await orchestrator.RunAsync("Q?", "task-3", CancellationToken.None);
+        var response = await orchestrator.RunAsync(new CouncilRequest("Q?"), "task-3", CancellationToken.None);
 
         Assert.AreEqual("low", response.Confidence);
         Assert.IsFalse(string.IsNullOrWhiteSpace(response.Synthesis));
@@ -108,7 +109,7 @@ public class CouncilOrchestratorTests
         var chat = new FakeChatClient();
 
         var orchestrator = BuildOrchestrator(registry, chat);
-        var response = await orchestrator.RunAsync("anything", "task-4", CancellationToken.None);
+        var response = await orchestrator.RunAsync(new CouncilRequest("anything"), "task-4", CancellationToken.None);
 
         Assert.AreEqual(0, response.Personas.Count);
         Assert.AreEqual("low", response.Confidence);

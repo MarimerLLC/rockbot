@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RockBot.AdvisorCouncil.Council;
 using RockBot.AdvisorCouncil.Personas;
+using RockBot.AdvisorCouncil.Schema;
 
 namespace RockBot.AdvisorCouncil.Tests;
 
@@ -32,7 +33,7 @@ public class SelectStepTests
             """);
         var step = new SelectStep(chat, registry, NullLogger<SelectStep>.Instance);
 
-        var result = await step.RunAsync("Should we adopt MAF?", CancellationToken.None);
+        var result = await step.RunAsync(new CouncilRequest("Should we adopt MAF?"), CancellationToken.None);
 
         Assert.AreEqual(2, result.Personas.Count);
         Assert.IsTrue(result.Critique);
@@ -51,7 +52,7 @@ public class SelectStepTests
                 """{ "personas": [{"id":"skeptic"}], "pre_research": false, "critique": false, "rationale": "x" }""");
         var step = new SelectStep(chat, registry, NullLogger<SelectStep>.Instance);
 
-        var result = await step.RunAsync("Trivial", CancellationToken.None);
+        var result = await step.RunAsync(new CouncilRequest("Trivial"), CancellationToken.None);
 
         Assert.AreEqual(1, result.Personas.Count);
         Assert.AreEqual(2, chat.Calls.Count, "Should have retried after invalid JSON");
@@ -66,7 +67,7 @@ public class SelectStepTests
             .EnqueueResponse("also not json");
         var step = new SelectStep(chat, registry, NullLogger<SelectStep>.Instance);
 
-        var result = await step.RunAsync("Anything", CancellationToken.None);
+        var result = await step.RunAsync(new CouncilRequest("Anything"), CancellationToken.None);
 
         Assert.IsFalse(result.PreResearch);
         Assert.IsFalse(result.Critique);
@@ -83,7 +84,7 @@ public class SelectStepTests
             """{ "personas": [{"id":"unknown"},{"id":"skeptic"}], "pre_research": false, "critique": false, "rationale": "x" }""");
         var step = new SelectStep(chat, registry, NullLogger<SelectStep>.Instance);
 
-        var result = await step.RunAsync("q", CancellationToken.None);
+        var result = await step.RunAsync(new CouncilRequest("q"), CancellationToken.None);
 
         Assert.AreEqual(1, result.Personas.Count);
         Assert.AreEqual("skeptic", result.Personas[0].Id);
