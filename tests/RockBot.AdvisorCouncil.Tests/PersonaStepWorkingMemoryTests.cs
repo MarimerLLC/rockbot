@@ -59,6 +59,13 @@ public class PersonaStepWorkingMemoryTests
     }
 
     [TestMethod]
+    [DataRow("Intro paragraph.\n\n**Position:** Ban outright.\n\nBecause...", "Position: Ban outright.")]
+    [DataRow("No position line here.\nSecond line.", "No position line here.")]
+    [DataRow("", "(empty)")]
+    public void PositionOf_FindsThePositionLine(string view, string expected) =>
+        Assert.AreEqual(expected, PersonaStep.PositionOf(view));
+
+    [TestMethod]
     public async Task CritiqueStep_KeepsThePositionUnlessASiblingDefeatsIt()
     {
         var chat = new FakeChatClient().EnqueueResponse(

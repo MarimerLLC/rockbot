@@ -59,6 +59,7 @@ internal sealed class PersonaStep(
         {
             var response = await chatClient.GetResponseAsync(messages, chatOptions, ct);
             var text = response.Text?.Trim() ?? string.Empty;
+            logger.LogInformation("Council {Task}: {Persona} → {Position}", taskId, persona.Id, PositionOf(text));
 
             try
             {
@@ -120,6 +121,22 @@ internal sealed class PersonaStep(
         - If your lens genuinely has no stake in the question, say so in the Position line rather
           than inventing one.
         """;
+
+    /// <summary>
+    /// The view's <c>**Position:**</c> line (see <see cref="PositionProtocol"/>), or its first line
+    /// when it has none, shortened for a log line. Lets an operator see at a glance whether the
+    /// personas actually took different positions.
+    /// </summary>
+    internal static string PositionOf(string view)
+    {
+        const int max = 200;
+        var lines = view.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var line = lines.FirstOrDefault(l => l.Contains("Position:", StringComparison.OrdinalIgnoreCase))
+                   ?? lines.FirstOrDefault()
+                   ?? "(empty)";
+        line = line.Replace("**", "").Trim();
+        return line.Length <= max ? line : line[..max] + "…";
+    }
 
     /// <summary>
     /// The <c>context</c> of a persona's research calls: the asking lens, the council's question and
