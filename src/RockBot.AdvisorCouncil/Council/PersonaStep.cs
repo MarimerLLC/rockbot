@@ -37,7 +37,7 @@ internal sealed class PersonaStep(
 
         var messages = new List<ChatMessage>
         {
-            new(ChatRole.System, persona.SystemPrompt),
+            new(ChatRole.System, persona.SystemPrompt + PositionProtocol),
             new(ChatRole.User, userPrompt)
         };
 
@@ -86,6 +86,40 @@ internal sealed class PersonaStep(
             return new PersonaView(persona.Id, "(persona call failed)", [], [], PersonaStatus.Failed);
         }
     }
+
+    /// <summary>
+    /// How every persona gives its view, whatever its lens: one committed position, argued from that
+    /// lens alone. Added in code so it holds for operator-written personas too.
+    /// </summary>
+    /// <remarks>
+    /// Without it the personas each did the council's balancing on their own: on three contested
+    /// questions in a row (including an outright ban argued between an ethicist and an economist)
+    /// all four landed on the same compromise, the decision model rated the views as agreeing
+    /// (p ≤ 0.009), and critique and the synthesis had no real disagreement to work with.
+    /// </remarks>
+    internal const string PositionProtocol =
+        """
+
+
+        ## How to give your view
+
+        You are one voice on a council. Other advisors own the other lenses, and a synthesis step
+        weighs everyone. Your job is not to be balanced: it is to make the strongest honest case
+        from your lens.
+
+        - Start with one line: **Position:** the course your lens favours, stated plainly. When
+          options are named, pick one of them (or say which you would rule out).
+        - Argue it from your lens only. Do not hedge on behalf of considerations another advisor
+          owns (cost, ethics, feasibility, the people affected, the long run, the evidence:
+          whichever is not yours). Leave the trade-offs to the synthesis.
+        - Do not default to the middle option. Choose it only if your lens, on its own terms,
+          favours it, and then say what your lens demands of it that a compromise would likely drop.
+        - Say what the likely consensus would get wrong or underweight, seen from your lens.
+        - End with one line: **Would change my mind:** the specific fact or condition that would
+          flip your position.
+        - If your lens genuinely has no stake in the question, say so in the Position line rather
+          than inventing one.
+        """;
 
     /// <summary>
     /// The <c>context</c> of a persona's research calls: the asking lens, the council's question and

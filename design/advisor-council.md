@@ -113,6 +113,17 @@ Files live at `/data/advisor-council/personas/{id}.md` on the PVC, hot-reloaded 
 
 **Why personas as data**: lets the personas be tuned (or replaced entirely for specific deployments) without rebuilding the container. Resists the temptation to encode persona-specific logic in C# — if a persona needs different model tier or different tools, encode that in frontmatter and let the workflow read it.
 
+**Every persona takes a position.** `PersonaStep.PositionProtocol`, appended in code to every persona's system prompt (operator-written ones included), makes each view:
+- open with a committed `**Position:**`;
+- argue only from that persona's lens, leaving the trade-offs to the synthesis;
+- refuse the middle option unless the lens itself favours it;
+- name what the likely consensus would get wrong;
+- close with `**Would change my mind:**`.
+
+Each persona file says which question its position answers (the ethicist: what is right by the least powerful; the skeptic: which option it would bet against; and so on). The critique addendum keeps the position unless a sibling's argument defeats it on the persona's own terms.
+
+Why: when each persona was asked to be balanced, each did the council's balancing on its own. On three contested questions in a row, all personas landed on the same compromise. The decision model rated the views as agreeing (p ≤ 0.009), so critique was skipped, and the synthesis had no real disagreement to integrate.
+
 ## Selector
 
 A single `IChatClient` call (Balanced tier) that takes the question + the persona library and returns:
