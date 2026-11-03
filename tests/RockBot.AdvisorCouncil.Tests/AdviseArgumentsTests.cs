@@ -155,6 +155,20 @@ public class AdviseArgumentsTests
     }
 
     [TestMethod]
+    public void TheDefaults_ThinkOnHigh_AndTheTimeoutsFitTogether()
+    {
+        var o = new CouncilOptions();
+
+        Assert.AreEqual(RockBot.Host.ModelTier.Balanced, o.SelectTier, "Select only routes");
+        Assert.AreEqual(RockBot.Host.ModelTier.High, o.PersonaTier, "the personas' reasoning is the product");
+        Assert.AreEqual(RockBot.Host.ModelTier.High, o.SynthesisTier);
+        Assert.IsTrue(o.ResearchAgentTimeoutSeconds < o.PerPersonaTimeoutSeconds,
+            "a persona that researches still has time to answer");
+        Assert.IsTrue(o.PreResearchTimeoutSeconds + 2 * o.PerPersonaTimeoutSeconds < o.OverallTimeoutSeconds,
+            "pre-research, the views and the critique fit inside the overall cap with room for synthesis");
+    }
+
+    [TestMethod]
     public void BuildText_PutsTheBannerFirstAndTheAssumptionsLast()
     {
         var response = new CouncilResponse(

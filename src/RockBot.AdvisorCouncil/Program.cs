@@ -146,11 +146,17 @@ builder.Services.AddSingleton<IFeedbackStore, NullFeedbackStore>();
 // ── Council components ──────────────────────────────────────────────────────
 builder.Services.AddSingleton<PersonaRegistry>();
 builder.Services.AddHostedService<PersonaRegistryHotReload>();
-builder.Services.AddSingleton<SelectStep>();
+// Each step gets the chat client of its tier (Council:SelectTier, PersonaTier, SynthesisTier).
+// The plain IChatClient is Balanced, which is what every step used to get, synthesis included.
+IChatClient ClientFor(IServiceProvider sp, Func<CouncilOptions, ModelTier> tier) =>
+    sp.GetService<TieredChatClientRegistry>()?.GetClient(tier(sp.GetRequiredService<IOptions<CouncilOptions>>().Value))
+    ?? sp.GetRequiredService<IChatClient>(); // the EchoChatClient, when no LLM is configured
+
+builder.Services.AddSingleton(sp => ActivatorUtilities.CreateInstance<SelectStep>(sp, ClientFor(sp, o => o.SelectTier)));
 builder.Services.AddSingleton<PreResearchStep>();
-builder.Services.AddSingleton<PersonaStep>();
-builder.Services.AddSingleton<CritiqueStep>();
-builder.Services.AddSingleton<SynthesizeStep>();
+builder.Services.AddSingleton(sp => ActivatorUtilities.CreateInstance<PersonaStep>(sp, ClientFor(sp, o => o.PersonaTier)));
+builder.Services.AddSingleton(sp => ActivatorUtilities.CreateInstance<CritiqueStep>(sp, ClientFor(sp, o => o.PersonaTier)));
+builder.Services.AddSingleton(sp => ActivatorUtilities.CreateInstance<SynthesizeStep>(sp, ClientFor(sp, o => o.SynthesisTier)));
 builder.Services.AddSingleton<CouncilOrchestrator>();
 builder.Services.AddSingleton(sp =>
     new CouncilConcurrencyGate(sp.GetRequiredService<IOptions<CouncilOptions>>().Value.MaxConcurrentRuns));

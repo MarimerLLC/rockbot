@@ -204,7 +204,7 @@ Parallel MAF branches, one per selected persona. Two branch shapes:
   - Tools: research (`ResearchMcpClient`, MCP → research server; A2A `ResearchAgentInvoker` before #717), `working_memory_get/list` scoped to `council/{taskId}/`
   - Findings cached to `council/{taskId}/{personaId}/` and visible to subsequent personas through the shared namespace
 
-All branches use Balanced tier. Per-persona soft timeout ~60s; on timeout the persona is dropped from the council with `view: "(timed out)"`.
+All branches use the High tier (`Council:PersonaTier`), for the view and again for the critique: the personas' reasoning is what the council sells. Until #758 every step got the plain `IChatClient`, which is Balanced, so personas, critique and synthesis all ran on Balanced whatever this document said. Each step now gets its tier's client from `TieredChatClientRegistry` (`Council:SelectTier` Balanced, `PersonaTier` and `SynthesisTier` High). Per-persona soft timeout 180 s (`Council:PerPersonaTimeoutSeconds`), room for a view that makes one research call; on timeout the persona is dropped from the council with `view: "(timed out)"`.
 
 ### 4. Critique (conditional)
 
@@ -345,7 +345,7 @@ an MCP server with richer arguments and retired its A2A path (#758). See
 
 **MAF prerelease churn.** Packages are `--prerelease` as of writing. Pin exact versions in `Directory.Build.props`. Treat MAF version bumps as their own PR. The workflow API surface specifically is the part most likely to change — if it breaks too often in Phase 1, fall back to hand-rolled orchestration without abandoning the rest of the design.
 
-**Cost ceiling.** 5 personas × possible research × possible critique × synthesis can hit $0.50–$2 per question. Mitigations: tight per-persona iteration cap (8), hard wall-clock timeout (~3 min), per-request token budget enforced at the runner level, observable cost metrics published per council run.
+**Cost ceiling.** 5 personas × possible research × possible critique × synthesis can hit $0.50–$2 per question, more now that personas and critique run on High. Mitigations: tight per-persona iteration cap (8), hard wall-clock timeout (`Council:OverallTimeoutSeconds`, 600 s), per-request token budget enforced at the runner level, observable cost metrics published per council run.
 
 **Selector reliability.** The selector decides which personas participate, whether to run research, and whether to critique. A bad selector silently degrades every downstream stage. Mitigation: a focused eval set of ~20 hand-graded questions covering factual, strategic, contested, and trivial cases. Re-run on selector prompt changes.
 
