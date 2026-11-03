@@ -33,7 +33,7 @@ internal sealed class PersonaStep(
         var shared = await workingMemory.GetAsync($"council/{taskId}/shared");
         var userPrompt = shared is null
             ? question
-            : $"Use the following pre-research findings as context. Do not contradict facts in them.\n\n--- Pre-research findings ---\n{shared}\n--- End findings ---\n\nQuestion: {question}";
+            : $"{SharedFindingsNote}\n\n--- Pre-research findings ---\n{shared}\n--- End findings ---\n\nQuestion: {question}";
 
         var messages = new List<ChatMessage>
         {
@@ -87,6 +87,15 @@ internal sealed class PersonaStep(
             return new PersonaView(persona.Id, "(persona call failed)", [], [], PersonaStatus.Failed);
         }
     }
+
+    /// <summary>
+    /// How a persona reads the shared pre-research: as facts, not as a recommendation. Every persona
+    /// gets the same findings; if they are read as a conclusion, every persona reaches it.
+    /// </summary>
+    internal const string SharedFindingsNote =
+        "The pre-research findings below were gathered for the whole council. They are facts and evidence, " +
+        "not a recommendation: do not contradict the facts in them, but ignore any conclusion or recommendation " +
+        "they contain, and reach your position from your own lens.";
 
     /// <summary>
     /// How every persona gives its view, whatever its lens: one committed position, argued from that

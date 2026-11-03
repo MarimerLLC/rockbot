@@ -40,6 +40,8 @@ public class PersonaStepWorkingMemoryTests
         StringAssert.Contains(userMessage, "Pre-existing baseline findings about X.");
         StringAssert.Contains(userMessage, "Original question?");
         StringAssert.Contains(userMessage, "Pre-research findings");
+        StringAssert.Contains(userMessage, "not a recommendation", "the findings are framed as facts, not a verdict");
+        StringAssert.Contains(userMessage, "reach your position from your own lens");
     }
 
     [TestMethod]

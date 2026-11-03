@@ -35,7 +35,8 @@ internal sealed class PreResearchStep(
         try
         {
             var timeout = TimeSpan.FromSeconds(Math.Max(5, (options?.Value ?? new CouncilOptions()).PreResearchTimeoutSeconds));
-            var findings = await research.InvokeAsync(request.Question, BuildLensContext(selectedPersonas, request.Context), ct, timeout);
+            var findings = await research.InvokeAsync(
+                BuildResearchQuestion(request.Question), BuildLensContext(selectedPersonas, request.Context), ct, timeout);
             if (string.IsNullOrWhiteSpace(findings) || findings.StartsWith("(research", StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogInformation("Pre-research returned empty findings; not writing to WM");
@@ -64,13 +65,24 @@ internal sealed class PreResearchStep(
     }
 
     /// <summary>
+    /// The research question: the facts that bear on the decision, not the decision itself. Asked
+    /// "should the city ban X?", research answers it, and every persona then starts from the same
+    /// conclusion; in live runs that pulled all four personas to one answer.
+    /// </summary>
+    internal static string BuildResearchQuestion(string councilQuestion) =>
+        $"What facts and evidence bear on this decision (findings, not a recommendation)? {councilQuestion}";
+
+    /// <summary>
     /// The research call's <c>context</c>: who is asking and through which lenses, so research
-    /// gathers facts for each lens and can settle its own clarifying question from it.
+    /// gathers facts for each lens and can settle its own clarifying question from it, and that it
+    /// must report facts, not a verdict.
     /// </summary>
     internal static string BuildLensContext(IReadOnlyList<Persona> personas, string? askerContext = null)
     {
         var sb = new StringBuilder();
-        sb.Append("Pre-research for an advisor council that will examine this question.");
+        sb.Append("Pre-research for an advisor council that will examine this question. Report facts and evidence " +
+                  "only: figures, what studies and comparable cases found, and where the evidence conflicts or is " +
+                  "thin. Do not recommend a course of action or say which option is better; the council decides that.");
         if (personas.Count > 0)
         {
             sb.AppendLine(" It will look at it through these lenses, so gather facts relevant to each lens, " +
