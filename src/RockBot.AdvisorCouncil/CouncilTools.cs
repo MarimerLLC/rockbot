@@ -389,7 +389,31 @@ internal sealed class CouncilTools(
                 sb.Append("- ").AppendLine(a);
         }
 
+        sb.AppendLine().AppendLine().Append(BuildRunSummary(response));
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// One line on how the council ran: who contributed, whether pre-research and critique ran,
+    /// confidence, the clarifying question and the duration. The structured content has all of it,
+    /// but a caller that reads only the text (the MCP bridge hands the agent the text) otherwise
+    /// can't say how broad the review was.
+    /// </summary>
+    internal static string BuildRunSummary(CouncilResponse response)
+    {
+        var m = response.Metadata;
+        var contributed = response.Personas.Where(p => p.Status == PersonaStatus.Ok).Select(p => p.Id).ToList();
+        var critique = m.CritiqueRun ? "ran"
+            : m.CritiqueSkipped ? "skipped (the views already agreed)"
+            : "not run";
+
+        var personas = contributed.Count == 0
+            ? $"0 of {response.Personas.Count} personas contributed"
+            : $"{contributed.Count} of {response.Personas.Count} personas contributed ({string.Join(", ", contributed)})";
+
+        return $"**Council run:** {personas} · pre-research: {(m.PreResearchRun ? "ran" : "not run")} · " +
+               $"critique: {critique} · confidence: {response.Confidence} · " +
+               $"clarifying question: {m.Clarification.Replace('_', ' ')} · {m.DurationMs / 1000.0:0} s";
     }
 
     private static string Humanize(string value) =>

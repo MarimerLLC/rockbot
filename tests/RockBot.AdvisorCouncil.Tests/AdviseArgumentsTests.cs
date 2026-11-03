@@ -183,6 +183,40 @@ public class AdviseArgumentsTests
         StringAssert.StartsWith(text, "> **Council coverage:** 1 of 2 personas contributed.");
         StringAssert.Contains(text, "engineer (timed_out)");
         Assert.IsTrue(text.IndexOf("The synthesis.", StringComparison.Ordinal) < text.IndexOf("**Assumptions**", StringComparison.Ordinal));
-        StringAssert.EndsWith(text, "- Low risk appetite.");
+        Assert.IsTrue(text.IndexOf("- Low risk appetite.", StringComparison.Ordinal) < text.IndexOf("**Council run:**", StringComparison.Ordinal),
+            "the run summary comes last");
+    }
+
+    [TestMethod]
+    public void TheRunSummary_SaysWhoContributedAndWhatRan()
+    {
+        var response = new CouncilResponse(
+            "Q?",
+            [new PersonaView("skeptic", "v", [], []), new PersonaView("economist", "v", [], []),
+             new PersonaView("engineer", "(timed out)", [], [], PersonaStatus.TimedOut)],
+            [], "S.", "medium",
+            new CouncilMetadata(CritiqueRun: false, PreResearchRun: true, PersonaCount: 3, DurationMs: 63_400, ModelCalls: 6,
+                PersonaSetHash: "h", SelectorRationale: "r", Clarification: ClarificationStatus.Answered, CritiqueSkipped: true));
+
+        var summary = CouncilTools.BuildRunSummary(response);
+
+        StringAssert.StartsWith(summary, "**Council run:** 2 of 3 personas contributed (skeptic, economist)");
+        StringAssert.Contains(summary, "pre-research: ran");
+        StringAssert.Contains(summary, "critique: skipped (the views already agreed)");
+        StringAssert.Contains(summary, "confidence: medium");
+        StringAssert.Contains(summary, "clarifying question: answered");
+        StringAssert.EndsWith(summary, "63 s");
+        StringAssert.EndsWith(CouncilTools.BuildText(response), summary);
+    }
+
+    [TestMethod]
+    [DataRow(true, false, "critique: ran")]
+    [DataRow(false, false, "critique: not run")]
+    public void TheRunSummary_CritiqueStates(bool run, bool skipped, string expected)
+    {
+        var response = new CouncilResponse("Q?", [], [], "S.", "low",
+            new CouncilMetadata(run, false, 0, 0, 1, "h", "r", CritiqueSkipped: skipped));
+
+        StringAssert.Contains(CouncilTools.BuildRunSummary(response), expected);
     }
 }

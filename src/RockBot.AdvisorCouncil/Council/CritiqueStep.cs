@@ -39,6 +39,9 @@ internal sealed class CritiqueStep(
             "Revise your view in light of the sibling views below. Be explicit when you disagree — " +
             "name what you disagree with and why. Identify tensions between your framing and others'. " +
             "Stay in your persona's framing; do not adopt another persona's view wholesale. " +
+            "Keep your **Position:** line at the top of the revised view. Change it only if a sibling's " +
+            "argument defeats yours on your own lens's terms, and if you change it, say which argument did. " +
+            "Agreeing for the sake of consensus is not a reason. " +
             "Respond ONLY with JSON of the form: " +
             "{ \"revised_view\": \"markdown prose\", \"key_points\": [\"...\"], \"tensions\": " +
             "[{\"with\":\"sibling_id\",\"description\":\"...\",\"stakes\":\"...\"}] }";

@@ -40,6 +40,48 @@ public class PersonaStepWorkingMemoryTests
         StringAssert.Contains(userMessage, "Pre-existing baseline findings about X.");
         StringAssert.Contains(userMessage, "Original question?");
         StringAssert.Contains(userMessage, "Pre-research findings");
+        StringAssert.Contains(userMessage, "not a recommendation", "the findings are framed as facts, not a verdict");
+        StringAssert.Contains(userMessage, "reach your position from your own lens");
+    }
+
+    [TestMethod]
+    public async Task PersonaStep_EveryPersona_GetsThePositionProtocol()
+    {
+        var chat = new FakeChatClient().EnqueueResponse("**Position:** Option A.");
+        var step = new PersonaStep(chat, research: null!, new InMemoryWorkingMemory(),
+            Options.Create(new CouncilOptions()), NullLogger<PersonaStep>.Instance);
+
+        await step.RunAsync(MakePersona("economist"), new CouncilRequest("Q?"), "task-p", CancellationToken.None);
+
+        var system = chat.Calls[^1].Messages.First(m => m.Role == ChatRole.System).Text ?? string.Empty;
+        StringAssert.StartsWith(system, "economist system prompt", "the persona's own prompt comes first");
+        StringAssert.Contains(system, "**Position:**");
+        StringAssert.Contains(system, "Do not default to the middle option");
+        StringAssert.Contains(system, "**Would change my mind:**");
+    }
+
+    [TestMethod]
+    [DataRow("Intro paragraph.\n\n**Position:** Ban outright.\n\nBecause...", "Position: Ban outright.")]
+    [DataRow("No position line here.\nSecond line.", "No position line here.")]
+    [DataRow("", "(empty)")]
+    public void PositionOf_FindsThePositionLine(string view, string expected) =>
+        Assert.AreEqual(expected, PersonaStep.PositionOf(view));
+
+    [TestMethod]
+    public async Task CritiqueStep_KeepsThePositionUnlessASiblingDefeatsIt()
+    {
+        var chat = new FakeChatClient().EnqueueResponse(
+            """{ "revised_view": "revised", "key_points": [], "tensions": [] }""");
+        var step = new CritiqueStep(chat, new InMemoryWorkingMemory(), NullLogger<CritiqueStep>.Instance);
+
+        await step.RunAsync(MakePersona("skeptic"), new CouncilRequest("Q?"), "task-q",
+            new RockBot.AdvisorCouncil.Schema.PersonaView("skeptic", "**Position:** B.", [], []),
+            [new RockBot.AdvisorCouncil.Schema.PersonaView("engineer", "**Position:** A.", [], [])],
+            CancellationToken.None);
+
+        var system = chat.Calls[^1].Messages.First(m => m.Role == ChatRole.System).Text ?? string.Empty;
+        StringAssert.Contains(system, "Keep your **Position:** line");
+        StringAssert.Contains(system, "Agreeing for the sake of consensus is not a reason.");
     }
 
     [TestMethod]

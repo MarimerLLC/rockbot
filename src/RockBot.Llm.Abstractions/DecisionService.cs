@@ -63,6 +63,12 @@ public static class DecisionPurposes
 
     /// <summary>Which recalled skill, if any, gets its full instructions injected?</summary>
     public const string SkillRecall = "SkillRecall";
+
+    /// <summary>Do an advisor council's persona views disagree enough to be worth cross-critique?</summary>
+    public const string CouncilCritique = "CouncilCritique";
+
+    /// <summary>Does research the council already holds answer a persona's new research question?</summary>
+    public const string CouncilResearchReuse = "CouncilResearchReuse";
 }
 
 /// <summary>One request: the state to judge and the named questions to answer about it.</summary>

@@ -113,6 +113,17 @@ Files live at `/data/advisor-council/personas/{id}.md` on the PVC, hot-reloaded 
 
 **Why personas as data**: lets the personas be tuned (or replaced entirely for specific deployments) without rebuilding the container. Resists the temptation to encode persona-specific logic in C# — if a persona needs different model tier or different tools, encode that in frontmatter and let the workflow read it.
 
+**Every persona takes a position.** `PersonaStep.PositionProtocol`, appended in code to every persona's system prompt (operator-written ones included), makes each view:
+- open with a committed `**Position:**`;
+- argue only from that persona's lens, leaving the trade-offs to the synthesis;
+- refuse the middle option unless the lens itself favours it;
+- name what the likely consensus would get wrong;
+- close with `**Would change my mind:**`.
+
+Each persona file says which question its position answers (the ethicist: what is right by the least powerful; the skeptic: which option it would bet against; and so on). The critique addendum keeps the position unless a sibling's argument defeats it on the persona's own terms.
+
+Why: when each persona was asked to be balanced, each did the council's balancing on its own. On three contested questions in a row, all personas landed on the same compromise. The decision model rated the views as agreeing (p ≤ 0.009), so critique was skipped, and the synthesis had no real disagreement to integrate.
+
 ## Selector
 
 A single `IChatClient` call (Balanced tier) that takes the question + the persona library and returns:
@@ -203,12 +214,13 @@ Parallel MAF branches, one per selected persona. Two branch shapes:
   - `MaxToolIterationsOverride = 8` (tight)
   - Tools: research (`ResearchMcpClient`, MCP → research server; A2A `ResearchAgentInvoker` before #717), `working_memory_get/list` scoped to `council/{taskId}/`
   - Findings cached to `council/{taskId}/{personaId}/` and visible to subsequent personas through the shared namespace
+  - Before a research call runs, the decision model (`ResearchReuse`, purpose `CouncilResearchReuse`) checks whether research the run already holds — the shared pre-research and earlier calls — answers the new question. Above p ≥ 0.7 that finding is returned instead, with no new research run and no budget spent. The model off or unsure, the call goes ahead.
 
 All branches use the High tier (`Council:PersonaTier`), for the view and again for the critique: the personas' reasoning is what the council sells. Until #758 every step got the plain `IChatClient`, which is Balanced, so personas, critique and synthesis all ran on Balanced whatever this document said. Each step now gets its tier's client from `TieredChatClientRegistry` (`Council:SelectTier` Balanced, `PersonaTier` and `SynthesisTier` High). Per-persona soft timeout 180 s (`Council:PerPersonaTimeoutSeconds`), room for a view that makes one research call; on timeout the persona is dropped from the council with `view: "(timed out)"`.
 
 ### 4. Critique (conditional)
 
-Skipped unless `SelectorOutput.critique = true`.
+Skipped unless `SelectorOutput.critique = true`. Select decides that from the question alone, so once the views exist the decision model (`CritiqueGate`, purpose `CouncilCritique`) gets one look at them: critique is skipped when it is fairly sure they already agree (it runs at p(disagree) ≥ 0.35), and `metadata.critique_skipped` says so. A caller's `critique: on` always runs it; with the model off or failing, critique runs as selected.
 For each persona, a second `IChatClient` call: `{system: persona.systemPrompt + critique addendum, user: original question + all sibling views, instruction: "revise your view, name explicit disagreements"}`. Returns revised view + identified tensions.
 
 Critique is **per-persona-parallel** like fan-out — no further fan-in needed.

@@ -271,6 +271,8 @@ research's (`CouncilCallMode`, a copy of `ResearchCallMode`):
 should cover, with `structuredContent {status: "needs_context", needs, open_choices}`. Nothing
 else runs.
 
+**Decision model.** The council binds the shared `DecisionModel__*` settings (Microsoft-Decision-1) for two cheap calls that can each save expensive ones: `CritiqueGate` skips the High-tier critique round (one call per persona) when the views already agree, and `ResearchReuse` answers a persona's research question from research the run already holds instead of starting a new research run. Both fail open to the old behaviour. Thresholds: `DecisionModel__Uses__CouncilCritique__Threshold` (default 0.35, run critique at or above) and `DecisionModel__Uses__CouncilResearchReuse__Threshold` (default 0.7, reuse at or above).
+
 **Concurrency.** `Council:MaxConcurrentRuns` (default 2) gates deliberation only; Select is
 cheap and runs freely. One council fans out to several research calls, and research's own cap
 is 6, so raise the two together.
