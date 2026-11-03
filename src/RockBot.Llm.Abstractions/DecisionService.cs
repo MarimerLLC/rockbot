@@ -63,6 +63,9 @@ public static class DecisionPurposes
 
     /// <summary>Which recalled skill, if any, gets its full instructions injected?</summary>
     public const string SkillRecall = "SkillRecall";
+
+    /// <summary>Does a quick research answer miss the question, or run far past "a few short paragraphs"?</summary>
+    public const string ResearchAnswer = "ResearchAnswer";
 }
 
 /// <summary>One request: the state to judge and the named questions to answer about it.</summary>

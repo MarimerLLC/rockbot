@@ -138,6 +138,12 @@ else
     Console.WriteLine("Set LLM:Balanced:Endpoint (or legacy LLM:Endpoint), LLM:Balanced:ApiKey, and LLM:Balanced:ModelId to configure.");
 }
 
+// The shared decision model (Microsoft-Decision-1), from the same DecisionModel__* settings as the
+// primary agent. Off until they are set. It checks quick answers (ResearchAnswerCheck) in place of
+// the loop's LLM completion evaluator, and gives the loop's other checks their second opinion.
+builder.Services.Configure<DecisionModelOptions>(builder.Configuration.GetSection("DecisionModel"));
+builder.Services.AddSingleton<ResearchAnswerCheck>();
+
 // AgentLoopRunner requires IFeedbackStore — use no-op since we have no dreaming pipeline
 builder.Services.AddSingleton<IFeedbackStore, NullFeedbackStore>();
 
