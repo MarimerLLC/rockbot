@@ -119,6 +119,14 @@ public class TierEscalationEndToEndTests
                 AIFunctionFactory.Create((string path) => "file contents", "file_read"),
                 AIFunctionFactory.Create((string url) =>
                     fetchFailuresLeft-- > 0 ? "Error: connection refused" : "page", "web_fetch"),
+                // #762: a successful result whose content quotes "timed out".
+                AIFunctionFactory.Create((string query) =>
+                    "Found 2 memories:\n- [techorama] invariant-globalization recovery timed out before " +
+                    "producing a restore/build result.", "search_memory"),
+                // A real timeout, in the error envelope the MCP bridge produces.
+                AIFunctionFactory.Create((string query) =>
+                    "Error: MCP server 'slow-mcp' timed out after 300ms. This is a transient error — " +
+                    "retry the same tool call to continue.", "slow_lookup"),
             ],
         };
     }
@@ -197,6 +205,55 @@ public class TierEscalationEndToEndTests
         Assert.AreEqual(2, low.Calls);
         Assert.AreEqual(1, balanced.Calls);
         StringAssert.Contains(diag.EscalationReason, "tool errors");
+    }
+
+    [TestMethod]
+    [DataRow(false, DisplayName = "native")]
+    [DataRow(true, DisplayName = "text-based")]
+    public async Task LowTurn_ResultsQuotingTimedOut_AreOkAndStayLow(bool textBased)
+    {
+        // #762: two successful memory searches whose hits mention "timed out" are not timeouts —
+        // no tier escalation, no consecutive-timeout abort, status ok.
+        var low = new ScriptedModel("low",
+            Call("search_memory", new() { ["query"] = "techorama" }),
+            Call("search_memory", new() { ["query"] = "techorama planning" }),
+            Text("low finished"));
+        var balanced = new ScriptedModel("balanced", Text("unexpected"));
+        var (runner, _) = CreateRunner(low, balanced, textBased);
+        var diag = new LoopDiagnostics();
+
+        var reply = await RunLowTurnAsync(runner, Tools([]), diag);
+
+        Assert.AreEqual("low finished", reply);
+        Assert.AreEqual(3, low.Calls);
+        Assert.AreEqual(0, balanced.Calls);
+        Assert.IsNull(diag.EscalatedTier);
+        Assert.AreEqual("ok", diag.LastToolStatus);
+    }
+
+    [TestMethod]
+    [DataRow(false, DisplayName = "native")]
+    [DataRow(true, DisplayName = "text-based")]
+    public async Task LowTurn_TwoRealTimeouts_AreTimeoutsAndEscalate(bool textBased)
+    {
+        var low = new ScriptedModel("low",
+            Call("slow_lookup", new() { ["query"] = "a" }),
+            Call("slow_lookup", new() { ["query"] = "b" }),
+            Text("low finished"));
+        var balanced = new ScriptedModel("balanced", Text("Balanced recovered."));
+        var (runner, _) = CreateRunner(low, balanced, textBased);
+        var diag = new LoopDiagnostics();
+
+        var reply = await RunLowTurnAsync(runner, Tools([]), diag);
+
+        Assert.AreEqual(2, low.Calls);
+        Assert.AreEqual("timeout", diag.LastToolStatus);
+        StringAssert.Contains(diag.EscalationReason, "tool errors");
+        if (textBased)
+            StringAssert.Contains(reply, "aren't responding",
+                "The runner's own loop aborts after two consecutive timeout iterations.");
+        else
+            Assert.AreEqual("Balanced recovered.", reply);
     }
 
     [TestMethod]

@@ -270,7 +270,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 
         // Track consecutive timeouts
         var callState = CurrentCallState;
-        if (resultStr is not null && IsTimeoutResult(resultStr))
+        if (resultStr is not null && ToolResultClassifier.IsTimeout(resultStr))
         {
             status = ToolError.Codes.Timeout;
             var timeouts = Interlocked.Increment(ref callState.ConsecutiveTimeoutIterations);
@@ -293,7 +293,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         // these as Succeeded=false is what lets the dream-time retry-pattern detector see
         // MCP errors (e.g. "the resource could not be found") as failures rather than as
         // successful calls that just happened to return an error message.
-        if (status == "ok" && resultStr is not null && IsErrorResult(resultStr))
+        if (status == "ok" && resultStr is not null && ToolResultClassifier.IsError(resultStr))
         {
             status = ToolError.Codes.ExecutionFailed;
         }
@@ -649,19 +649,6 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 
         return response.Text?.Trim() ?? string.Empty;
     }
-
-    private static bool IsTimeoutResult(string result) =>
-        result.Contains("timed out", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// True when the tool result indicates a logical (content-level) error rather than a
-    /// transport success. <see cref="RegistryToolFunction"/> prepends "Error: " to any
-    /// response with <c>IsError=true</c>, so this prefix reliably signals "the executor
-    /// completed but the operation failed" — including MCP server errors propagated by
-    /// <c>McpToolProxy</c>.
-    /// </summary>
-    internal static bool IsErrorResult(string result) =>
-        result.StartsWith("Error: ", StringComparison.Ordinal);
 
     private static string DescribeToolCall(string name, string? argsSummary)
     {
