@@ -269,7 +269,9 @@ public sealed class MemoryTools
         catch (MemorySearchException ex)
         {
             _logger.LogInformation("SearchMemory rejected by backend: {Message}", ex.Message);
-            return ex.Message;
+            // The search did not run: report it in RockBot's error envelope so the loop counts a
+            // failed call (and a regex timeout as a timeout, #762) rather than a successful one.
+            return $"Error: {ex.Message}";
         }
 
         _logger.LogInformation("SearchMemory returned {Count} results", results.Count);

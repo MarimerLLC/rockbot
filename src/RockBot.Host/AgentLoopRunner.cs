@@ -1639,9 +1639,9 @@ public sealed partial class AgentLoopRunner(
                     }
 
                     var textResultStr = result?.ToString() ?? string.Empty;
-                    if (IsTimeoutResult(textResultStr)) textToolStatus = ToolError.Codes.Timeout;
+                    if (ToolResultClassifier.IsTimeout(textResultStr)) textToolStatus = ToolError.Codes.Timeout;
                     TierEscalationContext.Value?.ObserveToolResult(toolName,
-                        textToolStatus != "ok" || RockBotFunctionInvokingChatClient.IsErrorResult(textResultStr));
+                        textToolStatus != "ok" || ToolResultClassifier.IsError(textResultStr));
                     ToolDiagnostics.InvokeDuration.Record(toolSw.Elapsed.TotalMilliseconds,
                         new KeyValuePair<string, object?>("rockbot.tool.name", toolName),
                         new KeyValuePair<string, object?>("rockbot.tool.status", textToolStatus));
@@ -1660,7 +1660,7 @@ public sealed partial class AgentLoopRunner(
                     LoopToolCallLedgerContext.Value?.Record(
                         toolName, TruncateLedgerArgs(argsJson),
                         succeeded: textToolStatus == "ok"
-                            && !RockBotFunctionInvokingChatClient.IsErrorResult(textResultStr)
+                            && !ToolResultClassifier.IsError(textResultStr)
                             && textOutcome.Succeeded != false,
                         rawArguments: args, outcome: textOutcome);
 
@@ -1824,9 +1824,9 @@ public sealed partial class AgentLoopRunner(
 
                 // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                 var nativeResultStr = result?.ToString() ?? string.Empty;
-                if (IsTimeoutResult(nativeResultStr)) toolStatus = ToolError.Codes.Timeout;
+                if (ToolResultClassifier.IsTimeout(nativeResultStr)) toolStatus = ToolError.Codes.Timeout;
                 TierEscalationContext.Value?.ObserveToolResult(fc.Name,
-                    toolStatus != "ok" || RockBotFunctionInvokingChatClient.IsErrorResult(nativeResultStr));
+                    toolStatus != "ok" || ToolResultClassifier.IsError(nativeResultStr));
                 ToolDiagnostics.InvokeDuration.Record(toolSw.Elapsed.TotalMilliseconds,
                     new KeyValuePair<string, object?>("rockbot.tool.name", fc.Name),
                     new KeyValuePair<string, object?>("rockbot.tool.status", toolStatus));
@@ -1844,7 +1844,7 @@ public sealed partial class AgentLoopRunner(
                 LoopToolCallLedgerContext.Value?.Record(
                     fc.Name, TruncateLedgerArgs(argsSummary),
                     succeeded: toolStatus == "ok"
-                        && !RockBotFunctionInvokingChatClient.IsErrorResult(nativeResultStr)
+                        && !ToolResultClassifier.IsError(nativeResultStr)
                         && nativeOutcome.Succeeded != false,
                     rawArguments: fc.Arguments, outcome: nativeOutcome);
 
@@ -1885,7 +1885,7 @@ public sealed partial class AgentLoopRunner(
                         "each time. Please try a different approach."));
                 }
 
-                if (IsTimeoutResult(nativeResultStr))
+                if (ToolResultClassifier.IsTimeout(nativeResultStr))
                 {
                     iterationHadTimeout = true;
                     if (onToolTimeout is not null)
@@ -3005,13 +3005,6 @@ public sealed partial class AgentLoopRunner(
             : $"Error: unknown tool '{requestedName}'";
         return (errorMsg, suggestion);
     }
-
-    /// <summary>
-    /// Returns true when a tool result string indicates the call timed out
-    /// rather than completing successfully or failing with a non-timeout error.
-    /// </summary>
-    private static bool IsTimeoutResult(string result) =>
-        result.Contains("timed out", StringComparison.OrdinalIgnoreCase);
 
     private static string DescribeToolCall(string name, string? argsJson)
     {

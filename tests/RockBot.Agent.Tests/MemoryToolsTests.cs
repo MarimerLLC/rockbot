@@ -405,6 +405,7 @@ public class MemoryToolsTests
         var result = await tools.SearchMemory("[", mode: "regex");
 
         StringAssert.Contains(result, "bad pattern: nope");
+        StringAssert.StartsWith(result, "Error: ", "A rejected search is a failed call, not a result (#762).");
     }
 
     // -------------------------------------------------------------------------
