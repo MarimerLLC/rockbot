@@ -13,7 +13,9 @@ namespace RockBot.Agent.McpBridge.Tasks;
 /// <remarks>
 /// Abandoning the question (it expired, its server was removed) only settles the question: the
 /// coordinator then tells the server it was cancelled, and the server decides what the task does
-/// next. Stopping the task itself is the task's own cancellation, not this.
+/// next. Stopping the task itself is the task's own cancellation, not this. A bridge stop is
+/// neither: the question is abandoned only after the task's poll loop sees the stop, so no
+/// answer reaches the server and the next start asks the question again.
 /// </remarks>
 internal sealed class TaskHandbackCall(
     PendingQuestionStore store,

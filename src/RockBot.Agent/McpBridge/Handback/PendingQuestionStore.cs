@@ -288,9 +288,20 @@ internal sealed class PendingQuestionStore : IDisposable
     /// Abandons every open question because the bridge is stopping. Their ledger entries stay
     /// pending, so the next start finds them and announces the interruption.
     /// </summary>
-    public void AbandonAllForShutdown()
+    public void AbandonAllForShutdown() => AbandonForShutdown(_ => true);
+
+    /// <summary>
+    /// Abandons the open questions of parked calls because the bridge is stopping, leaving
+    /// background tasks' questions open. Settling a task's question hands its poll loop a
+    /// <c>cancel</c> answer; until the loop sees the bridge stopping, it would send that answer to
+    /// the server and end a task the next start was meant to ask again. The bridge abandons those
+    /// with <see cref="AbandonAllForShutdown"/> once its tasks have seen the stop.
+    /// </summary>
+    public void AbandonParkedForShutdown() => AbandonForShutdown(q => q.Call.TaskId is null);
+
+    private void AbandonForShutdown(Func<PendingQuestion, bool> which)
     {
-        foreach (var question in _open.Values.ToList())
+        foreach (var question in _open.Values.Where(which).ToList())
             Abandon(question, "the agent is restarting");
     }
 
