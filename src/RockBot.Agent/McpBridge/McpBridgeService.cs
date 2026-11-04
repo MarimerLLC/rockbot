@@ -289,9 +289,15 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         // Parked calls end with the process. Their ledger entries stay pending, so the next start
-        // announces them as interrupted.
-        _handback.AbandonAllForShutdown();
+        // announces them as interrupted. They're abandoned before the lifetime ends, so each
+        // records why it was cancelled rather than reading as a timeout.
+        _handback.AbandonParkedForShutdown();
         await _lifetime.CancelAsync();
+
+        // A background task's question is abandoned only now that its poll loop sees the stop,
+        // so the cancel outcome isn't sent to the server: the task stays waiting there, and the
+        // next start asks the question again.
+        _handback.AbandonAllForShutdown();
         await Task.WhenAny(Task.WhenAll(_parkedTasks.Keys), Task.Delay(ShutdownGrace, CancellationToken.None));
 
         _configWatcher?.Dispose();
@@ -4166,9 +4172,11 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
 
         _configPersistLock.Dispose();
 
-        _handback.AbandonAllForShutdown();
+        // The same order as StopAsync: parked calls first, tasks' questions once the tasks see the stop.
+        _handback.AbandonParkedForShutdown();
         if (!_lifetime.IsCancellationRequested)
             await _lifetime.CancelAsync();
+        _handback.AbandonAllForShutdown();
         _handback.Dispose();
     }
 }

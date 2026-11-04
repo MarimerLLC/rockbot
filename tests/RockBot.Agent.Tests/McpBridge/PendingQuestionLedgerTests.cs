@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Protocol;
 using RockBot.Agent.McpBridge.Handback;
+using RockBot.Agent.McpBridge.Tasks;
 using RockBot.Tools.Mcp.Elicitation;
 
 namespace RockBot.Agent.Tests.McpBridge;
@@ -181,6 +182,33 @@ public class PendingQuestionLedgerTests
 
         Assert.IsTrue(call.Cts.IsCancellationRequested);
         Assert.AreEqual(PendingQuestionStatus.Pending, (await ledger.GetAsync(question!.QuestionId))!.Status);
+    }
+
+    [TestMethod]
+    public async Task ShutdownOfParkedCalls_LeavesATasksQuestionOpen_UntilTheTaskSeesTheStop()
+    {
+        var ledger = new PendingQuestionLedger(LedgerPath, NullLogger.Instance);
+        using var store = new PendingQuestionStore(ledger, maxPerSession: 5, maxTotal: 50, NullLogger.Instance);
+        using var parked = Call(store, "mail");
+        var task = new TaskHandbackCall(store,
+            new HandbackCallInfo("research", "plan", null, "{}", "session/test", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(30)),
+            "t_000000000000000000000001", (_, _) => Task.CompletedTask);
+        var (parkedQuestion, _) = await store.OpenAsync(parked, Question("mail"), CancellationToken.None);
+        var (taskQuestion, _) = await store.OpenAsync(task, Question("research"), CancellationToken.None);
+
+        store.AbandonParkedForShutdown();
+
+        Assert.IsTrue(parked.Cts.IsCancellationRequested);
+        Assert.IsTrue(parkedQuestion!.Submission.IsCompleted);
+        Assert.IsFalse(taskQuestion!.Submission.IsCompleted,
+            "settling it now would hand the task a cancel answer it could send before it sees the stop");
+        Assert.AreSame(taskQuestion, store.Get(taskQuestion.QuestionId));
+
+        store.AbandonAllForShutdown();
+
+        Assert.IsTrue(taskQuestion.Submission.IsCompleted);
+        Assert.IsNull(store.Get(taskQuestion.QuestionId));
+        Assert.AreEqual(PendingQuestionStatus.Pending, (await ledger.GetAsync(taskQuestion.QuestionId))!.Status);
     }
 
     [TestMethod]
