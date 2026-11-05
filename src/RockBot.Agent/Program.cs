@@ -193,6 +193,17 @@ IChatClient BuildOpenAIClient(LlmTierConfig config, bool sdkRetries = true)
         Console.WriteLine($"    OpenRouter attribution: {appName} <{appUrl}>");
     }
 
+    // Anthropic prompt caching is opt-in per request (cache_control breakpoints), unlike
+    // OpenAI's automatic caching — nothing is cached without this. Gated to Claude-via-
+    // OpenRouter only: cache_control is an Anthropic extension, not something to send to an
+    // unrelated model or provider on the chance it is silently ignored.
+    if (OpenRouterAttributionPolicy.IsOpenRouterEndpoint(config.Endpoint) &&
+        PromptCachingPolicy.IsClaudeModel(config.ModelId))
+    {
+        clientOptions.AddPolicy(new PromptCachingPolicy(), PipelinePosition.PerCall);
+        Console.WriteLine("    Anthropic prompt caching: enabled (cache_control breakpoints)");
+    }
+
     return new OpenAIClient(new ApiKeyCredential(config.ApiKey!), clientOptions)
         .GetChatClient(config.ModelId!).AsIChatClient();
 }

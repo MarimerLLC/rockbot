@@ -48,4 +48,13 @@ public interface IScheduledTaskStore
     /// </remarks>
     Task<ContentEditResult> EditDirectiveAsync(string name, string oldText, string newText, bool replaceAll = false)
         => Task.FromResult(ContentEditResult.NotSupported);
+
+    /// <summary>
+    /// Records the outcome of one fire of an existing task: increments
+    /// <see cref="ScheduledTask.RunCount"/> by one and adds <paramref name="inputTokens"/>,
+    /// <paramref name="outputTokens"/> and <paramref name="costUsd"/> to the task's cumulative
+    /// totals. No-op if the task does not exist (e.g. a one-off reminder already deleted).
+    /// </summary>
+    Task RecordRunAsync(string name, long inputTokens, long outputTokens, double costUsd)
+        => Task.CompletedTask;
 }

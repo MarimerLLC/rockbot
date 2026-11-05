@@ -44,6 +44,13 @@ internal sealed class ListScheduledTasksExecutor(ISchedulerService scheduler, Ag
                         var firedLocal = TimeZoneInfo.ConvertTime(task.LastFiredAt.Value, clock.Zone);
                         sb.AppendLine($"  Last fired: {firedLocal:yyyy-MM-dd HH:mm:ss} ({clock.Zone.Id})");
                     }
+                    if (task.RunCount > 0)
+                    {
+                        var avgCost = task.TotalCostUsd / task.RunCount;
+                        sb.AppendLine(
+                            $"  Cost so far: {task.RunCount} run(s), ${task.TotalCostUsd:F4} total (~${avgCost:F4}/run, " +
+                            $"{task.TotalInputTokens:N0} in / {task.TotalOutputTokens:N0} out tokens)");
+                    }
                     sb.AppendLine();
                 }
                 content = sb.ToString().TrimEnd();

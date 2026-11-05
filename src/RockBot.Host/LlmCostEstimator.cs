@@ -27,9 +27,14 @@ public sealed class LlmCostEstimator : IDisposable
         new("gpt-5.4",             2.50,  15.00),
 
         // Claude (Anthropic / OpenRouter)
-        new("claude-opus-4",      15.00,  75.00),
+        new("claude-opus-5.5",     4.00,  20.00),
+        new("claude-opus-5",       5.00,  25.00),
+        new("claude-sonnet-5.5",   2.00,  10.00),
+        new("claude-sonnet-5",     2.00,  10.00),
+        new("claude-haiku-5.5",    0.10,   0.50),
+        new("claude-opus-4",       5.00,  25.00),
         new("claude-sonnet-4",     3.00,  15.00),
-        new("claude-haiku-4",      0.80,   4.00),
+        new("claude-haiku-4",      1.00,   5.00),
         new("claude-3-opus",      15.00,  75.00),
         new("claude-3-5-sonnet",   3.00,  15.00),
         new("claude-3-5-haiku",    0.80,   4.00),

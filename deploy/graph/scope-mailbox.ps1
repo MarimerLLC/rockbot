@@ -1,4 +1,4 @@
-# Grants the RockBot app "Application Mail.Read", "Application Calendars.ReadWrite" and
+# Grants the RockBot app "Application Mail.ReadWrite", "Application Calendars.ReadWrite" and
 # "Application Contacts.ReadWrite" on exactly one mailbox via Exchange RBAC for Applications,
 # or removes those grants. Idempotent. Run by 02-scope-mailbox.sh
 # and teardown.sh inside the PowerShell container; inputs come from the environment.
@@ -14,10 +14,13 @@ if (-not $appId) { throw 'APP_ID is required' }
 # Names are derived from the app id so reruns find what earlier runs created.
 $scopeName   = "RockBot-Mailbox-$appId"
 $assignments = [ordered]@{
-    "RockBot-MailRead-$appId"           = 'Application Mail.Read'
+    "RockBot-MailReadWrite-$appId"      = 'Application Mail.ReadWrite'
     "RockBot-CalendarsReadWrite-$appId" = 'Application Calendars.ReadWrite'
     "RockBot-ContactsReadWrite-$appId"  = 'Application Contacts.ReadWrite'
 }
+# Superseded by RockBot-MailReadWrite-$appId above (role assignments can't be widened in place);
+# removed here so a rerun on an older deployment doesn't leave a stale Mail.Read grant alongside it.
+$obsoleteAssignments = @("RockBot-MailRead-$appId")
 
 function Find([scriptblock] $lookup) { try { & $lookup } catch { $null } }
 
@@ -35,7 +38,7 @@ try {
     $scope      = Find { Get-ManagementScope -Identity $scopeName }
 
     if ($action -eq 'remove') {
-        foreach ($assignmentName in $assignments.Keys) {
+        foreach ($assignmentName in ($assignments.Keys + $obsoleteAssignments)) {
             if (Find { Get-ManagementRoleAssignment -Identity $assignmentName }) {
                 Remove-ManagementRoleAssignment -Identity $assignmentName -Confirm:$false
                 Write-Host "==> Removed role assignment $assignmentName"
@@ -66,6 +69,13 @@ try {
         Write-Host "==> Updated management scope $scopeName to ($filter)"
     } else {
         Write-Host "==> Found management scope $scopeName ($filter)"
+    }
+
+    foreach ($assignmentName in $obsoleteAssignments) {
+        if (Find { Get-ManagementRoleAssignment -Identity $assignmentName }) {
+            Remove-ManagementRoleAssignment -Identity $assignmentName -Confirm:$false
+            Write-Host "==> Removed superseded role assignment $assignmentName"
+        }
     }
 
     foreach ($assignmentName in $assignments.Keys) {

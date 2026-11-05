@@ -57,6 +57,19 @@ internal sealed class SchedulingToolRegistrar(
         }
         """;
 
+    private const string TaskCostSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the scheduled task to report cost for"
+            }
+          },
+          "required": ["name"]
+        }
+        """;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         registry.Register(new ToolRegistration
@@ -109,6 +122,17 @@ internal sealed class SchedulingToolRegistrar(
             Source = "scheduling"
         }, new ListScheduledTasksExecutor(scheduler, clock));
         logger.LogInformation("Registered scheduling tool: list_scheduled_tasks");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "get_scheduled_task_cost",
+            Description = "Report the cumulative LLM token usage and estimated USD cost recorded for one " +
+                "scheduled task across all its runs, plus the average per run. Use this before and after " +
+                "changing a task's description to see whether the change actually reduced its cost.",
+            ParametersSchema = TaskCostSchema,
+            Source = "scheduling"
+        }, new GetScheduledTaskCostExecutor(scheduler));
+        logger.LogInformation("Registered scheduling tool: get_scheduled_task_cost");
 
         return Task.CompletedTask;
     }

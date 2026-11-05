@@ -47,4 +47,14 @@ public sealed class SubagentOptions
     /// 0 disables the floor.
     /// </summary>
     public int ResearchIterationFloor { get; set; } = 20;
+
+    /// <summary>
+    /// <c>max_iterations</c> applied when the caller spawning a subagent did not pass one. Without
+    /// this, an unhinted subagent inherited the primary loop's much larger
+    /// <c>AgentHostOptions.MaxToolIterations</c> ceiling, letting simple scout-type tasks run far
+    /// longer (and cost far more, re-shipping full context every turn) than they need to.
+    /// <see cref="ResearchIterationFloor"/> still raises this back up for research/synthesis
+    /// descriptions, so genuine research work is unaffected.
+    /// </summary>
+    public int DefaultMaxIterations { get; set; } = 15;
 }

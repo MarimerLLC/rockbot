@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RockBot.Host;
 using RockBot.Tools;
 
 namespace RockBot.Subagent.Tests;
@@ -280,7 +281,8 @@ public class SubagentToolExecutorTests
             string primarySessionId, CancellationToken ct,
             string? batchId = null, bool consolidate = true, int? maxIterations = null,
             string? originatingUserRequest = null,
-            IReadOnlyList<SubagentInput>? inputs = null)
+            IReadOnlyList<SubagentInput>? inputs = null,
+            ModelTier? tierHint = null)
         {
             SpawnCount++;
             LastMaxIterations = maxIterations;

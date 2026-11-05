@@ -30,6 +30,7 @@ internal sealed class ScheduledTaskHandler(
     AgentContextBuilder agentContextBuilder,
     IOptions<AgentProfileOptions> profileOptions,
     IScheduledTaskStore scheduledTaskStore,
+    LlmCostEstimator costEstimator,
     ILogger<ScheduledTaskHandler> logger,
     ISkillUsageStore? skillUsageStore = null,
     IMcpSkillSurface? mcpSkillSurface = null,
@@ -125,6 +126,7 @@ internal sealed class ScheduledTaskHandler(
 
         string finalText;
         bool succeeded;
+        var diagnostics = new LoopDiagnostics();
         try
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
@@ -137,6 +139,7 @@ internal sealed class ScheduledTaskHandler(
             finalText = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId: sessionId,
                 enableFollowUp: false, cancellationToken: ct,
+                diagnostics: diagnostics,
                 // #685: user-configured automation keeps acting without a fresh request.
                 actionGate: ActionGateScope.ForScheduledTask);
             succeeded = true;
@@ -155,6 +158,17 @@ internal sealed class ScheduledTaskHandler(
             logger.LogError(ex, "Scheduled task '{TaskName}' failed", message.TaskName);
             finalText = $"I encountered an error while executing the scheduled task: {ex.Message}";
             succeeded = false;
+        }
+
+        // Record cost/token usage for this fire regardless of outcome — tokens were spent
+        // whether or not the run produced a reply, and a failed run still burned whatever
+        // it sent before erroring.
+        if (diagnostics.InputTokens > 0 || diagnostics.OutputTokens > 0)
+        {
+            var costUsd = costEstimator.EstimateCost(
+                diagnostics.ModelId ?? string.Empty, diagnostics.InputTokens, diagnostics.OutputTokens);
+            await scheduledTaskStore.RecordRunAsync(
+                message.TaskName, diagnostics.InputTokens, diagnostics.OutputTokens, costUsd);
         }
 
         if (succeeded)

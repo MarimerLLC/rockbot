@@ -32,6 +32,10 @@ namespace RockBot.Host;
 /// (markdown-only). Scheduled tasks deliberately ignore the live-session capability stash
 /// because their audience is unpredictable at fire time.
 /// </param>
+/// <param name="RunCount">Number of times this task has fired and completed, tracked via <see cref="IScheduledTaskStore.RecordRunAsync"/>.</param>
+/// <param name="TotalInputTokens">Cumulative LLM input tokens consumed across every recorded run.</param>
+/// <param name="TotalOutputTokens">Cumulative LLM output tokens produced across every recorded run.</param>
+/// <param name="TotalCostUsd">Cumulative estimated USD cost across every recorded run.</param>
 public sealed record ScheduledTask(
     string Name,
     string CronExpression,
@@ -41,4 +45,8 @@ public sealed record ScheduledTask(
     bool RunOnce = false,
     bool IsSystemTask = false,
     string? Directive = null,
-    ClientCapabilities ClientCapabilities = ClientCapabilities.None);
+    ClientCapabilities ClientCapabilities = ClientCapabilities.None,
+    int RunCount = 0,
+    long TotalInputTokens = 0,
+    long TotalOutputTokens = 0,
+    double TotalCostUsd = 0);

@@ -17,18 +17,19 @@ public sealed class MailTools(GraphMailClient client)
 
     [McpServerTool(Name = "list_messages", ReadOnly = true)]
     [Description("Lists the newest messages in a mail folder of the configured mailbox, newest first. " +
-                 "Returns a JSON array of { id, subject, from, received, isRead, hasAttachments, preview }." + UntrustedNote)]
+                 "Returns a JSON array of { id, subject, from, received, isRead, hasAttachments, preview, flagStatus }." + UntrustedNote)]
     public async Task<string> ListMessagesAsync(
         [Description("Folder: a well-known name (inbox, sentitems, drafts, deleteditems, archive, junkemail) or a folder id. Defaults to inbox.")] string folder = "inbox",
         [Description("Number of messages to return, 1-25. Defaults to 10.")] int top = 10,
         [Description("If true, only unread messages are returned. Defaults to false.")] bool unread_only = false,
+        [Description("If true, only messages flagged for follow-up are returned (not ones marked complete). Defaults to false.")] bool flagged_only = false,
         CancellationToken cancellationToken = default)
     {
         try
         {
             RequireGraphId(folder, nameof(folder));
             RequireTop(top);
-            var messages = await client.ListMessagesAsync(folder, top, unread_only, cancellationToken);
+            var messages = await client.ListMessagesAsync(folder, top, unread_only, flagged_only, cancellationToken);
             return JsonSerializer.Serialize(messages, JsonOptions);
         }
         catch (Exception ex) when (ex is not McpException)
@@ -63,7 +64,7 @@ public sealed class MailTools(GraphMailClient client)
 
     [McpServerTool(Name = "get_message", ReadOnly = true)]
     [Description("Gets one message from the configured mailbox with its body as plain text (long bodies are truncated; bodyTruncated says so). " +
-                 "Returns JSON { id, subject, from, to, cc, received, isRead, hasAttachments, body, bodyTruncated, attachments }, " +
+                 "Returns JSON { id, subject, from, to, cc, received, isRead, hasAttachments, body, bodyTruncated, attachments, flagStatus }, " +
                  "where attachments is [{ id, name, kind (file|item|reference), contentType, size, isInline }]; " +
                  "fetch one with get_attachment. Inline attachments are usually signature images." + UntrustedNote)]
     public async Task<string> GetMessageAsync(
@@ -74,6 +75,26 @@ public sealed class MailTools(GraphMailClient client)
         {
             RequireGraphId(id, nameof(id));
             var message = await client.GetMessageAsync(id, cancellationToken);
+            return JsonSerializer.Serialize(message, JsonOptions);
+        }
+        catch (Exception ex) when (ex is not McpException)
+        {
+            throw new McpException(ex.Message, ex);
+        }
+    }
+
+    [McpServerTool(Name = "set_message_flag", Destructive = false)]
+    [Description("Flags a message in the configured mailbox for follow-up, or clears its flag. " +
+                 "Returns the updated message as JSON { id, subject, from, received, isRead, hasAttachments, preview, flagStatus }.")]
+    public async Task<string> SetMessageFlagAsync(
+        [Description("Message id, as returned by list_messages, search_messages or get_message.")] string id,
+        [Description("true to flag the message for follow-up, false to clear the flag.")] bool flagged,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            RequireGraphId(id, nameof(id));
+            var message = await client.SetFlagAsync(id, flagged, cancellationToken);
             return JsonSerializer.Serialize(message, JsonOptions);
         }
         catch (Exception ex) when (ex is not McpException)

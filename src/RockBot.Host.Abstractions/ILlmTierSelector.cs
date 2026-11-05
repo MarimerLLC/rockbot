@@ -67,6 +67,9 @@ public static class TierRoutingRules
 
     /// <summary>The selector is pinned to one tier (<c>LLM:FixedTier</c>).</summary>
     public const string Fixed = "fixed";
+
+    /// <summary>The spawning caller passed an explicit <c>tier_hint</c> to spawn_subagent, bypassing keyword classification.</summary>
+    public const string SubagentTierHint = "subagent-tier-hint";
 }
 
 /// <summary>

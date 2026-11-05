@@ -190,6 +190,34 @@ internal sealed class FileScheduledTaskStore : IScheduledTaskStore
         }
     }
 
+    public async Task RecordRunAsync(string name, long inputTokens, long outputTokens, double costUsd)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var tasks = await ReadAllAsync();
+            if (!tasks.TryGetValue(name, out var existing))
+                return;
+
+            var updated = existing with
+            {
+                RunCount = existing.RunCount + 1,
+                TotalInputTokens = existing.TotalInputTokens + inputTokens,
+                TotalOutputTokens = existing.TotalOutputTokens + outputTokens,
+                TotalCostUsd = existing.TotalCostUsd + costUsd,
+            };
+            tasks[name] = updated;
+            await WriteAllAsync(tasks);
+            _logger.LogDebug(
+                "Recorded run for scheduled task '{Name}': +{InputTokens} in / +{OutputTokens} out / +${Cost:F4} — totals now {RunCount} runs, ${TotalCost:F4}",
+                name, inputTokens, outputTokens, costUsd, updated.RunCount, updated.TotalCostUsd);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     // ── Internal ─────────────────────────────────────────────────────────────
 
     private async Task<Dictionary<string, ScheduledTask>> ReadAllAsync()

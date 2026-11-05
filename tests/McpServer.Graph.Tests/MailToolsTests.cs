@@ -33,6 +33,21 @@ public sealed class MailToolsTests : GraphServerTestBase
         Assert.IsFalse(m.GetProperty("isRead").GetBoolean());
         Assert.IsTrue(m.GetProperty("hasAttachments").GetBoolean());
         Assert.AreEqual("Please pay", m.GetProperty("preview").GetString());
+        Assert.AreEqual("notFlagged", m.GetProperty("flagStatus").GetString());
+    }
+
+    [TestMethod]
+    public async Task ListMessages_IncludesFlagStatusWhenPresent()
+    {
+        Graph.Respond = _ => FakeGraphHandler.Json("""
+            {"value":[{"id":"AAMk-1_x=","subject":"Follow up","from":{"emailAddress":{"name":"Alice","address":"alice@example.com"}},
+              "receivedDateTime":"2026-10-12T09:30:00Z","isRead":false,"hasAttachments":false,"bodyPreview":"...",
+              "flag":{"flagStatus":"flagged"}}]}
+            """);
+
+        var messages = await CallOkAsync("list_messages");
+
+        Assert.AreEqual("flagged", messages[0].GetProperty("flagStatus").GetString());
     }
 
     [TestMethod]
@@ -45,6 +60,25 @@ public sealed class MailToolsTests : GraphServerTestBase
         var query = Uri.UnescapeDataString(uri.Query);
         StringAssert.Contains(query, "$top=5");
         StringAssert.Contains(query, "isRead eq false");
+    }
+
+    [TestMethod]
+    public async Task ListMessages_FlaggedOnly_FiltersOnFlagStatus()
+    {
+        await CallOkAsync("list_messages", new() { ["flagged_only"] = true });
+
+        var query = Uri.UnescapeDataString(Graph.Single.RequestUri!.Query);
+        StringAssert.Contains(query, "flag/flagStatus eq 'flagged'");
+        Assert.IsFalse(query.Contains("isRead eq false"));
+    }
+
+    [TestMethod]
+    public async Task ListMessages_UnreadAndFlaggedOnly_CombinesWithAnd()
+    {
+        await CallOkAsync("list_messages", new() { ["unread_only"] = true, ["flagged_only"] = true });
+
+        var query = Uri.UnescapeDataString(Graph.Single.RequestUri!.Query);
+        StringAssert.Contains(query, "isRead eq false and flag/flagStatus eq 'flagged'");
     }
 
     [TestMethod]
@@ -108,7 +142,8 @@ public sealed class MailToolsTests : GraphServerTestBase
             receivedDateTime = "2026-10-12T09:30:00Z",
             isRead = true,
             hasAttachments = false,
-            body = new { contentType = "text", content = body }
+            body = new { contentType = "text", content = body },
+            flag = new { flagStatus = "complete" }
         }));
 
         var message = await CallOkAsync("get_message", new() { ["id"] = "AAMk-1" });
@@ -121,12 +156,53 @@ public sealed class MailToolsTests : GraphServerTestBase
         Assert.IsTrue(message.GetProperty("bodyTruncated").GetBoolean());
         Assert.AreEqual("me@contoso.com", message.GetProperty("to")[0].GetString());
         Assert.AreEqual("Bob <bob@example.com>", message.GetProperty("from").GetString());
+        Assert.AreEqual("complete", message.GetProperty("flagStatus").GetString());
     }
 
     [TestMethod]
     public async Task GetMessage_UnsafeId_IsErrorWithoutCallingGraph()
     {
         var result = await CallAsync("get_message", new() { ["id"] = "x/../../other" });
+
+        Assert.IsTrue(result.IsError);
+        Assert.AreEqual(0, Graph.Requests.Count);
+    }
+
+    [TestMethod]
+    public async Task SetMessageFlag_Flags_SendsPatchWithFlagStatusFlagged()
+    {
+        Graph.Respond = _ => FakeGraphHandler.Json("""
+            {"id":"AAMk-1","subject":"Invoice","from":{"emailAddress":{"name":"Alice","address":"alice@example.com"}},
+              "receivedDateTime":"2026-10-12T09:30:00Z","isRead":false,"hasAttachments":false,"bodyPreview":"Please pay",
+              "flag":{"flagStatus":"flagged"}}
+            """);
+
+        var message = await CallOkAsync("set_message_flag", new() { ["id"] = "AAMk-1", ["flagged"] = true });
+
+        var request = Graph.Single;
+        Assert.AreEqual(HttpMethod.Patch, request.Method);
+        Assert.AreEqual("/v1.0/users/me%40contoso.com/messages/AAMk-1", request.RequestUri!.AbsolutePath);
+        Assert.AreEqual("flagged", Graph.BodyOf(0).GetProperty("flag").GetProperty("flagStatus").GetString());
+        Assert.AreEqual("flagged", message.GetProperty("flagStatus").GetString());
+    }
+
+    [TestMethod]
+    public async Task SetMessageFlag_Unflags_SendsPatchWithFlagStatusNotFlagged()
+    {
+        Graph.Respond = _ => FakeGraphHandler.Json("""
+            {"id":"AAMk-1","subject":"Invoice","from":{"emailAddress":{"name":"Alice","address":"alice@example.com"}},
+              "receivedDateTime":"2026-10-12T09:30:00Z","isRead":false,"hasAttachments":false,"bodyPreview":"Please pay"}
+            """);
+
+        await CallOkAsync("set_message_flag", new() { ["id"] = "AAMk-1", ["flagged"] = false });
+
+        Assert.AreEqual("notFlagged", Graph.BodyOf(0).GetProperty("flag").GetProperty("flagStatus").GetString());
+    }
+
+    [TestMethod]
+    public async Task SetMessageFlag_UnsafeId_IsErrorWithoutCallingGraph()
+    {
+        var result = await CallAsync("set_message_flag", new() { ["id"] = "x/../../other", ["flagged"] = true });
 
         Assert.IsTrue(result.IsError);
         Assert.AreEqual(0, Graph.Requests.Count);
@@ -173,7 +249,7 @@ public sealed class MailToolsTests : GraphServerTestBase
         string[] writes =
         [
             "create_event", "update_event", "delete_event", "respond_to_event", "create_contact", "update_contact",
-            "upload_drive_file", "create_drive_folder", "delete_drive_item"
+            "upload_drive_file", "create_drive_folder", "delete_drive_item", "set_message_flag"
         ];
         CollectionAssert.AreEquivalent(readOnly.Concat(writes).ToArray(), tools.Select(t => t.Name).ToArray());
 

@@ -15,7 +15,8 @@ public sealed record MessageSummary(
     DateTimeOffset? Received,
     bool IsRead,
     bool HasAttachments,
-    string? Preview);
+    string? Preview,
+    string FlagStatus);
 
 public sealed record MessageDetail(
     string Id,
@@ -28,7 +29,8 @@ public sealed record MessageDetail(
     bool HasAttachments,
     string Body,
     bool BodyTruncated,
-    IReadOnlyList<AttachmentInfo> Attachments);
+    IReadOnlyList<AttachmentInfo> Attachments,
+    string FlagStatus);
 
 /// <summary>An attachment's metadata. Kind is file, item (an attached email or event) or reference (a cloud link).</summary>
 public sealed record AttachmentInfo(string Id, string? Name, string Kind, string? ContentType, long Size, bool IsInline);
@@ -77,10 +79,10 @@ public sealed partial class GraphMailClient(GraphApi api, IOptions<GraphMailOpti
         ".txt", ".csv", ".tsv", ".json", ".xml", ".md", ".log", ".ics", ".vcf", ".yaml", ".yml", ".eml", ".html", ".htm", ".svg"
     };
 
-    private const string SummaryFields = "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview";
-    private const string DetailFields = "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,hasAttachments,body";
+    private const string SummaryFields = "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview,flag";
+    private const string DetailFields = "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,hasAttachments,body,flag";
 
-    public async Task<IReadOnlyList<MessageSummary>> ListMessagesAsync(string folder, int top, bool unreadOnly, CancellationToken ct)
+    public async Task<IReadOnlyList<MessageSummary>> ListMessagesAsync(string folder, int top, bool unreadOnly, bool flaggedOnly, CancellationToken ct)
     {
         var query = new List<(string, string)>
         {
@@ -89,11 +91,24 @@ public sealed partial class GraphMailClient(GraphApi api, IOptions<GraphMailOpti
             ("$orderby", "receivedDateTime desc")
         };
         // Graph rejects $orderby on a property absent from $filter, hence the always-true date clause.
-        if (unreadOnly)
-            query.Add(("$filter", "receivedDateTime ge 1900-01-01T00:00:00Z and isRead eq false"));
+        if (unreadOnly || flaggedOnly)
+        {
+            var clauses = new List<string> { "receivedDateTime ge 1900-01-01T00:00:00Z" };
+            if (unreadOnly) clauses.Add("isRead eq false");
+            if (flaggedOnly) clauses.Add("flag/flagStatus eq 'flagged'");
+            query.Add(("$filter", string.Join(" and ", clauses)));
+        }
 
         using var doc = await GetAsync($"{api.MailboxPath}/mailFolders/{Uri.EscapeDataString(folder)}/messages{Query(query)}", textBody: false, ct);
         return doc.RootElement.GetProperty("value").EnumerateArray().Select(ToSummary).ToList();
+    }
+
+    public async Task<MessageSummary> SetFlagAsync(string id, bool flagged, CancellationToken ct)
+    {
+        var patch = new { flag = new { flagStatus = flagged ? "flagged" : "notFlagged" } };
+        using var doc = await api.SendAsync(HttpMethod.Patch, $"{api.MailboxPath}/messages/{Uri.EscapeDataString(id)}", patch, "mail", ct)
+            ?? throw new McpException("Microsoft Graph did not return the updated message.");
+        return ToSummary(doc.RootElement);
     }
 
     public async Task<IReadOnlyList<MessageSummary>> SearchMessagesAsync(string search, int top, CancellationToken ct)
@@ -126,7 +141,8 @@ public sealed partial class GraphMailClient(GraphApi api, IOptions<GraphMailOpti
             HasAttachments: Bool(m, "hasAttachments"),
             Body: truncated ? body[..max] : body,
             BodyTruncated: truncated,
-            Attachments: attachments);
+            Attachments: attachments,
+            FlagStatus: FlagStatusOf(m));
     }
 
     public async Task<IReadOnlyList<AttachmentInfo>> ListAttachmentsAsync(string messageId, CancellationToken ct)
@@ -272,7 +288,13 @@ public sealed partial class GraphMailClient(GraphApi api, IOptions<GraphMailOpti
         Received: m.TryGetProperty("receivedDateTime", out var r) ? r.GetDateTimeOffset() : null,
         IsRead: Bool(m, "isRead"),
         HasAttachments: Bool(m, "hasAttachments"),
-        Preview: Str(m, "bodyPreview"));
+        Preview: Str(m, "bodyPreview"),
+        FlagStatus: FlagStatusOf(m));
+
+    private static string FlagStatusOf(JsonElement m) =>
+        m.TryGetProperty("flag", out var flag) && flag.ValueKind == JsonValueKind.Object
+            ? Str(flag, "flagStatus") ?? "notFlagged"
+            : "notFlagged";
 
     private Task<JsonDocument> GetAsync(string relativeUri, bool textBody, CancellationToken ct) =>
         textBody

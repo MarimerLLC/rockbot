@@ -56,8 +56,11 @@ public sealed class TaskDirectiveTools
             _taskName, content?.Length ?? 0);
 
         await _store.UpdateDirectiveAsync(_taskName, content ?? string.Empty);
-        return $"Directive for task '{_taskName}' updated ({(content ?? string.Empty).Length} chars). " +
+        var result = $"Directive for task '{_taskName}' updated ({(content ?? string.Empty).Length} chars). " +
                "It will be part of the system prompt on the next fire.";
+        if (FanOutAdvisory.MentionsFanOut(content))
+            result += "\n\n" + FanOutAdvisory.Message;
+        return result;
     }
 
     [Description(
@@ -83,8 +86,11 @@ public sealed class TaskDirectiveTools
             return $"Edit failed on the directive for task '{_taskName}': {result.Error}";
 
         var plural = result.ReplacementCount == 1 ? "occurrence" : "occurrences";
-        return $"Directive for task '{_taskName}' edited — replaced {result.ReplacementCount} {plural} " +
+        var confirmation = $"Directive for task '{_taskName}' edited — replaced {result.ReplacementCount} {plural} " +
                $"({result.OldLength} → {result.NewLength} chars). " +
                "It will be part of the system prompt on the next fire.";
+        if (FanOutAdvisory.MentionsFanOut(new_string))
+            confirmation += "\n\n" + FanOutAdvisory.Message;
+        return confirmation;
     }
 }

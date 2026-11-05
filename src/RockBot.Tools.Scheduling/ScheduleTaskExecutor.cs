@@ -47,6 +47,9 @@ internal sealed class ScheduleTaskExecutor(ISchedulerService scheduler, AgentClo
                 ? $"Scheduled task '{name}' with cron '{cron}'. Next fire: {next.Value:yyyy-MM-dd HH:mm:ss} ({clock.Zone.Id}). Current time: {now:yyyy-MM-dd HH:mm:ss}."
                 : $"Scheduled task '{name}' with cron '{cron}'. WARNING: no future occurrence found — task will never fire. Please cancel and reschedule with a valid future cron.";
 
+            if (FanOutAdvisory.MentionsFanOut(description))
+                confirmation += "\n\n" + FanOutAdvisory.Message;
+
             return new ToolInvokeResponse
             {
                 ToolCallId = request.ToolCallId,

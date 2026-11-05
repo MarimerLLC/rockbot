@@ -37,13 +37,20 @@ public sealed class SubagentManager(
         bool consolidate = true,
         int? maxIterations = null,
         string? originatingUserRequest = null,
-        IReadOnlyList<SubagentInput>? inputs = null)
+        IReadOnlyList<SubagentInput>? inputs = null,
+        ModelTier? tierHint = null)
     {
         originatingUserRequest = CapOriginatingRequest(originatingUserRequest);
 
         // #685: the spawning run's consequential-action scope (set by AgentLoopRunner.RunAsync on
         // this async flow). The subagent runs under it, as a subagent of that run.
         var actionGate = ActionGateContext.Scope?.ForSubagent();
+
+        // Cost fix: an unhinted spawn used to inherit the primary loop's much larger default
+        // (AgentHostOptions.MaxToolIterations), letting simple scout tasks run far longer than
+        // needed. Apply a tighter default here, before the research floor below can raise it
+        // back up for descriptions that genuinely need the room.
+        maxIterations ??= options.Value.DefaultMaxIterations;
 
         // #665: research and synthesis need room to search, read and cross-check. A cap the primary
         // set lower than the floor produced an outline written mostly from model priors.
@@ -87,7 +94,7 @@ public sealed class SubagentManager(
         sessionWorkRegistry?.LinkSession(subagentSessionId, primarySessionId);
         sessionWorkRegistry?.LinkSession($"subagent/{taskId}", primarySessionId);
 
-        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, inputs, actionGate, timeoutSpan, cts.Token);
+        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, inputs, actionGate, timeoutSpan, tierHint, cts.Token);
 
         var newEntry = new SubagentEntry
         {
@@ -152,6 +159,7 @@ public sealed class SubagentManager(
         IReadOnlyList<SubagentInput>? inputs,
         ActionGateScope? actionGate,
         TimeSpan timeout,
+        ModelTier? tierHint,
         CancellationToken ct)
     {
         // SubagentRunner.RunAsync handles all its own exit paths (success, failure,
@@ -163,7 +171,7 @@ public sealed class SubagentManager(
             await using var scope = scopeFactory.CreateAsyncScope();
             var runner = scope.ServiceProvider.GetRequiredService<SubagentRunner>();
             await runner.RunAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, timeout, ct,
-                originatingUserRequest: originatingUserRequest, inputs: inputs, actionGate: actionGate);
+                originatingUserRequest: originatingUserRequest, inputs: inputs, actionGate: actionGate, tierHint: tierHint);
         }
         catch (Exception ex)
         {

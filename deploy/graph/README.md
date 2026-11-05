@@ -1,13 +1,13 @@
 # Microsoft Graph mail, calendar and contacts (docker compose)
 
 Gives RockBot access to **one** Microsoft 365 mailbox through an Entra app registration
-(app-only / client credentials): mail read-only, calendar and contacts read/write. There's
+(app-only / client credentials): mail, calendar and contacts read/write. There's
 no extra licensed user and no interactive sign-in at runtime. The `graph-mcp` container is
 the only thing that holds the client secret. The agent sees these tools:
 
 | Area | Tools |
 |---|---|
-| Mail (read-only) | `list_messages`, `search_messages`, `get_message` |
+| Mail | `list_messages`, `search_messages`, `get_message`, `get_attachment` (read); `set_message_flag` (write) |
 | Calendar | `list_events`, `get_event`, `find_free_time` (read); `create_event`, `update_event`, `respond_to_event`, `delete_event` (write) |
 | Contacts | `list_contacts`, `search_contacts`, `get_contact` (read); `create_contact`, `update_contact` (write; no delete) |
 | Files (opt-in, see below) | `list_drive_items`, `get_drive_item`, `search_drive_items`, `download_drive_file` (read); `upload_drive_file`, `create_drive_folder`, `delete_drive_item` (write) |
@@ -19,10 +19,10 @@ the only thing that holds the client secret. The agent sees these tools:
 - other files are returned as base64. A capture rule that `04-enable-compose.sh` adds to the
   `graph-mail` entry in `mcp.json` makes the agent's bridge save them under
   `/rockbot/shared/attachments/` and hand the model the path, so they never land in its context.
-  `Mail.Read` covers attachments; no extra permission is needed.
+  `Mail.ReadWrite` covers attachments; no extra permission is needed.
 
 Scoping is done with Exchange **RBAC for Applications**: the app has no tenant-wide
-Graph permission in Entra, only `Application Mail.Read`, `Application Calendars.ReadWrite`
+Graph permission in Entra, only `Application Mail.ReadWrite`, `Application Calendars.ReadWrite`
 and `Application Contacts.ReadWrite` on a management scope that matches your mailbox.
 Every other mailbox returns 403.
 
@@ -44,7 +44,7 @@ and changes only what's missing.
 | Script | What it does |
 |---|---|
 | `01-create-app.sh --mailbox …` | Finds or creates the app registration and service principal (`az ad app/sp`), mints a client secret only if none is stored, and writes `GRAPH_*` into `deploy/docker-compose/.env` (gitignored). |
-| `02-scope-mailbox.sh` | In the PowerShell container: Exchange service principal, a management scope matching your mailbox, and `Application Mail.Read`, `Application Calendars.ReadWrite` and `Application Contacts.ReadWrite` role assignments on that scope. Prints `Test-ServicePrincipalAuthorization`. |
+| `02-scope-mailbox.sh` | In the PowerShell container: Exchange service principal, a management scope matching your mailbox, and `Application Mail.ReadWrite`, `Application Calendars.ReadWrite` and `Application Contacts.ReadWrite` role assignments on that scope. Prints `Test-ServicePrincipalAuthorization`. |
 | `03-verify.sh [--other-user …]` | Gets a token with the app's credentials and checks your mail, calendar and contacts give 200, the other user's give 403, and the app has no Entra-level Graph application permissions. |
 | `04-enable-compose.sh` | Adds `graph` to `COMPOSE_PROFILES`, starts `graph-mcp`, and registers `graph-mail` in the agent's `mcp.json` if the agent is running. |
 
@@ -127,6 +127,9 @@ in place rather than adding a duplicate.
 - **Deleting.** `delete_event` cancels meetings you organise (attendees get a cancellation) and
   silently removes other events; to decline an invitation it uses `respond_to_event`. Contacts
   can't be deleted through RockBot.
+- **Flagging.** `set_message_flag` only sets or clears the follow-up flag on a message in your
+  own mailbox — no one else sees it and nothing is sent, so it's lower risk than the calendar
+  and contacts writes above.
 - `GRAPH_MAILBOX` is fixed per container. The tools have no mailbox argument, and unknown
   arguments are rejected.
 - Secrets created here expire after 1 year by default (`--secret-years N`).

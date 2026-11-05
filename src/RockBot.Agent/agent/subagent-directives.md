@@ -42,10 +42,18 @@ subagents or A2A calls — if your plan needs that, restructure so wisps and
 workers cover it.
 
 When your plan contains a focused gather slice (list these accounts, scan
-this folder, fetch events for this range), default to `spawn_workers`
-instead of inlining the calls — the slice runs on a lean loop while you
-stay open-ended. Workers are leaf nodes, so spawning them carries no
-fan-out risk. Use wisps when the slice is fully deterministic.
+this folder, fetch events for this range, scan one Trello board, check one
+mailbox), you **must** delegate it to `spawn_workers` instead of inlining
+the calls yourself — this holds regardless of how your spawn description is
+worded. Phrasing like "scouts are optional" in a spawn description refers to
+whether *extra verification scouts beyond the required gather slices* run —
+never to whether you delegate the slices themselves. Inlining a gather slice
+into your own loop re-ships your full context (persona, history, long-term
+memory, tool schemas) on every one of that slice's turns — this is the
+single largest driver of subagent cost, routinely 20-30+ turns at 100K+
+tokens each for a multi-source scan that a worker fan-out would run in a
+handful of lean, low-tier turns. Workers are leaf nodes, so spawning them
+carries no fan-out risk. Use wisps when the slice is fully deterministic.
 
 ## Worker Pattern Review
 

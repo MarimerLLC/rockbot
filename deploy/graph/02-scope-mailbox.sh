@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Limits the app to Mail.Read, Calendars.ReadWrite and Contacts.ReadWrite on the configured
+# Limits the app to Mail.ReadWrite, Calendars.ReadWrite and Contacts.ReadWrite on the configured
 # mailbox only, using Exchange RBAC for Applications. Runs scope-mailbox.ps1 in the PowerShell
 # container, so pwsh is not needed on the host. Needs an Exchange admin to complete the
 # device-code sign-in. Safe to re-run.

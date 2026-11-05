@@ -1,3 +1,5 @@
+using RockBot.Host;
+
 namespace RockBot.Subagent;
 
 /// <summary>
@@ -17,7 +19,8 @@ public interface ISubagentManager
         string primarySessionId, CancellationToken ct,
         string? batchId = null, bool consolidate = true, int? maxIterations = null,
         string? originatingUserRequest = null,
-        IReadOnlyList<SubagentInput>? inputs = null);
+        IReadOnlyList<SubagentInput>? inputs = null,
+        ModelTier? tierHint = null);
 
     /// <summary>
     /// Cancels a running subagent by task ID. Returns true if found and cancelled.

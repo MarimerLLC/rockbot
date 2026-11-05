@@ -31,6 +31,18 @@ internal sealed class SpawnSubagentExecutor(
         int? maxIterations = args.TryGetValue("max_iterations", out var miEl) && miEl.TryGetInt32(out var mi) ? mi : null;
         bool consolidate = !args.TryGetValue("consolidate", out var consEl) || consEl.ValueKind != JsonValueKind.False;
 
+        ModelTier? tierHint = null;
+        if (args.TryGetValue("tier_hint", out var thEl) && thEl.ValueKind == JsonValueKind.String)
+        {
+            tierHint = thEl.GetString()?.Trim().ToLowerInvariant() switch
+            {
+                "low" => ModelTier.Low,
+                "balanced" => ModelTier.Balanced,
+                "high" => ModelTier.High,
+                _ => null
+            };
+        }
+
         var primarySessionId = request.SessionId ?? "unknown";
 
         // #666: the user request the spawning loop serves (set by AgentLoopRunner.RunAsync on this
@@ -54,7 +66,7 @@ internal sealed class SpawnSubagentExecutor(
 
         var taskId = await manager.SpawnAsync(description, context, timeoutMinutes, primarySessionId, ct,
             batchId: request.BatchId, consolidate: consolidate, maxIterations: maxIterations,
-            originatingUserRequest: originatingUserRequest, inputs: inputs);
+            originatingUserRequest: originatingUserRequest, inputs: inputs, tierHint: tierHint);
 
         return new ToolInvokeResponse
         {

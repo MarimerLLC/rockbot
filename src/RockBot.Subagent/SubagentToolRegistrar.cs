@@ -32,7 +32,12 @@ internal sealed class SubagentToolRegistrar(
             },
             "max_iterations": {
               "type": "integer",
-              "description": "Optional maximum tool-calling iterations for this subagent (default: model-specific, typically 25). Increase for tasks that require many sequential tool calls. When the subagent will use spawn_wisps for parallel work, the default is usually sufficient."
+              "description": "Optional maximum tool-calling iterations for this subagent (default: 15, raised automatically for research/synthesis-shaped descriptions). Increase for tasks that require many sequential tool calls. When the subagent will use spawn_wisps for parallel work, the default is usually sufficient."
+            },
+            "tier_hint": {
+              "type": "string",
+              "enum": ["low", "balanced", "high"],
+              "description": "Optional. Pins this subagent's model tier instead of letting it be scored from the description text. Pass 'low' for read-only scouts, simple lookups, or status checks — keyword scoring has no downward bias for subagents, so an otherwise-simple task can land on a more expensive tier just from words like 'research' or 'verify' appearing in its description. Reserve 'balanced'/'high' for genuinely complex delegated work."
             },
             "consolidate": {
               "type": "boolean",
@@ -72,6 +77,12 @@ internal sealed class SubagentToolRegistrar(
                 and send a final result when complete. Use this when a task would take many tool calls
                 or a long time to complete. The subagent automatically sees earlier subagent results and
                 files from this conversation; pass `inputs` to name the exact keys or files it must use.
+                Every turn re-sends this subagent's full context (system prompt, tool schemas, memory) —
+                for a short, read-only, single-pass task (a status check, a quick lookup), prefer doing
+                it directly in your own primary loop instead of spawning anything; spawn_subagent is for
+                work that genuinely needs its own isolated multi-turn loop. When you do spawn one for
+                simple scout/lookup work, pass `tier_hint: "low"` to avoid incidental keyword scoring
+                landing it on a more expensive tier.
                 """,
             ParametersSchema = SpawnSchema,
             Source = "subagent"

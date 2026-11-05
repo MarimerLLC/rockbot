@@ -75,13 +75,20 @@ internal sealed class SubagentRunner(
         IReadOnlyList<SubagentInput>? inputs = null,
         // #685: the consequential-action scope captured at spawn (already marked as a subagent's).
         // Null leaves RunAsync to inherit whatever scope flows in, or none.
-        ActionGateScope? actionGate = null)
+        ActionGateScope? actionGate = null,
+        // Cost fix: an explicit tier the spawning caller requested (spawn_subagent's `tier_hint`),
+        // bypassing keyword classification. KeywordTierSelector applies no downward bias for
+        // Origin="subagent", so a "read-only scout" description can still score into Balanced/High
+        // purely from incidental keyword matches — this lets the caller pin it instead.
+        ModelTier? tierHint = null)
     {
         var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
+        if (tierHint is { } hint)
+            classification = classification with { Tier = hint, Rule = TierRoutingRules.SubagentTierHint };
         var tier = classification.Tier;
         logger.LogInformation(
-            "Subagent {TaskId} starting (session {SessionId}) tier={Tier} (score={Score:F3})",
-            taskId, subagentSessionId, tier, classification.ComplexityScore);
+            "Subagent {TaskId} starting (session {SessionId}) tier={Tier} (score={Score:F3}) rule={Rule}",
+            taskId, subagentSessionId, tier, classification.ComplexityScore, classification.Rule);
 
         var subagentNamespace = $"subagent/{taskId}";
         var whiteboardCategory = $"subagent-whiteboards/{taskId}";

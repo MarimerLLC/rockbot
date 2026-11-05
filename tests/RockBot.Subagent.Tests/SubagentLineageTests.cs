@@ -374,7 +374,8 @@ public class SubagentLineageTests
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
             string primarySessionId, CancellationToken ct, string? batchId = null, bool consolidate = true,
             int? maxIterations = null, string? originatingUserRequest = null,
-            IReadOnlyList<SubagentInput>? inputs = null)
+            IReadOnlyList<SubagentInput>? inputs = null,
+            ModelTier? tierHint = null)
         {
             SpawnCount++;
             LastInputs = inputs;

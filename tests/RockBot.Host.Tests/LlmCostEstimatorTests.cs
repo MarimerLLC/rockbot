@@ -48,6 +48,34 @@ public class LlmCostEstimatorTests
     }
 
     [TestMethod]
+    [DataRow("anthropic/claude-sonnet-5.5", 12.00)]
+    [DataRow("anthropic/claude-haiku-5.5", 0.60)]
+    [DataRow("anthropic/claude-opus-5.5", 24.00)]
+    public void EstimateCost_BuiltInDefaults_CoverDeployedClaude5Models(string modelId, double expected)
+    {
+        // Regression: the previous built-in table had no entry for any 5.x Claude model,
+        // so every live call silently priced at $0 — see the daily-briefing-1600-delta
+        // incident (2.9M real tokens, $0 reported).
+        using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
+
+        Assert.AreEqual(expected, estimator.EstimateCost(modelId, 1_000_000, 1_000_000), 0.0001);
+    }
+
+    [TestMethod]
+    public void EstimateCost_LongestPrefixWins_ForClaudePointReleases()
+    {
+        // claude-sonnet-5.5 must match before claude-sonnet-5, even though the shorter
+        // prefix is a literal substring of the longer one.
+        using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
+
+        var sonnet55 = estimator.EstimateCost("anthropic/claude-sonnet-5.5", 1_000_000, 0);
+        var sonnet5 = estimator.EstimateCost("anthropic/claude-sonnet-5", 1_000_000, 0);
+
+        Assert.AreEqual(2.00, sonnet55, 0.0001);
+        Assert.AreEqual(2.00, sonnet5, 0.0001);
+    }
+
+    [TestMethod]
     public void EstimateCost_ReturnsZero_ForUnknownModel()
     {
         using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
