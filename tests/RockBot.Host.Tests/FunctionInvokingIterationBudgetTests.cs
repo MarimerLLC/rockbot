@@ -145,6 +145,64 @@ public class FunctionInvokingIterationBudgetTests
         StringAssert.Contains(notRun.Result?.ToString(), "Not run");
     }
 
+    [TestMethod]
+    [DataRow(false, DisplayName = "model answers once tools are gone")]
+    [DataRow(true, DisplayName = "model keeps calling unknown tools")]
+    public async Task UnknownFunctionCalls_CountAgainstBudget_AndEndTheLoop(bool ignoreMissingTools)
+    {
+        // FICC answers an unknown function name itself, without calling InvokeFunctionAsync, so
+        // the budget must be counted at the model-request boundary.
+        var probe = AIFunctionFactory.Create((int x) => $"r{x}", "probe");
+        var model = new ScriptedModel(ignoreMissingTools, callName: "nosuch");
+        using var client = CreateClient(model);
+
+        ChatResponse response;
+        using (MaxIterationsOverrideContext.Set(3))
+            response = await client.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, "unknown")], new ChatOptions { Tools = [probe] })
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.AreEqual(3, model.ToolRequests("unknown"), "rounds of unknown calls count against the budget");
+        if (ignoreMissingTools)
+        {
+            // The final request plus the summary follow-up; the model is not asked again after
+            // it answers the final request with more unknown calls.
+            Assert.AreEqual(2, model.ToollessRequests("unknown"));
+        }
+        else
+        {
+            Assert.AreEqual(1, model.ToollessRequests("unknown"));
+            Assert.AreEqual("unknown done", response.Text);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("probe", false, DisplayName = "known tool")]
+    [DataRow("nosuch", true, DisplayName = "unknown tool, model never stops")]
+    public async Task Streaming_RunsUnderItsOwnBudget(string callName, bool ignoreMissingTools)
+    {
+        var probe = AIFunctionFactory.Create((int x) => $"r{x}", "probe");
+        var model = new ScriptedModel(ignoreMissingTools, callName);
+        using var client = CreateClient(model);
+
+        var updates = new List<ChatResponseUpdate>();
+        using (MaxIterationsOverrideContext.Set(2))
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await foreach (var update in client.GetStreamingResponseAsync(
+                [new ChatMessage(ChatRole.User, "stream")], new ChatOptions { Tools = [probe] }, cts.Token))
+            {
+                updates.Add(update);
+            }
+        }
+
+        Assert.AreEqual(2, model.ToolRequests("stream"));
+        Assert.AreEqual(1, model.ToollessRequests("stream"), "the final request offers no tools");
+        if (!ignoreMissingTools)
+            Assert.AreEqual("stream done", updates.ToChatResponse().Text);
+        Assert.AreEqual(int.MaxValue, client.MaximumIterationsPerRequest);
+    }
+
     private static RockBotFunctionInvokingChatClient CreateClient(IChatClient model) =>
         new(model, progressNotifier: null, toolCallLog: null,
             new ModelBehavior { MaxToolIterationsOverride = DefaultBudget },
@@ -157,11 +215,11 @@ public class FunctionInvokingIterationBudgetTests
             new StubWorkingMemory(), Options.Create(new AgentHostOptions()), NullLogger.Instance);
 
     /// <summary>
-    /// Keys each conversation on its first user text. A request offering tools gets a
-    /// <c>probe</c> call; one offering none gets "{name} done" (or, with
-    /// <paramref name="ignoreMissingTools"/>, another <c>probe</c> call).
+    /// Keys each conversation on its first user text. A request offering tools gets a call to
+    /// <paramref name="callName"/>; one offering none gets "{name} done" (or, with
+    /// <paramref name="ignoreMissingTools"/>, another call).
     /// </summary>
-    private sealed class ScriptedModel(bool ignoreMissingTools = false) : IChatClient
+    private sealed class ScriptedModel(bool ignoreMissingTools = false, string callName = "probe") : IChatClient
     {
         private readonly ConcurrentDictionary<string, int> _toolRequests = new();
         private readonly ConcurrentDictionary<string, int> _toollessRequests = new();
@@ -180,7 +238,7 @@ public class FunctionInvokingIterationBudgetTests
             if (hasTools || ignoreMissingTools)
             {
                 var results = list.Sum(m => m.Contents.OfType<FunctionResultContent>().Count());
-                var call = new FunctionCallContent(Guid.NewGuid().ToString("N"), "probe",
+                var call = new FunctionCallContent(Guid.NewGuid().ToString("N"), callName,
                     new Dictionary<string, object?> { ["x"] = results });
                 return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, [call])));
             }
@@ -188,9 +246,17 @@ public class FunctionInvokingIterationBudgetTests
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, $"{name} done")));
         }
 
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var response = await GetResponseAsync(messages, options, cancellationToken);
+            foreach (var update in response.ToChatResponseUpdates())
+            {
+                await Task.Yield(); // resume on another step, as a real stream would
+                yield return update;
+            }
+        }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }

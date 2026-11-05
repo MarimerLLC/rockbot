@@ -63,25 +63,40 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         /// <summary>Tool rounds this call may run before its final request, which offers no tools.</summary>
         public int MaxIterations { get; } = maxIterations;
 
-        private volatile bool _budgetSpent;
+        /// <summary>
+        /// Model requests this call's tool loop has sent, counted by
+        /// <see cref="IterationBudgetChatClient"/>. FICC sends one request, then one more after
+        /// each tool round, whether or not the round's functions resolved. So request
+        /// <c>n</c> offers tools only while <c>n &lt;= MaxIterations</c>.
+        /// </summary>
+        public int ModelRequests;
+
+        private volatile bool _loopEnded;
 
         /// <summary>
-        /// Set once the last allowed tool round runs: the next model request carries no tools,
-        /// so the model has to answer (what FICC does when it reaches its own limit).
+        /// Set once the tool loop has returned, so the summary follow-up isn't counted against
+        /// the budget.
         /// </summary>
-        public bool BudgetSpent
+        public bool LoopEnded
         {
-            get => _budgetSpent;
-            set => _budgetSpent = value;
+            get => _loopEnded;
+            set => _loopEnded = value;
         }
     }
 
     /// <summary>
-    /// The current call's state. Outside <see cref="GetResponseAsync"/> (a streaming call, which
-    /// this client doesn't override) a fresh state per tool invocation tracks nothing across
-    /// calls, which is the safe default.
+    /// The current call's state. Every call sets one (<see cref="GetResponseAsync"/> and
+    /// <see cref="GetStreamingResponseAsync"/>); the fallback, a fresh state per tool invocation,
+    /// tracks nothing across calls, which is the safe default.
     /// </summary>
-    private CallState CurrentCallState => _callState.Value ?? new CallState(_defaultMaxIterations);
+    private CallState CurrentCallState => _callState.Value ?? NewCallState();
+
+    /// <summary>
+    /// A fresh state for a call starting on this async flow. Its budget is the per-request
+    /// override (e.g. a subagent spawned with an elevated budget) or the tier default.
+    /// </summary>
+    private CallState NewCallState() =>
+        new(Math.Max(1, MaxIterationsOverrideContext.Value ?? _defaultMaxIterations));
 
     public RockBotFunctionInvokingChatClient(
         IChatClient innerClient,
@@ -92,7 +107,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         IWorkingMemory workingMemory,
         IOptions<AgentHostOptions> hostOptions,
         ILogger logger,
-        IncompleteReplyCheck? incompleteCheck = null) : base(WrapInner(innerClient, out var callState))
+        IncompleteReplyCheck? incompleteCheck = null) : base(WrapInner(innerClient, logger, out var callState))
     {
         _callState = callState;
         _incompleteCheck = incompleteCheck ?? new IncompleteReplyCheck();
@@ -108,9 +123,9 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             modelBehavior.MaxToolIterationsOverride ?? hostOptions.Value.MaxToolIterations);
 
         // Only a ceiling, never written again: concurrent calls on this shared instance each
-        // enforce their own budget (CallState.MaxIterations) in InvokeFunctionAsync and
-        // IterationBudgetChatClient. Callers may ask for any budget (a subagent's
-        // max_iterations), so there is no fixed highest value to use instead (#757).
+        // enforce their own budget (CallState.MaxIterations) in IterationBudgetChatClient and
+        // InvokeFunctionAsync. Callers may ask for any budget (a subagent's max_iterations),
+        // so there is no fixed highest value to use instead (#757).
         MaximumIterationsPerRequest = int.MaxValue;
     }
 
@@ -119,11 +134,35 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
     /// tool-less request would enter), then the typed-tool surface and context notes. The
     /// gate shares the call-state slot with this client.
     /// </summary>
-    private static IChatClient WrapInner(IChatClient innerClient, out AsyncLocal<CallState?> callState)
+    private static IChatClient WrapInner(
+        IChatClient innerClient, ILogger logger, out AsyncLocal<CallState?> callState)
     {
         callState = new AsyncLocal<CallState?>();
         return new IterationBudgetChatClient(
-            new TypedToolSurfaceChatClient(new ContextNoteChatClient(innerClient)), callState);
+            new TypedToolSurfaceChatClient(new ContextNoteChatClient(innerClient)), callState, logger);
+    }
+
+    /// <summary>
+    /// Gives a streaming call its own state too, so its budget is enforced the same way. An
+    /// async iterator resumes on its consumer's execution context after each <c>yield</c>, so
+    /// the state is set again before each step of the inner loop.
+    /// </summary>
+    public override async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var callState = NewCallState();
+        _callState.Value = callState;
+        await using var updates = base.GetStreamingResponseAsync(messages, options, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+        while (true)
+        {
+            _callState.Value = callState;
+            if (!await updates.MoveNextAsync())
+                yield break;
+            yield return updates.Current;
+        }
     }
 
     protected override async ValueTask<object?> InvokeFunctionAsync(
@@ -133,21 +172,19 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         var callContent = context.CallContent;
 
         // #757: the per-call iteration budget. FunctionInvocationContext.Iteration is 0-based.
-        // On the streaming path there is no call state, so the default budget applies.
-        var budgetState = _callState.Value;
-        var budget = budgetState?.MaxIterations ?? _defaultMaxIterations;
+        // IterationBudgetChatClient counts the rounds and strips tools from the final request;
+        // this catches a call the model makes anyway in answer to it.
+        var budget = CurrentCallState.MaxIterations;
         if (context.Iteration >= budget)
         {
-            // The model asked for tools after the final request, which offered none. FICC never
-            // runs such calls; end the loop without running, recording or announcing this one.
+            // FICC never runs such calls; end the loop without running, recording or announcing
+            // this one.
             context.Terminate = true;
             _logger.LogWarning(
                 "Not running tool {Name}(callId={CallId}): iteration budget of {Budget} reached",
                 callContent.Name, callContent.CallId, budget);
             return $"Not run: the tool-iteration budget for this request ({budget}) has been reached.";
         }
-        if (context.Iteration == budget - 1 && budgetState is not null)
-            budgetState.BudgetSpent = true; // last allowed round: the next request offers no tools
 
         var argsSummary = callContent.Arguments is { Count: > 0 }
             ? string.Join(", ", callContent.Arguments.Select(a => $"{a.Key}={a.Value}"))
@@ -468,9 +505,8 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         // A fresh state for this call. Setting an AsyncLocal inside an async method is scoped to
         // this call's flow: the tool invocations below see it, and a concurrent call on the same
         // instance (another run on this tier) keeps its own.
-        // Its iteration budget comes from a per-request override (e.g. a subagent spawned with an
-        // elevated budget) or the tier default; the shared instance is never changed (#757).
-        var callState = new CallState(Math.Max(1, MaxIterationsOverrideContext.Value ?? _defaultMaxIterations));
+        // Its iteration budget lives in that state; the shared instance is never changed (#757).
+        var callState = NewCallState();
         _callState.Value = callState;
 
         _logger.LogInformation(
@@ -507,9 +543,10 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
                 used, max);
             await TrimLargeToolResultsAsync(messageList, max);
             // FICC restarts its iteration count for the retry, so the retry gets a full budget.
-            callState.BudgetSpent = false;
+            Volatile.Write(ref callState.ModelRequests, 0);
             response = await base.GetResponseAsync(messageList, options, cancellationToken);
         }
+        callState.LoopEnded = true;
 
         // If the response looks like max-iterations was hit (incomplete setup phrase),
         // make one follow-up call asking for a backward-looking summary.
@@ -714,28 +751,64 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
     }
 
     /// <summary>
-    /// Sits directly below FICC and reproduces its final request at the limit: once the current
-    /// call's last allowed tool round has run (<see cref="CallState.BudgetSpent"/>), the next
-    /// request goes out with no <c>Tools</c> and no <c>ToolMode</c>, so the model has to answer.
-    /// The base class can't do this per call, since its limit is the shared instance's (#757).
-    /// Streaming passes through: it has no call state and is bounded by the default budget.
+    /// Sits directly below FICC and enforces the current call's iteration budget at the one
+    /// boundary every round crosses, whether or not the round's functions resolved (an unknown
+    /// function name never reaches <see cref="InvokeFunctionAsync"/>). The base class can't do
+    /// this per call, since its limit is the shared instance's (#757).
+    /// <list type="bullet">
+    /// <item>Request <c>MaxIterations + 1</c> is FICC's final request at the limit: it goes out with
+    /// no <c>Tools</c> and no <c>ToolMode</c>, so the model has to answer.</item>
+    /// <item>A later request means the model answered that one with calls anyway and none of them
+    /// resolved (a known one ends the loop in <see cref="InvokeFunctionAsync"/>). The model isn't
+    /// asked again: an empty reply ends the loop.</item>
+    /// </list>
     /// </summary>
-    private sealed class IterationBudgetChatClient(IChatClient innerClient, AsyncLocal<CallState?> callState)
+    private sealed class IterationBudgetChatClient(
+        IChatClient innerClient, AsyncLocal<CallState?> callState, ILogger logger)
         : DelegatingChatClient(innerClient)
     {
         public override Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default) =>
+            Gate(ref options)
+                ? base.GetResponseAsync(messages, options, cancellationToken)
+                : Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, [])));
+
+        public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            Gate(ref options)
+                ? base.GetStreamingResponseAsync(messages, options, cancellationToken)
+                : AsyncEnumerable.Empty<ChatResponseUpdate>();
+
+        /// <summary>
+        /// Counts this request against the call's budget and strips tools from the final one.
+        /// Returns false when the loop is past its final request and must end.
+        /// </summary>
+        private bool Gate(ref ChatOptions? options)
         {
-            if (options is not null && callState.Value is { BudgetSpent: true })
+            if (callState.Value is not { LoopEnded: false } state)
+                return true;
+
+            var request = Interlocked.Increment(ref state.ModelRequests);
+            if (request > state.MaxIterations + 1)
+            {
+                logger.LogWarning(
+                    "Ending tool loop: the model kept calling tools that could not be resolved after " +
+                    "its final request (iteration budget {Budget})", state.MaxIterations);
+                return false;
+            }
+
+            if (request > state.MaxIterations && options is not null)
             {
                 options = options.Clone();
                 options.Tools = null;
                 options.ToolMode = null;
             }
 
-            return base.GetResponseAsync(messages, options, cancellationToken);
+            return true;
         }
     }
 }
