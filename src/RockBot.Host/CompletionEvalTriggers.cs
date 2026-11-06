@@ -614,7 +614,9 @@ public static class CompletionEvalTriggers
         foreach (var call in calls.Take(MaxToolCallsListed))
         {
             var outcome = call.Succeeded ? "ok" : "FAILED";
-            var effect = ToolSideEffects.IsSideEffecting(call) ? ", changes state" : string.Empty;
+            var effect = ToolSideEffects.IsSideEffecting(call) ? ", changes state"
+                : ToolSideEffects.IsAgentOwnState(call) ? OwnStateTag
+                : string.Empty;
             var detail = call.Detail is null ? string.Empty : $" — {call.Detail}";
             sb.AppendLine($"- {DisplayName(call)} ({outcome}{effect}){detail}");
             if (call.Nested is { Count: > 0 } nested)
@@ -622,8 +624,76 @@ public static class CompletionEvalTriggers
         }
         if (calls.Count > MaxToolCallsListed)
             sb.AppendLine($"- … and {calls.Count - MaxToolCallsListed} more");
+        AppendTally(sb, calls);
         return sb.ToString().TrimEnd();
     }
+
+    /// <summary>The tag on a call that changed only the agent's own state (#763).</summary>
+    private const string OwnStateTag = ", agent's own state";
+
+    /// <summary>The heading of the per-tool tally under the agent's tool calls (#763).</summary>
+    public const string CallsByToolHeading = "Calls by tool (every call this turn, including any not listed above):";
+
+    /// <summary>
+    /// Appends ok/FAILED counts per tool for all of <paramref name="calls"/>, in order of first use
+    /// (#763). A batch tool's nested calls are counted under their own names, marked
+    /// "(via batch tool)". Without the tally the evaluator set two failed searches against a claim of
+    /// fourteen deletes. Nothing is appended for fewer than two calls.
+    /// </summary>
+    private static void AppendTally(StringBuilder sb, IReadOnlyList<LoopToolCall> calls)
+    {
+        var order = new List<string>();
+        var counts = new Dictionary<string, (int Ok, int Failed)>(StringComparer.Ordinal);
+        void Count(string key, bool succeeded)
+        {
+            if (!counts.TryGetValue(key, out var c))
+            {
+                order.Add(key);
+                c = (0, 0);
+            }
+            counts[key] = succeeded ? (c.Ok + 1, c.Failed) : (c.Ok, c.Failed + 1);
+        }
+
+        var total = 0;
+        foreach (var call in calls)
+        {
+            Count(DisplayName(call), call.Succeeded);
+            total++;
+            if (call.Nested is not { Count: > 0 } nested) continue;
+            foreach (var n in nested)
+            {
+                Count($"{DisplayName(n)} (via batch tool)", n.Succeeded);
+                total++;
+            }
+        }
+        if (total < 2) return;
+
+        sb.AppendLine(CallsByToolHeading);
+        foreach (var key in order)
+        {
+            var (ok, failed) = counts[key];
+            var parts = new List<string>(2);
+            if (ok > 0) parts.Add($"{ok} ok");
+            if (failed > 0) parts.Add($"{failed} FAILED");
+            sb.AppendLine($"- {key}: {string.Join(", ", parts)}");
+        }
+    }
+
+    // A relayed summary's name is already the display name ("mcp_invoke_tool → save_memory").
+    private static bool IsAgentOwnState(SubagentToolCallSummary call)
+    {
+        const string arrow = " → ";
+        var at = call.Name.LastIndexOf(arrow, StringComparison.Ordinal);
+        var name = at >= 0
+            ? call.Name[(at + arrow.Length)..]
+            : ToolSideEffects.EffectiveToolName(call.Name, arguments: null);
+        return ToolSideEffects.IsAgentOwnStateName(name);
+    }
+
+    private static string EffectTag(SubagentToolCallSummary call) =>
+        call.ChangesState ? ", changes state"
+        : IsAgentOwnState(call) ? OwnStateTag
+        : string.Empty;
 
     /// <summary>
     /// The compact form of a subagent's tool calls carried on its result (#683): at most
@@ -741,7 +811,7 @@ public static class CompletionEvalTriggers
     private static string FormatRelayedCall(SubagentToolCallSummary call)
     {
         var outcome = call.Succeeded ? "ok" : "FAILED";
-        var effect = call.ChangesState ? ", changes state" : string.Empty;
+        var effect = EffectTag(call);
         var detail = call.Detail is null ? string.Empty : $" — {call.Detail}";
         var args = CompactArguments(call.Arguments, MaxRelayedArgumentCharsShown);
         var line = args is null
@@ -765,7 +835,7 @@ public static class CompletionEvalTriggers
         foreach (var call in nested)
         {
             var outcome = call.Succeeded ? "ok" : "FAILED";
-            var effect = call.ChangesState ? ", changes state" : string.Empty;
+            var effect = EffectTag(call);
             var detail = call.Detail is null ? string.Empty : $" — {call.Detail}";
             sb.AppendLine($"  ↳ {call.Name} ({outcome}{effect}){detail}");
         }

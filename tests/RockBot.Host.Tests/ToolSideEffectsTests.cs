@@ -7,6 +7,22 @@ namespace RockBot.Host.Tests;
 public class ToolSideEffectsTests
 {
     [TestMethod]
+    [DataRow("task_create", null, true)]
+    [DataRow("task_update", null, true)]
+    [DataRow("save_to_working_memory", null, true)]
+    [DataRow("delete_memory", null, true)]
+    [DataRow("report_progress", null, true)]
+    [DataRow("mcp_invoke_tool", "server_name=x, tool_name=task_create", true)]
+    [DataRow("spawn_workers", null, false)]       // hands real work to workers
+    [DataRow("mcp_answer", null, false)]          // an answer delivered to the MCP caller
+    [DataRow("file_write", null, false)]
+    [DataRow("search_memory", null, false)]
+    public void AgentOwnState(string name, string? args, bool expected)
+    {
+        Assert.AreEqual(expected, ToolSideEffects.IsAgentOwnState(new LoopToolCall(name, args, true)), $"{name} {args}");
+    }
+
+    [TestMethod]
     [DataRow("file_write", null)]
     [DataRow("file_edit", null)]
     [DataRow("file_delete", null)]

@@ -138,6 +138,24 @@ public static partial class ToolSideEffects
     public static bool IsBookkeeping(string toolName) => BookkeepingTools.Contains(toolName);
 
     /// <summary>
+    /// True when a call to <paramref name="toolName"/> (already unwrapped) changes only the agent's
+    /// own state: its per-run task list, working or long-term memory, progress reports, session
+    /// settings. The completion evaluator is told these are never external changes (#763).
+    /// Bookkeeping that reaches past the agent is excluded: <c>spawn_workers</c> hands real work to
+    /// workers, and <c>mcp_answer</c> delivers an answer to the MCP caller.
+    /// </summary>
+    public static bool IsAgentOwnStateName(string toolName) =>
+        IsBookkeeping(toolName)
+        && !string.Equals(toolName, SpawnWorkersToolName, StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(toolName, McpAnswerToolName, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when <paramref name="call"/> changes only the agent's own state (#763); see <see cref="IsAgentOwnStateName"/>.</summary>
+    public static bool IsAgentOwnState(LoopToolCall call) =>
+        IsAgentOwnStateName(EffectiveToolName(call.Name, call.Arguments));
+
+    private const string McpAnswerToolName = "mcp_answer";
+
+    /// <summary>
     /// True when <paramref name="call"/> changed something outside the agent's own state, or tried
     /// to. A batch tool such as <c>spawn_wisps</c> counts as changing state when any call it made
     /// on the agent's behalf (<see cref="LoopToolCall.Nested"/>, #686) does.

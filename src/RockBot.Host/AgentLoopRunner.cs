@@ -387,6 +387,15 @@ public sealed partial class AgentLoopRunner(
           reply that claims seven events when one create succeeded and six FAILED is INCOMPLETE,
           and the reason names both numbers. A batch call marked FAILED (for example "6 of 7
           wisps failed") did not do all its work, even when parts of it succeeded.
+        - A call tagged "agent's own state" changed only the agent's own bookkeeping: its per-run
+          task list (task_create, task_update, the agent's planning scratchpad), working memory,
+          long-term memory, progress reports or session settings. It is never an external change
+          and never an unrequested change, and the reply need not mention it. It still backs a
+          claim about that state (for example delete_memory calls back "deleted 14 memories").
+        - When the reply states a number about one kind of action ("archived 14 entries", "sent 3
+          emails"), compare it only with the calls of the tool that did that action, using the
+          "Calls by tool" tally under the tool calls. A failure of a different tool (a failed
+          search) is not a failure of that action and does not lower its count.
         - The "What the user asked for" section says "UserAskedFor: instruction" or
           "UserAskedFor: information-only". For information-only, the user's message gave no
           instruction (it shared context or information, or asked a question): skip questions 1–2
