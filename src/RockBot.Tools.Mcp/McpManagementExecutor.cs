@@ -23,6 +23,7 @@ namespace RockBot.Tools.Mcp;
 ///   <item><c>mcp_read_resource</c> — reads one resource by the server's URI</item>
 ///   <item><c>mcp_answer</c> — answers a question a server handed back mid-call (registered only while a server can)</item>
 ///   <item><c>mcp_cancel_task</c> — stops a background task (registered only while a server runs them)</item>
+///   <item><c>mcp_watch_resource</c> / <c>mcp_unwatch_resource</c> — watch a resource for changes (registered only while a server allows it)</item>
 /// </list>
 /// </summary>
 public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer, IAsyncDisposable
@@ -96,11 +97,93 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
             "mcp_read_resource"       => ReadResourceAsync(request, ct),
             McpHandbackContext.AnswerToolName => AnswerAsync(request, ct),
             CancelTaskToolName        => CancelTaskAsync(request, ct),
+            WatchResourceToolName     => WatchResourceAsync(request, ct),
+            UnwatchResourceToolName   => UnwatchResourceAsync(request, ct),
             _ => Task.FromResult(Error(request, $"Unknown management tool: {request.ToolName}"))
         };
 
     /// <summary>The management tool that stops a background task (registered only while a server runs them).</summary>
     public const string CancelTaskToolName = "mcp_cancel_task";
+
+    /// <summary>The management tool that watches a resource for changes (registered only while a server allows it).</summary>
+    public const string WatchResourceToolName = "mcp_watch_resource";
+
+    /// <summary>The management tool that stops watching a resource.</summary>
+    public const string UnwatchResourceToolName = "mcp_unwatch_resource";
+
+    // ── mcp_watch_resource / mcp_unwatch_resource ───────────────────────────
+
+    /// <summary>
+    /// Asks the bridge to tell this session, as a new turn, when a resource changes. Only a run
+    /// whose session outlives the call can take that: a user conversation or a subagent, and not
+    /// a wisp's steps, which run inside their parent's call.
+    /// </summary>
+    private async Task<ToolInvokeResponse> WatchResourceAsync(ToolInvokeRequest request, CancellationToken ct)
+    {
+        var args = ParseArguments(request.Arguments);
+        if (!TryGetString(args, "server_name", out var serverName))
+            return Error(request, "Missing required parameter: server_name");
+        if (!TryGetString(args, "uri", out var uri))
+            return Error(request, "Missing required parameter: uri");
+
+        if (!McpTaskContext.CanReceiveLater(request.SessionId))
+        {
+            return Error(request,
+                "Only a user conversation or a subagent can watch a resource: its changes arrive later as new messages, " +
+                "and this run won't be there to receive them. Read it now with mcp_read_resource instead.");
+        }
+
+        // A change is answered in a later turn; it runs under this request's authorization (#685).
+        var gate = ActionGateContext.Scope;
+        var envelope = await SendRequestAsync(new McpWatchResourceRequest
+        {
+            ServerName = serverName,
+            Uri = uri,
+            SessionId = request.SessionId,
+            RunOrigin = gate is null ? null : ActionGateScope.LogName(gate.Origin),
+            UserAskedFor = gate?.UserAskedFor is { } askedFor ? CompletionEvalTriggers.LogName(askedFor) : null,
+        }, ct, _proxy.ResponseTimeout);
+
+        return WatchResponse(request, envelope, "watch the resource");
+    }
+
+    /// <summary>Stops a watch this session holds.</summary>
+    private async Task<ToolInvokeResponse> UnwatchResourceAsync(ToolInvokeRequest request, CancellationToken ct)
+    {
+        var args = ParseArguments(request.Arguments);
+        if (!TryGetString(args, "server_name", out var serverName))
+            return Error(request, "Missing required parameter: server_name");
+        if (!TryGetString(args, "uri", out var uri))
+            return Error(request, "Missing required parameter: uri");
+
+        var envelope = await SendRequestAsync(new McpUnwatchResourceRequest
+        {
+            ServerName = serverName,
+            Uri = uri,
+            SessionId = request.SessionId,
+        }, ct);
+
+        return WatchResponse(request, envelope, "stop watching the resource");
+    }
+
+    private static ToolInvokeResponse WatchResponse(ToolInvokeRequest request, MessageEnvelope? envelope, string what)
+    {
+        if (envelope is null)
+            return Error(request, $"Timed out waiting for the bridge to {what}");
+
+        var response = envelope.GetPayload<McpWatchResourceResponse>();
+        if (response is null)
+            return Error(request, $"Failed to deserialize the {request.ToolName} response");
+        if (response.Error is not null)
+            return Error(request, response.Error);
+
+        return new ToolInvokeResponse
+        {
+            ToolCallId = request.ToolCallId,
+            ToolName = request.ToolName,
+            Content = response.Message ?? "Done.",
+        };
+    }
 
     // ── mcp_cancel_task ──────────────────────────────────────────────────────
 

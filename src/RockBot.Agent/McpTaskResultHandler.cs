@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using RockBot.A2A;
 using RockBot.Agent.McpBridge.Handback;
 using RockBot.Agent.McpBridge.Tasks;
+using RockBot.Agent.McpBridge.Watches;
 using RockBot.Host;
 using RockBot.Llm;
 using RockBot.Memory;
@@ -110,7 +111,7 @@ internal sealed class McpTaskResultHandler(
     /// </summary>
     internal async Task<bool> ProcessAsync(McpTaskResult message, CancellationToken ct)
     {
-        var deliveryId = $"{message.TaskId}/{message.Kind}/{message.QuestionId}";
+        var deliveryId = $"{message.TaskId}/{message.Kind}/{message.QuestionId}/{message.ContentHash}";
         if (Handled.Count > 10_000)
             Handled.Clear();
         if (!Handled.TryAdd(deliveryId, 0))
@@ -182,8 +183,10 @@ internal sealed class McpTaskResultHandler(
     /// <summary>The turn that tells the agent what arrived. The content is the tool's, not an instruction.</summary>
     internal static string SyntheticTurn(McpTaskResult message, string? key)
     {
-        if (message.Kind is McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion)
+        if (message.Kind is McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindWatchEnded)
             return message.Content;
+        if (message.Kind == McpTaskResult.KindResourceUpdated)
+            return McpWatchText.UpdateTurn(message, key, InlineResultMaxChars);
 
         if (message.Kind == McpTaskResult.KindEnded)
         {
@@ -269,7 +272,13 @@ internal sealed class McpTaskResultHandler(
         {
             logger.LogError(ex, "Could not respond to background task {TaskId}'s {Kind}", message.TaskId, message.Kind);
             finalContent = $"{Subject(message)} " +
-                           $"{(message.Kind is McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion ? "is waiting for an answer" : "has finished")}, " +
+                           $"{message.Kind switch
+                           {
+                               McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion => "is waiting for an answer",
+                               McpTaskResult.KindResourceUpdated => "changed",
+                               McpTaskResult.KindWatchEnded => "is no longer watched",
+                               _ => "has finished",
+                           }}, " +
                            $"but I couldn't respond to it: {ex.Message}";
         }
 
@@ -295,7 +304,7 @@ internal sealed class McpTaskResultHandler(
         // #418: keep a finished task's result after conversation history expires. A question is
         // waiting on the user, not a result.
         if (resultArchive is not null && responded
-            && message.Kind is not (McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion))
+            && message.Kind is not (McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindWatchEnded))
             await resultArchive.ArchiveAsync(
                 SavedResponseSources.BackgroundTask,
                 $"{message.ServerName}/{message.ToolName} result",
@@ -303,10 +312,14 @@ internal sealed class McpTaskResultHandler(
     }
 
     /// <summary>What the delivery is about, for the fixed texts used when the agent can't respond.</summary>
-    private static string Subject(McpTaskResult message) =>
-        message.Kind is McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindEscalatedResult
-            ? $"The {message.ServerName}/{message.ToolName} call subagent {message.TaskId} passed to you"
-            : $"The background task {message.TaskId} ({message.ServerName}/{message.ToolName})";
+    private static string Subject(McpTaskResult message) => message.Kind switch
+    {
+        McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindEscalatedResult =>
+            $"The {message.ServerName}/{message.ToolName} call subagent {message.TaskId} passed to you",
+        McpTaskResult.KindResourceUpdated or McpTaskResult.KindWatchEnded =>
+            $"The watched resource {message.ResourceUri ?? message.ToolName} on {message.ServerName}",
+        _ => $"The background task {message.TaskId} ({message.ServerName}/{message.ToolName})",
+    };
 
     /// <summary>
     /// A running subagent finds the result among its outputs; one that has exited gets it folded
@@ -339,7 +352,9 @@ internal sealed class McpTaskResultHandler(
         }
 
         var subagentTaskId = origin.StartsWith("subagent/", StringComparison.Ordinal) ? origin["subagent/".Length..] : origin;
-        var kind = message.Kind == McpTaskResult.KindCompleted && !message.IsError ? NotificationKind.Result : NotificationKind.Error;
+        var kind = message.Kind is McpTaskResult.KindCompleted or McpTaskResult.KindResourceUpdated && !message.IsError
+            ? NotificationKind.Result
+            : NotificationKind.Error;
         var wmKey = $"{primary}/notifications/mcp/{message.TaskId}/{kind.ToString().ToLowerInvariant()}";
         await workingMemory.SetAsync(wmKey, message.Content, ttl: ResultTtl,
             category: "mcp-task-late-notification", tags: [message.ServerName, message.TaskId]);

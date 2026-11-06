@@ -76,6 +76,29 @@ confirm_overwrite"):
 - The CLI, which can't show a form, still gets the question in prose and answers through
   `mcp_answer`.
 
+## Resource watches
+
+The server also serves watchable text resources for resource watches (`mcp_watch_resource`,
+#768; `design/mcp-bridge.md`, "Resource watches"):
+
+| Piece | What it is |
+|---|---|
+| `fixture://watch/{name}` | A resource template. Reading a name that hasn't been set fails as not found |
+| `set_watch_resource(name, text)` | Sets (or creates) a resource and pushes the change to every watcher |
+| `delete_watch_resource(name)` | Deletes it; a watcher's next read fails, which ends its watch |
+
+Its `subscriptions/listen` handler works like the scheduler's: it acknowledges only names that
+exist, tags each notification with the listen request's id, sends no keepalives, and ends each
+stream after 25 minutes (`Fixture__StreamMinutes` to change it) so the client reconnects.
+
+To try it, add `"subscriptions": true` to the fixture's `mcp.json` entry, then in a chat:
+
+- ask the agent to set `fixture://watch/poll` to some text, then to watch it;
+- change it with `set_watch_resource` from another conversation (or `rockbot` CLI session), and
+  check that a new turn arrives in the watching conversation with the new text, once per burst;
+- restart the agent pod, change the text, and check the change still arrives after it reconnects;
+- delete it with `delete_watch_resource` and check the conversation is told the watch ended.
+
 ## Cleaning up
 
 ```bash

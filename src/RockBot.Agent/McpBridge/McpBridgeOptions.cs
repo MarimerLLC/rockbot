@@ -129,6 +129,49 @@ public sealed class McpBridgeOptions
     public int TaskPollFailureLimit { get; set; } = 10;
 
     /// <summary>
+    /// The durable ledger of resource watches (<c>mcp_watch_resource</c>), which lets a restarted
+    /// bridge subscribe again and catch what changed meanwhile. It holds the server, URI, session
+    /// and last content hash of each watch, never the content. A relative path resolves next to
+    /// <see cref="ConfigPath"/>. Default <c>mcp/watches.json</c> beside <c>mcp.json</c>.
+    /// </summary>
+    public string WatchLedgerPath { get; set; } = "mcp/watches.json";
+
+    /// <summary>Most resources one session can watch at once.</summary>
+    public int MaxWatchesPerSession { get; set; } = 10;
+
+    /// <summary>
+    /// Most resource watches the bridge holds at once, across sessions. Kept at or below what a
+    /// server takes on one stream (the scheduler refuses a stream of more than 50 URIs).
+    /// </summary>
+    public int MaxWatches { get; set; } = 50;
+
+    /// <summary>Days after which a watch ends on its own, and its session is told.</summary>
+    public int WatchTtlDays { get; set; } = 14;
+
+    /// <summary>
+    /// How long the bridge waits after a resource's first update notification before it reads the
+    /// resource, so a burst of updates becomes one turn.
+    /// </summary>
+    public int WatchDebounceMs { get; set; } = 5000;
+
+    /// <summary>
+    /// Longest a <c>subscriptions/listen</c> stream stays open before the bridge reopens it. The
+    /// bearer token is checked only when a stream opens, and a quiet stream sends nothing, so this
+    /// bounds both how long a stream outlives its token and how long a silently dead one goes
+    /// unnoticed. Every reopen re-reads the watched resources, so nothing is missed.
+    /// </summary>
+    public int SubscriptionStreamMaxMinutes { get; set; } = 25;
+
+    /// <summary>Shortest wait before reopening a stream that failed or ended right away.</summary>
+    public int SubscriptionReconnectMinMs { get; set; } = 1000;
+
+    /// <summary>Longest wait before reopening a stream that keeps failing.</summary>
+    public int SubscriptionReconnectMaxMs { get; set; } = 300_000;
+
+    /// <summary>How long a new stream may take to acknowledge its subscriptions.</summary>
+    public int SubscriptionAckTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
     /// Where the bridge keeps the OAuth tokens of servers the user signed in to (<c>auth.oauth</c>
     /// in <c>mcp.json</c>, #738): one file per server, readable only by the agent. A relative path
     /// resolves next to <see cref="ConfigPath"/>. Default <c>secrets/mcp-oauth</c>, which is

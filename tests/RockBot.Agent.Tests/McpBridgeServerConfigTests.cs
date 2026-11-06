@@ -392,6 +392,7 @@ public class McpBridgeServerConfigTests
         ["attachments", (Action<McpBridgeServerConfig>)(c => c.Attachments = new RockBot.Agent.McpBridge.Attachments.AttachmentManifest())],
         ["toolTimeoutMs", (Action<McpBridgeServerConfig>)(c => c.ToolTimeoutMs = 5_000)],
         ["transportMode", (Action<McpBridgeServerConfig>)(c => c.TransportMode = "sse")],
+        ["subscriptions", (Action<McpBridgeServerConfig>)(c => c.Subscriptions = true)],
     ];
 
     [TestMethod]

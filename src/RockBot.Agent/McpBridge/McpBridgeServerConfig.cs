@@ -134,6 +134,19 @@ public sealed class McpBridgeServerConfig
     public bool RunsTasks => Tasks == true;
 
     /// <summary>
+    /// Let the agent watch this server's resources (<c>mcp_watch_resource</c>): the bridge holds a
+    /// <c>subscriptions/listen</c> stream (SEP-2575, protocol 2026-07-28) for the watched URIs, and
+    /// an update reaches the watching session as a new turn. Only for a server that speaks that
+    /// protocol and offers resource subscriptions, and only for sessions that outlive the call (a
+    /// user conversation or a subagent). Like <see cref="Tasks"/> it is the operator's policy:
+    /// <c>mcp_register_server</c> can't set it. See <c>design/mcp-bridge.md</c>, "Resource watches".
+    /// </summary>
+    public bool? Subscriptions { get; set; }
+
+    /// <summary>Whether this entry lets the agent watch resources.</summary>
+    public bool WatchesResources => Subscriptions == true;
+
+    /// <summary>
     /// True when the agent may unregister this entry: it created the entry with
     /// <c>mcp_register_server</c>, and the entry carries nothing that tool can't express (#603).
     /// </summary>
@@ -161,6 +174,7 @@ public sealed class McpBridgeServerConfig
         || ToolTimeoutMs is not null
         || Tasks is not null
         || TaskTimeoutMinutes is not null
+        || Subscriptions is not null
         || !string.Equals(TransportMode?.Trim() ?? "auto", "auto", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>

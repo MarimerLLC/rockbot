@@ -1,3 +1,5 @@
+extern alias fixture;
+
 using ModelContextProtocol.Extensions.Tasks;
 using RockBot.Host;
 using RockBot.Tools;
@@ -53,6 +55,44 @@ public class McpTasksAgentSideTests
             Assert.IsNull(agent.Registry.GetExecutor(McpManagementExecutor.CancelTaskToolName),
                 "every other run's tool list stays as it was");
         }
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task TheWatchTools_AreOfferedOnlyWhileAServerAllowsWatches_AndTravelTheRealExecutor()
+    {
+        var store = new fixture::McpServer.ElicitationFixture.Watches.WatchableResources();
+        store.Set("poll", "v1");
+        var uri = fixture::McpServer.ElicitationFixture.Watches.WatchableResources.UriFor("poll");
+
+        await using (var without = await McpWatchesEndToEndTests.StartAsync(store, policy: false))
+        {
+            var agent = await McpWrapperEndToEndTests.ConnectAgentAsync(without, McpWrapperMode.Off);
+            Assert.IsNull(agent.Registry.GetExecutor(McpManagementExecutor.WatchResourceToolName),
+                "every other run's tool list stays as it was");
+        }
+
+        await using var harness = await McpWatchesEndToEndTests.StartAsync(store);
+        var withWatches = await McpWrapperEndToEndTests.ConnectAgentAsync(harness, McpWrapperMode.Off);
+        Assert.IsNotNull(withWatches.Registry.GetExecutor(McpManagementExecutor.WatchResourceToolName));
+        Assert.IsNotNull(withWatches.Registry.GetExecutor(McpManagementExecutor.UnwatchResourceToolName));
+
+        var args = $$"""{"server_name":"fixture","uri":"{{uri}}"}""";
+        var watched = await CallAsync(withWatches, McpManagementExecutor.WatchResourceToolName, args);
+        Assert.IsFalse(watched.IsError, watched.Content);
+        StringAssert.Contains(watched.Content, "Watching");
+
+        // A wisp's steps run inside their parent's call: never a later message.
+        using (McpTaskContext.Suppress())
+        {
+            var inWisp = await CallAsync(withWatches, McpManagementExecutor.WatchResourceToolName, args, session: "session/other");
+            Assert.IsTrue(inWisp.IsError);
+            StringAssert.Contains(inWisp.Content, "Only a user conversation or a subagent");
+        }
+
+        var unwatched = await CallAsync(withWatches, McpManagementExecutor.UnwatchResourceToolName, args);
+        Assert.IsFalse(unwatched.IsError, unwatched.Content);
+        StringAssert.Contains(unwatched.Content, "Stopped watching");
     }
 
     [TestMethod]

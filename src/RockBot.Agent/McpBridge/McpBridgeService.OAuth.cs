@@ -56,11 +56,15 @@ public sealed partial class McpBridgeService
     private string SignInTopic => $"{UserProxy.UserProxyTopics.McpSignIn}.{_agentName}";
 
     private McpOAuthTokenStore OAuthTokens => LazyInitializer.EnsureInitialized(ref _oauthTokens, () =>
-        new McpOAuthTokenStore(
+    {
+        var store = new McpOAuthTokenStore(
             Path.IsPathRooted(_options.OAuthTokenDirectory)
                 ? _options.OAuthTokenDirectory
                 : Path.Combine(Path.GetDirectoryName(_configPath) ?? AppContext.BaseDirectory, _options.OAuthTokenDirectory),
-            _logger));
+            _logger);
+        store.TokensStored += OnOAuthTokensStored;
+        return store;
+    });
 
     /// <summary>Whether the server needs the user to sign in before the bridge can reach it.</summary>
     internal bool IsSignInRequired(string serverName) => _signInRequired.ContainsKey(serverName);

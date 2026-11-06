@@ -65,4 +65,11 @@ public sealed record McpServerSummary
     /// <c>mcp_cancel_task</c>.
     /// </summary>
     public bool Tasks { get; init; }
+
+    /// <summary>
+    /// The agent can watch this server's resources (<c>"subscriptions": true</c> in its operator
+    /// entry, it speaks the 2026-07-28 protocol, and it offers resource subscriptions). While any
+    /// connected server can, the agent offers <c>mcp_watch_resource</c> and <c>mcp_unwatch_resource</c>.
+    /// </summary>
+    public bool Subscriptions { get; init; }
 }
