@@ -642,53 +642,68 @@ public static class CompletionEvalTriggers
     /// </summary>
     private static void AppendTally(StringBuilder sb, IReadOnlyList<LoopToolCall> calls)
     {
-        var order = new List<string>();
-        var counts = new Dictionary<string, (int Ok, int Failed)>(StringComparer.Ordinal);
-        void Count(string key, bool succeeded)
-        {
-            if (!counts.TryGetValue(key, out var c))
-            {
-                order.Add(key);
-                c = (0, 0);
-            }
-            counts[key] = succeeded ? (c.Ok + 1, c.Failed) : (c.Ok, c.Failed + 1);
-        }
-
-        var total = 0;
+        var tally = new TallyBuilder();
         foreach (var call in calls)
         {
-            Count(DisplayName(call), call.Succeeded);
-            total++;
-            if (call.Nested is not { Count: > 0 } nested) continue;
-            foreach (var n in nested)
-            {
-                Count($"{DisplayName(n)} (via batch tool)", n.Succeeded);
-                total++;
-            }
+            tally.Add(DisplayName(call), call.Succeeded ? 1 : 0, call.Succeeded ? 0 : 1);
+
+            // A batch tool that trimmed what it attached (spawn_wisps keeps 50) reports exact
+            // totals; counting only the attached calls would undercount a correct claim.
+            var nested = call.NestedTotals
+                ?? (call.Nested is { Count: > 0 } attached ? TallyByTool(attached) : null);
+            if (nested is null) continue;
+            foreach (var t in nested)
+                tally.Add($"{t.Name} (via batch tool)", t.Ok, t.Failed);
         }
-        if (total < 2) return;
+        if (tally.Total < 2) return;
 
         sb.AppendLine(CallsByToolHeading);
-        foreach (var key in order)
+        foreach (var t in tally.Result())
         {
-            var (ok, failed) = counts[key];
             var parts = new List<string>(2);
-            if (ok > 0) parts.Add($"{ok} ok");
-            if (failed > 0) parts.Add($"{failed} FAILED");
-            sb.AppendLine($"- {key}: {string.Join(", ", parts)}");
+            if (t.Ok > 0) parts.Add($"{t.Ok} ok");
+            if (t.Failed > 0) parts.Add($"{t.Failed} FAILED");
+            sb.AppendLine($"- {t.Name}: {string.Join(", ", parts)}");
         }
     }
 
-    // A relayed summary's name is already the display name ("mcp_invoke_tool → save_memory").
-    private static bool IsAgentOwnState(SubagentToolCallSummary call)
+    /// <summary>
+    /// Per-tool ok/failed counts of <paramref name="calls"/> by display name, in order of first use
+    /// (#763). A batch tool reports these through <see cref="ToolCallOutcome.ReportNestedTotals"/>
+    /// before it trims the calls it attaches.
+    /// </summary>
+    public static IReadOnlyList<ToolCallTally> TallyByTool(IEnumerable<LoopToolCall> calls)
     {
-        const string arrow = " → ";
-        var at = call.Name.LastIndexOf(arrow, StringComparison.Ordinal);
-        var name = at >= 0
-            ? call.Name[(at + arrow.Length)..]
-            : ToolSideEffects.EffectiveToolName(call.Name, arguments: null);
-        return ToolSideEffects.IsAgentOwnStateName(name);
+        var tally = new TallyBuilder();
+        foreach (var call in calls)
+            tally.Add(DisplayName(call), call.Succeeded ? 1 : 0, call.Succeeded ? 0 : 1);
+        return tally.Result();
     }
+
+    private sealed class TallyBuilder
+    {
+        private readonly List<string> _order = [];
+        private readonly Dictionary<string, (int Ok, int Failed)> _counts = new(StringComparer.Ordinal);
+
+        public int Total { get; private set; }
+
+        public void Add(string name, int ok, int failed)
+        {
+            if (!_counts.TryGetValue(name, out var c))
+                _order.Add(name);
+            _counts[name] = (c.Ok + ok, c.Failed + failed);
+            Total += ok + failed;
+        }
+
+        public IReadOnlyList<ToolCallTally> Result() =>
+            _order.Select(n => new ToolCallTally(n, _counts[n].Ok, _counts[n].Failed)).ToList();
+    }
+
+    // A relayed summary's name is already the display name. A proxied ("mcp_invoke_tool → …") or
+    // typed ("server__tool") name runs on an MCP server, so it never gets the local exemption.
+    private static bool IsAgentOwnState(SubagentToolCallSummary call) =>
+        !call.Name.Contains(" → ", StringComparison.Ordinal)
+        && ToolSideEffects.IsAgentOwnStateName(call.Name);
 
     private static string EffectTag(SubagentToolCallSummary call) =>
         call.ChangesState ? ", changes state"

@@ -12,7 +12,8 @@ public class ToolSideEffectsTests
     [DataRow("save_to_working_memory", null, true)]
     [DataRow("delete_memory", null, true)]
     [DataRow("report_progress", null, true)]
-    [DataRow("mcp_invoke_tool", "server_name=x, tool_name=task_create", true)]
+    [DataRow("mcp_invoke_tool", "server_name=x, tool_name=task_create", false)] // runs on an MCP server
+    [DataRow("todo__task_create", null, false)]                                  // typed MCP wrapper
     [DataRow("spawn_workers", null, false)]       // hands real work to workers
     [DataRow("mcp_answer", null, false)]          // an answer delivered to the MCP caller
     [DataRow("file_write", null, false)]

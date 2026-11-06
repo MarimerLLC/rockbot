@@ -576,6 +576,9 @@ internal sealed class SpawnWispsExecutor(
         var (handledFailedWrites, writes) = CountHandledFailedWrites(batch);
         if (calls.Count > MaxReportedNestedCalls)
         {
+            // #763: the evaluator checks claimed counts against per-tool totals, so report them
+            // for every call before trimming what is attached.
+            outcome.ReportNestedTotals(CompletionEvalTriggers.TallyByTool(calls));
             calls = calls
                 .Select((call, index) => (Call: call, Index: index,
                     Rank: !call.Succeeded || ToolSideEffects.IsSideEffecting(call) ? 0 : 1))

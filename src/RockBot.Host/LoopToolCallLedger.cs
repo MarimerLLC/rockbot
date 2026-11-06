@@ -20,7 +20,17 @@ public sealed record LoopToolCall(string Name, string? Arguments, bool Succeeded
     /// seven nested creates had failed.
     /// </summary>
     public IReadOnlyList<LoopToolCall>? Nested { get; init; }
+
+    /// <summary>
+    /// Per-tool ok/failed counts of every call the batch tool made (#763), when it attached only
+    /// some of them as <see cref="Nested"/>. Null when <see cref="Nested"/> is complete.
+    /// </summary>
+    public IReadOnlyList<ToolCallTally>? NestedTotals { get; init; }
 }
+
+/// <summary>How many calls of one tool succeeded and failed (#763).</summary>
+/// <param name="Name">The tool's display name, e.g. <c>mcp_invoke_tool → send_mail</c>.</param>
+public sealed record ToolCallTally(string Name, int Ok, int Failed);
 
 /// <summary>
 /// The tool calls made during one <see cref="AgentLoopRunner.RunAsync"/> run, in order. Unlike
@@ -65,6 +75,7 @@ public sealed class LoopToolCallLedger
         {
             Detail = outcome?.Detail,
             Nested = nested is { Count: > 0 } ? nested : null,
+            NestedTotals = outcome?.NestedTotals,
         };
         lock (_lock) _calls.Add(call);
         if (_observer is null) return;
@@ -144,6 +155,18 @@ public sealed class ToolCallOutcome
     public void AddNested(IEnumerable<LoopToolCall> calls)
     {
         lock (_lock) _nested.AddRange(calls);
+    }
+
+    /// <summary>
+    /// Per-tool counts of every call the tool made (#763), set when it attaches only some of them
+    /// through <see cref="AddNested"/>. Null when the attached calls are complete.
+    /// </summary>
+    public IReadOnlyList<ToolCallTally>? NestedTotals { get; private set; }
+
+    /// <summary>Records per-tool counts of all the calls the tool made, before it trims what it attaches (#763).</summary>
+    public void ReportNestedTotals(IReadOnlyList<ToolCallTally> totals)
+    {
+        lock (_lock) NestedTotals = totals;
     }
 
     /// <summary>A snapshot of the nested calls recorded so far.</summary>

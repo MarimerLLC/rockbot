@@ -1099,15 +1099,40 @@ public class CompletionEvalTriggersTests
     }
 
     [TestMethod]
-    public void FormatRelayedWork_TaskListCall_IsTaggedAgentsOwnState()
+    public void FormatRelayedWork_TaskListCall_IsTaggedAgentsOwnState_OnlyWhenLocal()
     {
         var relayed = new RelayedSubagentWork("abc", CompletionEvalTriggers.SummarizeForRelay(
-            [Call("task_update"), Call("mcp_invoke_tool", "server_name=x, tool_name=task_create")]));
+            [Call("task_update"), Call("mcp_invoke_tool", "server_name=x, tool_name=task_create"), Call("todo__task_create")]));
 
         var section = CompletionEvalTriggers.FormatRelayedWork(relayed);
 
         StringAssert.Contains(section, "- task_update (ok, agent's own state)");
-        StringAssert.Contains(section, "- mcp_invoke_tool → task_create (ok, agent's own state)");
+        // The same names on an MCP server may change external data: no exemption.
+        Assert.IsFalse(section.Contains("task_create (ok, agent's own state)", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_McpServerTaskCreate_IsNotTaggedAgentsOwnState()
+    {
+        var text = CompletionEvalTriggers.FormatToolCalls(
+            [Call("mcp_invoke_tool", "server_name=x, tool_name=task_create"), Call("todo__task_create")]);
+
+        Assert.IsFalse(text.Contains("agent's own state", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_TallyUsesReportedNestedTotals_WhenTheBatchTrimmedItsCalls()
+    {
+        // spawn_wisps attaches at most 50 nested calls; 60 creates all succeeded.
+        var batch = new LoopToolCall("spawn_wisps", null, true)
+        {
+            Nested = Enumerable.Range(0, 50).Select(_ => Call("calendar-mcp__create_event")).ToList(),
+            NestedTotals = [new ToolCallTally("calendar-mcp__create_event → create_event", 60, 0)],
+        };
+
+        var text = CompletionEvalTriggers.FormatToolCalls([batch]);
+
+        StringAssert.Contains(text, "- calendar-mcp__create_event → create_event (via batch tool): 60 ok");
     }
 
     [TestMethod]
