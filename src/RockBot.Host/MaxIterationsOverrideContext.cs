@@ -4,8 +4,10 @@ namespace RockBot.Host;
 /// Ambient per-async-flow override for the maximum tool-calling iterations.
 /// Set by <see cref="AgentLoopRunner"/> when a caller (e.g. a subagent) requests
 /// more iterations than the default model behavior allows.
-/// <see cref="RockBotFunctionInvokingChatClient"/> reads this to temporarily
-/// override <c>MaximumIterationsPerRequest</c> for the current request.
+/// <see cref="RockBotFunctionInvokingChatClient"/> reads this when a request starts and
+/// holds the budget in that request's own call state. The shared client instance (and
+/// its <c>MaximumIterationsPerRequest</c>) is not changed, so concurrent requests on the
+/// same tier each keep their own budget.
 /// </summary>
 public static class MaxIterationsOverrideContext
 {
