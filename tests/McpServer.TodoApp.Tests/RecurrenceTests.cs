@@ -23,6 +23,67 @@ public sealed class RecurrenceTests
         return [.. dates];
     }
 
+    private static TodoItem SemiMonthly(string due, params int[] days) =>
+        Task(due, RecurrenceType.SemiMonthly) with { MonthDays = days };
+
+    [TestMethod]
+    public void BiWeekly_AddsFourteenDays()
+    {
+        var dates = Chain(Task("2026-12-24", RecurrenceType.BiWeekly), 3);
+
+        CollectionAssert.AreEqual(new[] { "2027-01-07", "2027-01-21", "2027-02-04" }, dates);
+    }
+
+    [TestMethod]
+    public void SemiMonthly_FifteenthAndMonthEnd()
+    {
+        var dates = Chain(SemiMonthly("2027-01-15", 15, 31), 6);
+
+        CollectionAssert.AreEqual(
+            new[] { "2027-01-31", "2027-02-15", "2027-02-28", "2027-03-15", "2027-03-31", "2027-04-15" }, dates);
+    }
+
+    [TestMethod]
+    public void SemiMonthly_FirstAndFifteenth_CrossesYear()
+    {
+        var dates = Chain(SemiMonthly("2026-12-01", 1, 15), 4);
+
+        CollectionAssert.AreEqual(new[] { "2026-12-15", "2027-01-01", "2027-01-15", "2027-02-01" }, dates);
+    }
+
+    [TestMethod]
+    public void SemiMonthly_LeapFebruary()
+    {
+        var dates = Chain(SemiMonthly("2028-02-15", 15, 31), 2);
+
+        CollectionAssert.AreEqual(new[] { "2028-02-29", "2028-03-15" }, dates);
+    }
+
+    [TestMethod]
+    public void SemiMonthly_BothDaysClampToSameDate_DoesNotRepeatIt()
+    {
+        // 29 and 30 both land on Feb 28 in a non-leap year; the series must still move forward.
+        var dates = Chain(SemiMonthly("2027-01-30", 29, 30), 3);
+
+        CollectionAssert.AreEqual(new[] { "2027-02-28", "2027-03-29", "2027-03-30" }, dates);
+    }
+
+    [TestMethod]
+    public void SemiMonthly_WithoutDays_UsesDefault()
+    {
+        var next = Recurrence.NextDueDate(Task("2026-11-15", RecurrenceType.SemiMonthly));
+
+        Assert.AreEqual(new DateOnly(2026, 11, 30), next);
+    }
+
+    [TestMethod]
+    public void NextOnOrAfter_OnScheduleDay_ReturnsSameDate()
+    {
+        Assert.AreEqual(new DateOnly(2026, 11, 15), Recurrence.NextOnOrAfter(new DateOnly(2026, 11, 15), [15, 31]));
+        Assert.AreEqual(new DateOnly(2026, 11, 15), Recurrence.NextOnOrAfter(new DateOnly(2026, 11, 6), [15, 31]));
+        Assert.AreEqual(new DateOnly(2026, 12, 1), Recurrence.NextOnOrAfter(new DateOnly(2026, 11, 16), [1, 15]));
+    }
+
     [TestMethod]
     public void Monthly_SameDay31_DoesNotDrift()
     {

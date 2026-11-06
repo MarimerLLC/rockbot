@@ -1,3 +1,7 @@
 namespace McpServer.TodoApp.Models;
 
-public enum RecurrenceType { None, Daily, Weekly, Monthly, Quarterly, BiAnnual, Yearly }
+/// <summary>
+/// How a task repeats. <see cref="BiWeekly"/> is every 14 days; <see cref="SemiMonthly"/> is twice a month on the
+/// series' two <c>MonthDays</c>.
+/// </summary>
+public enum RecurrenceType { None, Daily, Weekly, BiWeekly, SemiMonthly, Monthly, Quarterly, BiAnnual, Yearly }
