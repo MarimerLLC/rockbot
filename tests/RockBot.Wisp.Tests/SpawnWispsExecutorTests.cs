@@ -640,6 +640,46 @@ public class SpawnWispsExecutorTests
         Assert.AreEqual(SpawnWispsExecutor.MaxReportedNestedCalls, nested.Count);
         Assert.AreEqual("calendar-mcp__create_event", nested[^1].Name, "the failed create is kept, in order");
         Assert.AreEqual("1 of 1 wisps failed", outcome.Detail);
+
+        // #763: the per-tool totals cover all 61 calls, not just the 50 attached.
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                new ToolCallTally("calendar-mcp__get_event → get_event", 60, 0),
+                new ToolCallTally("calendar-mcp__create_event → create_event", 0, 1),
+            },
+            outcome.NestedTotals!.ToArray());
+    }
+
+    [TestMethod]
+    public void ReportOutcome_FewCalls_ReportsNoSeparateTotals()
+    {
+        var batch = new WispBatchResult
+        {
+            BatchId = "b",
+            TotalDuration = TimeSpan.Zero,
+            Results =
+            [
+                new WispExecutionResult
+                {
+                    WispId = "wisp-small", IsSuccess = true, Duration = TimeSpan.Zero,
+                    Definition = new WispDefinition { Description = "small", Steps = [] },
+                    StepResults =
+                    [
+                        new WispStepResult
+                        {
+                            StepId = "r", StepIndex = 0, IsSuccess = true, Duration = TimeSpan.Zero,
+                            ToolCalls = [new LoopToolCall("calendar-mcp__get_event", null, true)],
+                        },
+                    ],
+                },
+            ],
+        };
+        var outcome = new ToolCallOutcome();
+
+        SpawnWispsExecutor.ReportOutcome(outcome, batch);
+
+        Assert.IsNull(outcome.NestedTotals);
     }
 
     [TestMethod]

@@ -1072,6 +1072,127 @@ public class CompletionEvalTriggersTests
         Assert.AreEqual(6, CountOf(text, "↳ calendar-mcp__create_event → create_event (FAILED, changes state)"));
     }
 
+    // ── #763: own-state calls and the per-tool tally ────────────────────────
+
+    // The 2026-11-02 memory cleanup: a planning call, searches (two marked FAILED) and 15 deletes.
+    private static List<LoopToolCall> TechoramaCleanupCalls()
+    {
+        List<LoopToolCall> calls = [Call("task_create", "title=Clean up Techorama records")];
+        calls.AddRange([Call("search_memory"), Call("search_memory", ok: false), Call("search_memory"),
+            Call("search_memory", ok: false), Call("search_memory")]);
+        for (var i = 0; i < 15; i++)
+            calls.Add(Call("delete_memory", $"id=m{i}"));
+        return calls;
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_TaskListAndMemoryCalls_AreTaggedAgentsOwnState()
+    {
+        var text = CompletionEvalTriggers.FormatToolCalls(
+            [Call("task_create"), Call("delete_memory"), Call("spawn_workers"), Call("file_write"), Call("file_read")]);
+
+        StringAssert.Contains(text, "- task_create (ok, agent's own state)");
+        StringAssert.Contains(text, "- delete_memory (ok, agent's own state)");
+        StringAssert.Contains(text, "- spawn_workers (ok)");
+        StringAssert.Contains(text, "- file_write (ok, changes state)");
+        StringAssert.Contains(text, "- file_read (ok)");
+    }
+
+    [TestMethod]
+    public void FormatRelayedWork_TaskListCall_IsTaggedAgentsOwnState_OnlyWhenLocal()
+    {
+        var relayed = new RelayedSubagentWork("abc", CompletionEvalTriggers.SummarizeForRelay(
+            [Call("task_update"), Call("mcp_invoke_tool", "server_name=x, tool_name=task_create"), Call("todo__task_create")]));
+
+        var section = CompletionEvalTriggers.FormatRelayedWork(relayed);
+
+        StringAssert.Contains(section, "- task_update (ok, agent's own state)");
+        // The same names on an MCP server may change external data: no exemption.
+        Assert.IsFalse(section.Contains("task_create (ok, agent's own state)", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_McpServerTaskCreate_IsNotTaggedAgentsOwnState()
+    {
+        var text = CompletionEvalTriggers.FormatToolCalls(
+            [Call("mcp_invoke_tool", "server_name=x, tool_name=task_create"), Call("todo__task_create")]);
+
+        Assert.IsFalse(text.Contains("agent's own state", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_TallyUsesReportedNestedTotals_WhenTheBatchTrimmedItsCalls()
+    {
+        // spawn_wisps attaches at most 50 nested calls; 60 creates all succeeded.
+        var batch = new LoopToolCall("spawn_wisps", null, true)
+        {
+            Nested = Enumerable.Range(0, 50).Select(_ => Call("calendar-mcp__create_event")).ToList(),
+            NestedTotals = [new ToolCallTally("calendar-mcp__create_event → create_event", 60, 0)],
+        };
+
+        var text = CompletionEvalTriggers.FormatToolCalls([batch]);
+
+        StringAssert.Contains(text, "- calendar-mcp__create_event → create_event (via batch tool): 60 ok");
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_TalliesCallsPerTool_SoOtherToolsFailuresAreNotDeleteFailures()
+    {
+        var text = CompletionEvalTriggers.FormatToolCalls(TechoramaCleanupCalls());
+
+        var tally = text[text.IndexOf(CompletionEvalTriggers.CallsByToolHeading, StringComparison.Ordinal)..];
+        StringAssert.Contains(tally, "- task_create: 1 ok");
+        StringAssert.Contains(tally, "- search_memory: 3 ok, 2 FAILED");
+        StringAssert.Contains(tally, "- delete_memory: 15 ok");
+        Assert.IsFalse(tally.Contains("delete_memory: 15 ok,", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_TallyCountsCallsBeyondTheListedOnes()
+    {
+        var calls = Enumerable.Range(0, 45).Select(i => Call("delete_memory", $"id={i}", ok: i != 44)).ToList();
+
+        var text = CompletionEvalTriggers.FormatToolCalls(calls);
+
+        StringAssert.Contains(text, "- … and 5 more");
+        StringAssert.Contains(text, "- delete_memory: 44 ok, 1 FAILED");
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_TallyCountsNestedCallsUnderTheirOwnNames()
+    {
+        var text = CompletionEvalTriggers.FormatToolCalls([SevenBlocksBatch()]);
+
+        StringAssert.Contains(text, "- spawn_wisps: 1 FAILED");
+        StringAssert.Contains(text, "- calendar-mcp__create_event → create_event (via batch tool): 1 ok, 6 FAILED");
+    }
+
+    [TestMethod]
+    public void FormatToolCalls_SingleCall_HasNoTally()
+    {
+        var text = CompletionEvalTriggers.FormatToolCalls([Call("file_write")]);
+
+        Assert.IsFalse(text.Contains(CompletionEvalTriggers.CallsByToolHeading, StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void EvaluatorPrompt_ExplainsOwnStateCallsAndPerToolCounts()
+    {
+        var input = new CompletionEvalTriggers.EvaluatorInput(
+            ["Clean up the Techorama planning records - that event is complete"], null, null,
+            "Done — archived 14 Techorama entries.", TechoramaCleanupCalls(), CompletionEvalTrigger.ClaimedChange);
+        var messages = AgentLoopRunner.BuildCompletionEvaluatorMessages(input);
+
+        var system = messages[0].Text!;
+        StringAssert.Contains(system, "A call tagged \"agent's own state\"");
+        StringAssert.Contains(system, "never an unrequested change");
+        StringAssert.Contains(system, "compare it only with the calls of the tool that did that action");
+
+        var user = messages[1].Text!;
+        StringAssert.Contains(user, "- task_create (ok, agent's own state)");
+        StringAssert.Contains(user, "- delete_memory: 15 ok");
+    }
+
     [TestMethod]
     public void ExternalChanges_IncludeTheSucceededNestedCreate_Only()
     {

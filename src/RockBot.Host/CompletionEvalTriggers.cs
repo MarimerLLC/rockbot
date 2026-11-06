@@ -614,7 +614,9 @@ public static class CompletionEvalTriggers
         foreach (var call in calls.Take(MaxToolCallsListed))
         {
             var outcome = call.Succeeded ? "ok" : "FAILED";
-            var effect = ToolSideEffects.IsSideEffecting(call) ? ", changes state" : string.Empty;
+            var effect = ToolSideEffects.IsSideEffecting(call) ? ", changes state"
+                : ToolSideEffects.IsAgentOwnState(call) ? OwnStateTag
+                : string.Empty;
             var detail = call.Detail is null ? string.Empty : $" — {call.Detail}";
             sb.AppendLine($"- {DisplayName(call)} ({outcome}{effect}){detail}");
             if (call.Nested is { Count: > 0 } nested)
@@ -622,8 +624,91 @@ public static class CompletionEvalTriggers
         }
         if (calls.Count > MaxToolCallsListed)
             sb.AppendLine($"- … and {calls.Count - MaxToolCallsListed} more");
+        AppendTally(sb, calls);
         return sb.ToString().TrimEnd();
     }
+
+    /// <summary>The tag on a call that changed only the agent's own state (#763).</summary>
+    private const string OwnStateTag = ", agent's own state";
+
+    /// <summary>The heading of the per-tool tally under the agent's tool calls (#763).</summary>
+    public const string CallsByToolHeading = "Calls by tool (every call this turn, including any not listed above):";
+
+    /// <summary>
+    /// Appends ok/FAILED counts per tool for all of <paramref name="calls"/>, in order of first use
+    /// (#763). A batch tool's nested calls are counted under their own names, marked
+    /// "(via batch tool)". Without the tally the evaluator set two failed searches against a claim of
+    /// fourteen deletes. Nothing is appended for fewer than two calls.
+    /// </summary>
+    private static void AppendTally(StringBuilder sb, IReadOnlyList<LoopToolCall> calls)
+    {
+        var tally = new TallyBuilder();
+        foreach (var call in calls)
+        {
+            tally.Add(DisplayName(call), call.Succeeded ? 1 : 0, call.Succeeded ? 0 : 1);
+
+            // A batch tool that trimmed what it attached (spawn_wisps keeps 50) reports exact
+            // totals; counting only the attached calls would undercount a correct claim.
+            var nested = call.NestedTotals
+                ?? (call.Nested is { Count: > 0 } attached ? TallyByTool(attached) : null);
+            if (nested is null) continue;
+            foreach (var t in nested)
+                tally.Add($"{t.Name} (via batch tool)", t.Ok, t.Failed);
+        }
+        if (tally.Total < 2) return;
+
+        sb.AppendLine(CallsByToolHeading);
+        foreach (var t in tally.Result())
+        {
+            var parts = new List<string>(2);
+            if (t.Ok > 0) parts.Add($"{t.Ok} ok");
+            if (t.Failed > 0) parts.Add($"{t.Failed} FAILED");
+            sb.AppendLine($"- {t.Name}: {string.Join(", ", parts)}");
+        }
+    }
+
+    /// <summary>
+    /// Per-tool ok/failed counts of <paramref name="calls"/> by display name, in order of first use
+    /// (#763). A batch tool reports these through <see cref="ToolCallOutcome.ReportNestedTotals"/>
+    /// before it trims the calls it attaches.
+    /// </summary>
+    public static IReadOnlyList<ToolCallTally> TallyByTool(IEnumerable<LoopToolCall> calls)
+    {
+        var tally = new TallyBuilder();
+        foreach (var call in calls)
+            tally.Add(DisplayName(call), call.Succeeded ? 1 : 0, call.Succeeded ? 0 : 1);
+        return tally.Result();
+    }
+
+    private sealed class TallyBuilder
+    {
+        private readonly List<string> _order = [];
+        private readonly Dictionary<string, (int Ok, int Failed)> _counts = new(StringComparer.Ordinal);
+
+        public int Total { get; private set; }
+
+        public void Add(string name, int ok, int failed)
+        {
+            if (!_counts.TryGetValue(name, out var c))
+                _order.Add(name);
+            _counts[name] = (c.Ok + ok, c.Failed + failed);
+            Total += ok + failed;
+        }
+
+        public IReadOnlyList<ToolCallTally> Result() =>
+            _order.Select(n => new ToolCallTally(n, _counts[n].Ok, _counts[n].Failed)).ToList();
+    }
+
+    // A relayed summary's name is already the display name. A proxied ("mcp_invoke_tool → …") or
+    // typed ("server__tool") name runs on an MCP server, so it never gets the local exemption.
+    private static bool IsAgentOwnState(SubagentToolCallSummary call) =>
+        !call.Name.Contains(" → ", StringComparison.Ordinal)
+        && ToolSideEffects.IsAgentOwnStateName(call.Name);
+
+    private static string EffectTag(SubagentToolCallSummary call) =>
+        call.ChangesState ? ", changes state"
+        : IsAgentOwnState(call) ? OwnStateTag
+        : string.Empty;
 
     /// <summary>
     /// The compact form of a subagent's tool calls carried on its result (#683): at most
@@ -741,7 +826,7 @@ public static class CompletionEvalTriggers
     private static string FormatRelayedCall(SubagentToolCallSummary call)
     {
         var outcome = call.Succeeded ? "ok" : "FAILED";
-        var effect = call.ChangesState ? ", changes state" : string.Empty;
+        var effect = EffectTag(call);
         var detail = call.Detail is null ? string.Empty : $" — {call.Detail}";
         var args = CompactArguments(call.Arguments, MaxRelayedArgumentCharsShown);
         var line = args is null
@@ -765,7 +850,7 @@ public static class CompletionEvalTriggers
         foreach (var call in nested)
         {
             var outcome = call.Succeeded ? "ok" : "FAILED";
-            var effect = call.ChangesState ? ", changes state" : string.Empty;
+            var effect = EffectTag(call);
             var detail = call.Detail is null ? string.Empty : $" — {call.Detail}";
             sb.AppendLine($"  ↳ {call.Name} ({outcome}{effect}){detail}");
         }
