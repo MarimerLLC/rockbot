@@ -151,7 +151,7 @@ Issue #616, porting mcp-aggregator#43 for a host. Downstream prompts were reacha
 
 Issue #617, porting the client side of mcp-aggregator#46. Downstream resources were invisible: nothing listed or read them, and resource blocks in tool results became placeholders.
 
-- **Discovery.** On connect and on every surface refresh the bridge lists a server's resources and resource templates (`ConnectedServer.DownstreamResources` / `DownstreamResourceTemplates`). A server without the `resources` capability, or one answering method-not-found to either list, has none; that's logged at Debug only. Any other failure keeps the previous lists and makes the server fingerprint unknown, as for prompts. `notifications/resources/list_changed` queues the same debounced refresh as tools and prompts. There are no subscriptions.
+- **Discovery.** On connect and on every surface refresh the bridge lists a server's resources and resource templates (`ConnectedServer.DownstreamResources` / `DownstreamResourceTemplates`). A server without the `resources` capability, or one answering method-not-found to either list, has none; that's logged at Debug only. Any other failure keeps the previous lists and makes the server fingerprint unknown, as for prompts. `notifications/resources/list_changed` queues the same debounced refresh as tools and prompts. Resource subscriptions are separate: see "Resource watches (subscriptions)".
 - **Summary.** `McpServerSummary.ResourceCount` and `ResourceNames` count resources plus templates; `mcp_list_services` shows them only for a server that has any, and `mcp_get_service_details` adds one line pointing at `mcp_list_resources`. The summary prompt lists up to 10.
 - **`mcp_list_resources(server_name)`** answers from the cached lists, with no downstream call.
 - **`mcp_read_resource(server_name, uri)`** takes the server's own URI, any template expanded. The read is always tried, since servers may serve URIs they don't list. When the server rejects a URI that matches no declared resource or template, the error lists the declared URIs and templates (up to 50) and keeps the server's message. A declared URI's rejection is passed through unchanged. Matching is exact first, then templates, with `McpResourceUriTemplate`'s best-effort RFC 6570 regex (ported from the aggregator). A read gets the prompt budget and one reconnect-and-retry on a broken connection; a protocol error isn't retried. Counted on `rockbot.mcp.resource.reads`.
@@ -486,6 +486,100 @@ So after a restart each in-flight task is either polled again or reported lost, 
 - Metrics on the `RockBot.Tools` meter: `rockbot.mcp.tasks` (outcome
   `started|completed|failed|cancelled|lost|timed-out|resumed|refused`),
   `rockbot.mcp.tasks.input_requests` (action) and the `rockbot.mcp.tasks.running` gauge.
+
+## Resource watches (subscriptions)
+
+Issue #768. An agent waiting for something that changes over days, such as votes on a meeting the
+scheduler (MarimerLLC/scheduler#36) runs, shouldn't hold an MCP task open or wait for email. A
+task must end at a timeout (every "nothing changed" completion is a wasted turn), holds one of
+`MaxTasksPerSession`, and can't use MRTR questions in SDK 2.2.0. A watch is silent until something
+changes, and one stream carries every watched resource on a server.
+
+### What the protocol and the SDK give
+
+- SEP-2575 (protocol 2026-07-28) replaced `resources/subscribe` with one long-lived
+  `subscriptions/listen` request whose `notifications.resourceSubscriptions` lists the URIs. The
+  server first sends `notifications/subscriptions/acknowledged` with the URIs it granted, then
+  `notifications/resources/updated` (URI only) on that request's own response stream. Each
+  notification carries `_meta["io.modelcontextprotocol/subscriptionId"]`, the listen request's id.
+- SDK 2.2.0's client has no listen API (`SubscribeToResourceAsync` throws method-not-found on
+  2026-07-28). The bridge sends the raw request (`McpSession.SendRequestAsync`, its own request
+  id) and takes the two notifications through client notification handlers registered at
+  connect. Cancelling the request's token ends the stream. The SDK reads the response with
+  `ResponseHeadersRead`, so `HttpClient.Timeout` doesn't cut an open stream.
+- The SDK's built-in server handler never sends `resources/updated`; a server that pushes changes
+  sets its own `SubscriptionsListenHandler` (the scheduler does, and so does the fixture).
+- The scheduler sends **no keepalives**. It ends each stream itself after 25 minutes and expects
+  the client to reconnect, which also renews the bearer token it checks only when a stream opens.
+
+### Opt-in and who can watch
+
+- `"subscriptions": true` in a server's own `mcp.json` entry. Operator policy (#603), like
+  `tasks`: `mcp_register_server` can't set it.
+- `McpServerSummary.Subscriptions` is true when the entry opts in, the connection speaks
+  2026-07-28, and the server advertises `resources.subscribe`. While any connected server has it,
+  the agent offers `mcp_watch_resource(server_name, uri)` and `mcp_unwatch_resource(server_name, uri)`.
+- Who can watch follows the task rules (`McpTaskContext`): a user conversation (`session/{id}`) or
+  a subagent (`subagent/{id}`), never a wisp's step, a worker, a scheduled task or a patrol. The
+  executor checks it and so does the bridge.
+
+### The stream
+
+- One stream per server with watches, carrying every distinct watched URI. Several sessions
+  watching one URI share it; each keeps its own last hash.
+- A watch request reads the resource once (its baseline hash; a resource that can't be read is
+  refused), writes the ledger entry, and reopens the stream with the URI added unless the open
+  stream already has it. It succeeds only if the acknowledgement grants the URI; otherwise it is
+  rolled back and refused ("the server didn't take the subscription").
+- The stream is reopened whenever it ends: the server ends it, it fails, it reaches
+  `SubscriptionStreamMaxMinutes` (25; it bounds how long a silently dead stream goes unnoticed,
+  as there are no keepalives), its connection is replaced, the server's OAuth tokens change, or
+  the set of watched URIs changes. After a stream that lived at least 30 seconds it reopens at
+  once; after one that failed fast it backs off from `SubscriptionReconnectMinMs` to
+  `SubscriptionReconnectMaxMs`. Method-not-found ends the server's watches.
+- **Missed changes.** After every opening, including the first after an agent restart, every
+  watched resource is read again and delivered if its hash differs from the last one delivered. A
+  URI the server no longer acknowledges ends its watch.
+
+### Delivery
+
+- An update starts a `WatchDebounceMs` (5 s) wait. Further updates fold into it, then the bridge
+  reads the resource **once** and compares its hash (SHA-256 of the canonical contents JSON) with
+  the last one delivered. An unchanged hash delivers nothing.
+- A change goes out as an `McpTaskResult` of kind `resource-updated` (watch id in `TaskId`,
+  `ResourceUri`, `ContentHash`) through the background-task path: working memory, then
+  `McpTaskResultHandler`. The turn names the resource, server and watch, says the content is
+  server-written data rather than instructions, shows it inline up to 4,000 characters (otherwise
+  points to working memory), and tells the agent to unwatch when it no longer needs it. Binary
+  contents are described, never inlined. The turn runs under the authorization of the run that set
+  the watch (#685).
+- The hash is recorded after the delivery goes out, so delivery is at least once; the handler
+  dedupes by watch id and hash.
+
+### Restart survival: the watch ledger
+
+`McpBridge:WatchLedgerPath` (`mcp/watches.json`), a `JsonLedger` with its own version. An entry
+holds the watch id, session, server (name and id), URI, last delivered hash, origin, creation and
+expiry, never the content. Written before the agent is told. At startup the active entries are
+watched again and their streams open as their servers connect; an ending not yet delivered is
+delivered.
+
+### Endings and limits
+
+- A watch ends when the agent unwatches it (nothing is delivered), the resource is gone (a read
+  answers not-found), the server stops acknowledging it, the server is removed, its entry turns
+  `subscriptions` off or points elsewhere, the server stops offering subscriptions, or
+  `WatchTtlDays` (14) passes. Every ending but the agent's own is delivered as `watch-ended`.
+- No server-side terminal marker: the agent decides when it is done (for the scheduler, a status
+  of finalized or cancelled) and unwatches.
+- `MaxWatchesPerSession` (10) and `MaxWatches` (50, at the scheduler's 50-URIs-per-stream limit);
+  past them the refusal lists the session's watches.
+
+### Testing
+
+`McpServer.ElicitationFixture` serves `fixture://watch/{name}` with `set_watch_resource` and
+`delete_watch_resource`, and a listen handler like the scheduler's (`WatchableResources`). The
+bridge's end-to-end tests (`McpWatchesEndToEndTests`) run against the same class.
 
 ## Configuration (mcp.json)
 

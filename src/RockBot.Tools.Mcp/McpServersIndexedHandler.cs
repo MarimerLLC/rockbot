@@ -50,6 +50,7 @@ public sealed class McpServersIndexedHandler(
 
         SyncAnswerTool();
         SyncCancelTaskTool();
+        SyncWatchTools();
 
         // Typed {server}__{tool} tools follow the index; a no-op unless some tier's wrapper mode is on.
         if (wrappers is not null)
@@ -116,6 +117,55 @@ public sealed class McpServersIndexedHandler(
             logger.LogInformation("Unregistered {Tool}: no connected MCP server runs background tasks", name);
         }
     }
+
+    /// <summary>
+    /// <c>mcp_watch_resource</c> and <c>mcp_unwatch_resource</c> are offered only while some
+    /// connected server lets the agent watch its resources, for the same reason.
+    /// </summary>
+    private void SyncWatchTools()
+    {
+        var wanted = index.Servers.Any(s => s.Subscriptions);
+        (string Name, string Description)[] tools =
+        [
+            (McpManagementExecutor.WatchResourceToolName, WatchResourceToolDescription),
+            (McpManagementExecutor.UnwatchResourceToolName, UnwatchResourceToolDescription),
+        ];
+
+        foreach (var (name, description) in tools)
+        {
+            var registered = registry.GetExecutor(name) is not null;
+            if (wanted && !registered)
+            {
+                registry.Register(new ToolRegistration
+                {
+                    Name = name,
+                    Description = description,
+                    ParametersSchema = WatchToolSchema,
+                    Source = "mcp:management"
+                }, executor);
+                logger.LogInformation("Registered {Tool}: a connected MCP server lets the agent watch resources", name);
+            }
+            else if (!wanted && registered)
+            {
+                registry.Unregister(name);
+                logger.LogInformation("Unregistered {Tool}: no connected MCP server lets the agent watch resources", name);
+            }
+        }
+    }
+
+    internal const string WatchResourceToolDescription =
+        "Watch an MCP server resource for changes. When it changes, its new content arrives on its own as a later " +
+        "message in this conversation, so use this instead of polling or re-reading something you're waiting on (a " +
+        "meeting poll's status, say). Take the URI from mcp_list_resources, any template filled in, or from a tool " +
+        "result. Only some servers allow it. Stop the watch with mcp_unwatch_resource once you no longer need it; " +
+        "it also ends by itself after a while.";
+
+    internal const string UnwatchResourceToolDescription =
+        "Stop watching an MCP server resource this conversation watches (see mcp_watch_resource), for example once " +
+        "what you were waiting for has happened. No more updates about it arrive afterwards.";
+
+    internal const string WatchToolSchema =
+        """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"},"uri":{"type":"string","description":"The resource URI, any template expanded (e.g. 'scheduler://events/AB12CD/status')"}},"required":["server_name","uri"]}""";
 
     internal const string CancelTaskToolDescription =
         "Stop a background task an MCP tool started. Some long-running MCP tools return \"started as a background " +

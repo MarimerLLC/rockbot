@@ -42,6 +42,12 @@ internal sealed class McpOAuthTokenStore(string directory, ILogger logger)
 
     private readonly ConcurrentDictionary<string, Slot> _slots = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Raised with the server's URL after new tokens for it are stored (a sign-in or a refresh).
+    /// The bridge reopens that server's watch stream, whose token is checked only when it opens.
+    /// </summary>
+    public event Action<string>? TokensStored;
+
     /// <summary>Where the token files live.</summary>
     public string Directory => directory;
 
@@ -72,11 +78,23 @@ internal sealed class McpOAuthTokenStore(string directory, ILogger logger)
     private Slot SlotFor(string serverUrl, string? clientId)
     {
         var key = KeyFor(serverUrl, clientId);
-        return _slots.GetOrAdd(key, k => new Slot(Path.Combine(directory, k + ".json"), serverUrl, logger));
+        return _slots.GetOrAdd(key, k => new Slot(Path.Combine(directory, k + ".json"), serverUrl, logger, OnStored));
     }
 
     /// <summary>One server's tokens: read from disk once, then served from memory.</summary>
-    private sealed class Slot(string path, string serverUrl, ILogger logger) : ITokenCache
+    private void OnStored(string serverUrl)
+    {
+        try
+        {
+            TokensStored?.Invoke(serverUrl);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "A listener for stored OAuth tokens failed");
+        }
+    }
+
+    private sealed class Slot(string path, string serverUrl, ILogger logger, Action<string> onStored) : ITokenCache
     {
         private readonly SemaphoreSlim _gate = new(1, 1);
         private TokenContainer? _tokens;
@@ -118,6 +136,8 @@ internal sealed class McpOAuthTokenStore(string directory, ILogger logger)
             {
                 _gate.Release();
             }
+
+            onStored(serverUrl);
         }
 
         private TokenContainer? Load()

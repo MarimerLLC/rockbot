@@ -20,14 +20,19 @@ internal static class McpTaskText
         McpTaskResult.KindQuestion => null,
         McpTaskResult.KindEscalatedQuestion => $"{message.SessionId}/{HandbackText.EscalatedKeyPrefix}{message.QuestionId}",
         McpTaskResult.KindEscalatedResult => $"{message.SessionId}/{HandbackText.EscalatedKeyPrefix}{message.QuestionId}/result",
+        McpTaskResult.KindResourceUpdated =>
+            $"{message.SessionId}/mcp-watch/{message.ServerName}/{message.TaskId}/{(message.ContentHash is { Length: >= 12 } h ? h[..12] : "latest")}",
+        McpTaskResult.KindWatchEnded => null,
         _ => $"{message.SessionId}/mcp-task/{message.ServerName}/{message.TaskId}/result",
     };
 
     /// <summary>The working-memory category of <see cref="WorkingMemoryKey"/>.</summary>
-    public static string WorkingMemoryCategory(McpTaskResult message) =>
-        message.Kind is McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindEscalatedResult
-            ? "mcp-escalation"
-            : "mcp-task-result";
+    public static string WorkingMemoryCategory(McpTaskResult message) => message.Kind switch
+    {
+        McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindEscalatedResult => "mcp-escalation",
+        McpTaskResult.KindResourceUpdated or McpTaskResult.KindWatchEnded => Watches.McpWatchText.WorkingMemoryCategory,
+        _ => "mcp-task-result",
+    };
 
     /// <summary>The tool result for a call that became a background task.</summary>
     public static string Started(string taskId, string server, string tool) =>

@@ -735,6 +735,56 @@ the task failed.
 
 See `design/mcp-bridge.md` ("Long-running tools") for the design.
 
+### Resource watches (subscriptions)
+
+For something that changes over days, such as votes on a meeting the scheduler organizes, a
+task would have to time out over and over. A server that pushes resource changes over
+`subscriptions/listen` (SEP-2575, protocol 2026-07-28) lets the agent watch a resource instead:
+nothing happens until it changes, and then the change arrives as a new turn.
+
+Turn it on in the server's own `mcp.json` entry:
+
+```json
+{
+  "mcpServers": {
+    "scheduler": {
+      "type": "http",
+      "url": "https://scheduler.example/mcp",
+      "subscriptions": true
+    }
+  }
+}
+```
+
+What happens:
+
+- **Watch.** While a connected server allows watches (the entry opts in, the connection speaks
+  2026-07-28, and the server advertises `resources.subscribe`), the agent has
+  `mcp_watch_resource(server_name, uri)` and `mcp_unwatch_resource(server_name, uri)`. A watch
+  reads the resource once as its baseline and succeeds only if the server acknowledges the
+  subscription.
+- **Stream.** The bridge holds one `subscriptions/listen` stream per server, carrying every
+  watched URI. It reopens it whenever it ends (the scheduler ends its own after 25 minutes instead
+  of sending keepalives), after `McpBridge:SubscriptionStreamMaxMinutes` (25), on a new connection
+  or OAuth token, and when the watched URIs change.
+- **Deliver.** An update waits `McpBridge:WatchDebounceMs` (5 s) so a burst becomes one turn, then
+  the bridge reads the resource once and delivers it if its content hash changed. The content goes
+  into working memory at `{session}/mcp-watch/{server}/{watch_id}/{hash}` and to the session the
+  way a background task's result does, labelled as server-written data.
+- **Missed changes.** After every reopen, and after an agent restart, every watched resource is
+  read again; a change made meanwhile is delivered then.
+- **Who can watch.** A user conversation or a subagent, as for tasks. Wisps, workers, scheduled
+  tasks and patrols can't.
+- **Restarts.** Watches are written to `McpBridge:WatchLedgerPath` (default `mcp/watches.json`):
+  server, URI, session and the last delivered hash, never the content.
+- **Endings.** The agent unwatches; the resource is gone; the server stops acknowledging it, is
+  removed, or its entry turns `subscriptions` off; or `McpBridge:WatchTtlDays` (14) passes. Every
+  ending but the agent's own is told to the session.
+- **Limits.** `McpBridge:MaxWatchesPerSession` (10) and `McpBridge:MaxWatches` (50). Past them
+  the watch is refused with an error that lists the session's watches.
+
+See `design/mcp-bridge.md` ("Resource watches") for the design.
+
 ---
 
 ## Multimodal input: `analyze_file`

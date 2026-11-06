@@ -171,7 +171,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
         Action<McpTasksOptions>? configureTasks = null,
         McpTaskRegistry? taskRegistry = null,
         Action<WebApplication>? configureServerApp = null,
-        ISubagentSessionResolver? subagentSessions = null)
+        ISubagentSessionResolver? subagentSessions = null,
+        Action<McpServerOptions>? configureServer = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -189,6 +190,8 @@ internal sealed class BridgeHarness : IAsyncDisposable
         builder.Services.Configure<McpServerOptions>(o =>
         {
             o.ServerInfo = new ModelContextProtocol.Protocol.Implementation { Name = "harness", Version = HarnessServerVersion };
+            // Lets a test own capabilities and handlers (a subscriptions/listen handler).
+            configureServer?.Invoke(o);
             lock (lateTools)
             {
                 foreach (var tool in lateTools)
@@ -382,6 +385,25 @@ internal sealed class BridgeHarness : IAsyncDisposable
             await Task.Delay(25);
         }
     }
+
+    /// <summary>Sends an <c>mcp_watch_resource</c> request.</summary>
+    public async Task<McpWatchResourceResponse> WatchAsync(string uri, string sessionId, string server = ServerName)
+    {
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic,
+            new McpWatchResourceRequest { ServerName = server, Uri = uri, SessionId = sessionId }, headers: null);
+        return reply.GetPayload<McpWatchResourceResponse>()!;
+    }
+
+    /// <summary>Sends an <c>mcp_unwatch_resource</c> request.</summary>
+    public async Task<McpWatchResourceResponse> UnwatchAsync(string uri, string sessionId, string server = ServerName)
+    {
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic,
+            new McpUnwatchResourceRequest { ServerName = server, Uri = uri, SessionId = sessionId }, headers: null);
+        return reply.GetPayload<McpWatchResourceResponse>()!;
+    }
+
+    /// <summary>Where the bridge keeps its watch ledger in this run.</summary>
+    public string WatchLedgerPath => Path.Combine(_configDir, "mcp", "watches.json");
 
     /// <summary>Sends an <c>mcp_cancel_task</c> request.</summary>
     public async Task<McpCancelTaskResponse> CancelTaskAsync(string taskId, string sessionId)

@@ -296,6 +296,62 @@ public sealed record McpCancelTaskResponse
     public string? Error { get; init; }
 }
 
+// ── Resource watches ─────────────────────────────────────────────────────────
+
+/// <summary>
+/// <c>mcp_watch_resource</c>: have the bridge tell this session, as a new turn, when a server
+/// resource changes. Published to <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpWatchResourceRequest
+{
+    public required string ServerName { get; init; }
+
+    /// <summary>The resource URI as the server lists it, any template expanded.</summary>
+    public required string Uri { get; init; }
+
+    /// <summary>Session of the run asking; updates are delivered to it.</summary>
+    public string? SessionId { get; init; }
+
+    /// <summary>
+    /// The consequential-action origin of the run asking (#685), so a turn an update starts runs
+    /// under that run's authorization.
+    /// </summary>
+    public string? RunOrigin { get; init; }
+
+    /// <summary>With a user-turn <see cref="RunOrigin"/>: what the originating request asked for.</summary>
+    public string? UserAskedFor { get; init; }
+}
+
+/// <summary>
+/// <c>mcp_unwatch_resource</c>: stop watching a resource this session watches. Published to
+/// <c>mcp.manage</c>.
+/// </summary>
+public sealed record McpUnwatchResourceRequest
+{
+    public required string ServerName { get; init; }
+
+    public required string Uri { get; init; }
+
+    public string? SessionId { get; init; }
+}
+
+/// <summary>The bridge's answer to <see cref="McpWatchResourceRequest"/> and <see cref="McpUnwatchResourceRequest"/>.</summary>
+public sealed record McpWatchResourceResponse
+{
+    public required string ServerName { get; init; }
+
+    public required string Uri { get; init; }
+
+    /// <summary>The watch's id (<c>w_…</c>), when there is one.</summary>
+    public string? WatchId { get; init; }
+
+    /// <summary>What happened, for the agent.</summary>
+    public string? Message { get; init; }
+
+    /// <summary>The request was refused, and why.</summary>
+    public string? Error { get; init; }
+}
+
 /// <summary>
 /// Something a background MCP task has for the session that started it, published by the bridge
 /// to <c>mcp.task.result.{agent}</c>: the task's result or how it ended, or a question the server
@@ -334,6 +390,19 @@ public sealed record McpTaskResult
     /// <see cref="TaskId"/> is the subagent's task id.
     /// </summary>
     public const string KindEscalatedResult = "escalated-result";
+
+    /// <summary>
+    /// A resource the session watches (<c>mcp_watch_resource</c>) changed: <see cref="Content"/>
+    /// is its new content, <see cref="TaskId"/> the watch id (<c>w_…</c>), <see cref="ResourceUri"/>
+    /// the resource and <see cref="ContentHash"/> which version it is.
+    /// </summary>
+    public const string KindResourceUpdated = "resource-updated";
+
+    /// <summary>
+    /// A watch ended without the agent asking (the resource is gone, the watch expired, the server
+    /// was removed): <see cref="Content"/> says why. <see cref="TaskId"/> is the watch id.
+    /// </summary>
+    public const string KindWatchEnded = "watch-ended";
 
     /// <summary>The run namespace that started the task: <c>session/{id}</c> or <c>subagent/{id}</c>.</summary>
     public required string SessionId { get; init; }
@@ -391,4 +460,13 @@ public sealed record McpTaskResult
     /// (<c>mcp_cancel_task</c>): it's recorded in the conversation, but there's nothing to say.
     /// </summary>
     public bool NeedsReply { get; init; } = true;
+
+    /// <summary>For a watch's delivery: the watched resource's URI.</summary>
+    public string? ResourceUri { get; init; }
+
+    /// <summary>
+    /// For <see cref="KindResourceUpdated"/>: the hash of the content delivered, so each version is
+    /// handled once although delivery is at least once.
+    /// </summary>
+    public string? ContentHash { get; init; }
 }

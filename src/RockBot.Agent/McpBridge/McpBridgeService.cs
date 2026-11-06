@@ -224,6 +224,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         _tasks = taskRegistry ?? new McpTaskRegistry();
         _time = timeProvider ?? TimeProvider.System;
         McpTaskDiagnostics.ObserveRunning(() => _tasks.Count);
+        InitializeWatches(timeProvider);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -263,6 +264,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         // Background tasks outlive a restart on their servers: poll them again, or tell their
         // sessions they were lost. After connecting, so a task's server is known to be gone or not.
         await ResumeTasksAsync(cancellationToken);
+
+        // Resource watches likewise: subscribe again, and catch what changed while the agent was down.
+        await ResumeWatchesAsync(cancellationToken);
 
         // Watch for config changes
         SetupConfigWatcher();
@@ -619,6 +623,13 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             await CancelServerTasksAsync(name, priorConfig.Id, $"the MCP server \"{name}\" was reconfigured");
         }
 
+        // And resource watches, when the entry stops allowing them or now points elsewhere.
+        if (priorConfig is { WatchesResources: true }
+            && (!config.WatchesResources || priorConfig.IdentityHash() != config.IdentityHash()))
+        {
+            await EndServerWatchesAsync(name, priorConfig.Id, $"the MCP server \"{name}\" was reconfigured");
+        }
+
         // Record the config before attempting the connection so the reconnect sweep can retry a
         // server that never connected.
         _connections.SetConfig(name, config);
@@ -684,7 +695,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                         ElicitationHandler = elicitation is null
                             ? null
                             : (elicitRequest, elicitCt) => elicitation.HandleAsync(elicitRequest, elicitCt),
-                        NotificationHandlers = SurfaceChangeHandlers(name)
+                        NotificationHandlers = [.. SurfaceChangeHandlers(name), .. WatchNotificationHandlers(name)]
                     }
                 };
 
@@ -729,7 +740,8 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                     Version = metadata.Version,
                     IdentityHash = config.IdentityHash(),
                     Handback = IsHandbackServer(config) && IsJuly2026OrLater(newClient.NegotiatedProtocolVersion),
-                    Tasks = config.RunsTasks && IsJuly2026OrLater(newClient.NegotiatedProtocolVersion)
+                    Tasks = config.RunsTasks && IsJuly2026OrLater(newClient.NegotiatedProtocolVersion),
+                    Subscriptions = OffersWatches(config, newClient)
                 };
 
                 var resources = new ConnectionResources(newClient);
@@ -750,6 +762,9 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 });
                 published = true;
                 _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
+
+                // Watches on this server move to the new connection.
+                OnWatchServerConnected(name, summary.Subscriptions);
 
                 await PublishServersIndexedAsync([summary], [], ct);
 
@@ -852,6 +867,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         // Before the connection goes, so the server can still be asked to stop them.
         _connections.TryGetConfig(name, out var removedConfig);
         await CancelServerTasksAsync(name, removedConfig?.Id, $"the MCP server \"{name}\" was removed");
+        await EndServerWatchesAsync(name, removedConfig?.Id, $"the MCP server \"{name}\" was removed");
 
         using (await _connections.LockAsync(name, CancellationToken.None))
         {
@@ -1246,7 +1262,8 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             IdentityHash = current.Config.IdentityHash(),
             // Unchanged by a new surface: they follow the entry's policy and the connection's protocol.
             Handback = current.Summary.Handback,
-            Tasks = current.Summary.Tasks
+            Tasks = current.Summary.Tasks,
+            Subscriptions = current.Summary.Subscriptions
         };
 
         // Same connection, new surface: the snapshot keeps its resources, so nothing is retired.
@@ -3232,6 +3249,20 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             if (req is null) return MessageResult.DeadLetter;
 
             await PublishResponseAsync(await CancelTaskByAgentAsync(req, ct), replyTo, envelope.CorrelationId, ct);
+        }
+        else if (envelope.MessageType == typeof(McpWatchResourceRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpWatchResourceRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            await PublishResponseAsync(await WatchResourceAsync(req, ct), replyTo, envelope.CorrelationId, ct);
+        }
+        else if (envelope.MessageType == typeof(McpUnwatchResourceRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpUnwatchResourceRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            await PublishResponseAsync(await UnwatchResourceAsync(req, ct), replyTo, envelope.CorrelationId, ct);
         }
         else
         {
