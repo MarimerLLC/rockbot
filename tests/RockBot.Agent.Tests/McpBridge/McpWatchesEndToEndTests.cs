@@ -139,6 +139,11 @@ public class McpWatchesEndToEndTests
         store.Set("poll", "v1");
         await using var harness = await StartAsync(store);
         await WatchAsync(harness);
+
+        // Settle first: once a pushed change has been delivered, the first opening's own catch-up
+        // read is behind us, so only a reopen can find the next one.
+        store.Set("poll", "v1b");
+        await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated && r.Content == "v1b");
         var opened = store.StreamsOpened;
 
         // The server doesn't push this one, then ends the stream, as a restart or its lifetime would.
@@ -147,7 +152,7 @@ public class McpWatchesEndToEndTests
         store.SuppressNotifications = false;
         store.EndStreams();
 
-        var update = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated);
+        var update = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated && r.Content != "v1b");
         Assert.AreEqual("v2", update.Content, "the re-read after reopening finds it");
         Assert.IsTrue(store.StreamsOpened > opened, "the bridge reopened the stream");
 

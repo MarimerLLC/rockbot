@@ -404,6 +404,12 @@ public sealed partial class McpBridgeService
         WatchStream stream, ConnectedServer server, List<string> uris, int version, CancellationToken ct)
     {
         var requested = uris.ToHashSet(StringComparer.Ordinal);
+
+        // The watches this opening catches up: those confirmed before it began. One still being
+        // added was read for its baseline a moment ago, and is its request's to confirm.
+        var catchUp = _watches.Values
+            .Where(w => w.Confirmed && string.Equals(w.Entry.Server, server.Name, StringComparison.OrdinalIgnoreCase))
+            .ToList();
         var subscriptionId = "rbw_" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
         using var current = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var ack = stream.BeginOpening(current, subscriptionId, version);
@@ -449,7 +455,7 @@ public sealed partial class McpBridgeService
                 server.Name, granted.Count, requested.Count);
 
             // Anything that changed while there was no stream (or the agent was down) is found now.
-            CatchUpWatches(server.Name, granted);
+            CatchUpWatches(catchUp, granted);
 
             var maxAge = Task.Delay(TimeSpan.FromMinutes(Math.Max(1, _options.SubscriptionStreamMaxMinutes)), _time, current.Token);
             var replaced = WaitForConnectionReplacedAsync(server.Name, server.Client, current.Token);
@@ -590,11 +596,11 @@ public sealed partial class McpBridgeService
     /// After a stream opens: reads every watched resource it acknowledged, to deliver what changed
     /// while there was no stream, and ends the watches it no longer acknowledges.
     /// </summary>
-    private void CatchUpWatches(string server, IReadOnlySet<string> granted)
+    private void CatchUpWatches(IReadOnlyList<ActiveWatch> watches, IReadOnlySet<string> granted)
     {
-        foreach (var watch in _watches.Values)
+        foreach (var watch in watches)
         {
-            if (!watch.Confirmed || !string.Equals(watch.Entry.Server, server, StringComparison.OrdinalIgnoreCase))
+            if (!_watches.ContainsKey(watch.WatchId))
                 continue;
 
             if (granted.Contains(watch.Entry.Uri))
