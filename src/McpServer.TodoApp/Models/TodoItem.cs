@@ -13,7 +13,8 @@ public sealed record TodoItem(
     int Occurrence = 1,
     MonthAnchor? MonthAnchor = null,
     int? AnchorDay = null,
-    IReadOnlyList<TaskNote>? Notes = null
+    IReadOnlyList<TaskNote>? Notes = null,
+    IReadOnlyList<int>? MonthDays = null
 );
 
 public sealed record CompletedTodoItem(
@@ -30,7 +31,8 @@ public sealed record CompletedTodoItem(
     DateOnly? RecurrenceUntil = null,
     int? RecurrenceCount = null,
     MonthAnchor? MonthAnchor = null,
-    int? AnchorDay = null
+    int? AnchorDay = null,
+    IReadOnlyList<int>? MonthDays = null
 );
 
 /// <summary>A soft-deleted task, restorable until the retention window passes.</summary>

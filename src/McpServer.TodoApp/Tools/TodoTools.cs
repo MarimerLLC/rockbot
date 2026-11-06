@@ -17,11 +17,12 @@ public sealed class TodoTools(TodoRepository repository)
     public async Task<string> AddTaskAsync(
         [Description("Title of the task.")] string title,
         [Description("Due date in ISO format (YYYY-MM-DD).")] string due_date,
-        [Description("Recurrence type. Defaults to none.")] RecurrenceType recurrence = RecurrenceType.None,
+        [Description("Recurrence type. " + RecurrenceDescription + " Defaults to none.")] RecurrenceType recurrence = RecurrenceType.None,
         [Description("Optional description of the task's intent. Record later status updates with add_task_note, not here.")] string? description = null,
         [Description(RecurrenceUntilDescription)] string? recurrence_until = null,
         [Description(RecurrenceCountDescription)] int? recurrence_count = null,
-        [Description(MonthAnchorDescription + " With last_day, due_date is moved to the last day of its month.")] MonthAnchor? month_anchor = null)
+        [Description(MonthAnchorDescription + " With last_day, due_date is moved to the last day of its month.")] MonthAnchor? month_anchor = null,
+        [Description(MonthDaysDescription + " If due_date isn't on one of them, it is moved forward to the next one.")] int[]? month_days = null)
     {
         try
         {
@@ -34,20 +35,22 @@ public sealed class TodoTools(TodoRepository repository)
             RequireRecurringForLimits(recurrenceType, until, count);
             var (anchor, anchorDay, anchoredDue) = ResolveAnchor(
                 recurrenceType, month_anchor, existing: null, dueDate, dueDateExplicit: false);
+            var (monthDays, scheduledDue) = ResolveMonthDays(recurrenceType, month_days, existing: null, anchoredDue);
 
             var id = Guid.NewGuid();
             var item = new TodoItem(
                 Id: id,
                 Title: title,
                 Description: description,
-                DueDate: anchoredDue,
+                DueDate: scheduledDue,
                 Recurrence: recurrenceType,
                 CreatedAt: DateTimeOffset.UtcNow,
                 SeriesId: id,
                 RecurrenceUntil: until,
                 RecurrenceCount: count,
                 MonthAnchor: anchor,
-                AnchorDay: anchorDay);
+                AnchorDay: anchorDay,
+                MonthDays: monthDays);
 
             var active = await repository.GetActiveAsync();
             active.Add(item);
@@ -180,7 +183,8 @@ public sealed class TodoTools(TodoRepository repository)
     [McpServerTool(Name = "complete_task", Destructive = false, Idempotent = false, OpenWorld = false)]
     [Description(
         "Marks a task as completed. For repeating tasks, creates the next occurrence from the original due date " +
-        "(monthly-type series land on their anchor day, or on the last day of the month for month_anchor last_day) " +
+        "(monthly-type series land on their anchor day, or on the last day of the month for month_anchor last_day; " +
+        "semimonthly series land on the next of their month_days) " +
         "unless stop_recurrence is true or the series' recurrence_until / recurrence_count limit is reached. " +
         "Returns JSON { completed, next, series_ended }: next is the newly created occurrence (with its new id) or null; " +
         "series_ended is stop_recurrence, count_reached or until_reached when a repeating series ended, otherwise null.")]
@@ -215,7 +219,8 @@ public sealed class TodoTools(TodoRepository repository)
                 RecurrenceUntil: task.RecurrenceUntil,
                 RecurrenceCount: task.RecurrenceCount,
                 MonthAnchor: task.MonthAnchor,
-                AnchorDay: task.AnchorDay);
+                AnchorDay: task.AnchorDay,
+                MonthDays: task.MonthDays);
             completed.Add(completedItem);
 
             TodoItem? next = null;
@@ -361,7 +366,8 @@ public sealed class TodoTools(TodoRepository repository)
                 Occurrence: done.Occurrence,
                 MonthAnchor: done.MonthAnchor,
                 AnchorDay: done.AnchorDay,
-                Notes: done.Notes);
+                Notes: done.Notes,
+                MonthDays: done.MonthDays);
 
             var active = await repository.GetActiveAsync();
             Guid? removedNext = null;
@@ -370,7 +376,8 @@ public sealed class TodoTools(TodoRepository repository)
                 // Completions recorded before the completed record kept series limits and the month anchor lack them;
                 // the spawned occurrence inherited them, so take them from there.
                 var linked = active.FirstOrDefault(t => t.Id != done.Id && t.SeriesId == done.SeriesId && t.Occurrence == done.Occurrence + 1);
-                var hasSeriesFields = done.MonthAnchor is not null || done.RecurrenceUntil is not null || done.RecurrenceCount is not null;
+                var hasSeriesFields = done.MonthAnchor is not null || done.RecurrenceUntil is not null
+                    || done.RecurrenceCount is not null || done.MonthDays is not null;
                 if (!hasSeriesFields && linked is not null)
                 {
                     restored = restored with
@@ -378,7 +385,8 @@ public sealed class TodoTools(TodoRepository repository)
                         RecurrenceUntil = linked.RecurrenceUntil,
                         RecurrenceCount = linked.RecurrenceCount,
                         MonthAnchor = linked.MonthAnchor,
-                        AnchorDay = linked.AnchorDay
+                        AnchorDay = linked.AnchorDay,
+                        MonthDays = linked.MonthDays
                     };
                 }
 
@@ -424,12 +432,14 @@ public sealed class TodoTools(TodoRepository repository)
         [Description("New title.")] string? title = null,
         [Description("New description (replaces the old one). For status updates or observations, use add_task_note instead.")] string? description = null,
         [Description("New due date in ISO format (YYYY-MM-DD).")] string? due_date = null,
-        [Description("New recurrence type. " +
+        [Description("New recurrence type. " + RecurrenceDescription + " " +
                      "Setting none ends the series but keeps this task and its id; it also clears any series limits.")] RecurrenceType? recurrence = null,
         [Description(RecurrenceUntilDescription + " Pass an empty string to remove an existing end date.")] string? recurrence_until = null,
         [Description(RecurrenceCountDescription + " Pass 0 to remove an existing count limit.")] int? recurrence_count = null,
         [Description(MonthAnchorDescription + " Switching to last_day moves the current due date to the last day of its month " +
-                     "unless due_date is also given.")] MonthAnchor? month_anchor = null)
+                     "unless due_date is also given.")] MonthAnchor? month_anchor = null,
+        [Description(MonthDaysDescription + " Changing them (or switching to semimonthly) moves the current due date forward " +
+                     "to the next of the days if it isn't on one already.")] int[]? month_days = null)
     {
         try
         {
@@ -484,17 +494,19 @@ public sealed class TodoTools(TodoRepository repository)
 
             var (anchor, anchorDay, anchoredDue) = ResolveAnchor(
                 resultingRecurrence, newAnchor, existing, newDue ?? existing.DueDate, dueDateExplicit: newDue is not null);
+            var (monthDays, scheduledDue) = ResolveMonthDays(resultingRecurrence, month_days, existing, anchoredDue);
 
             var updated = existing with
             {
                 Title = title ?? existing.Title,
                 Description = description ?? existing.Description,
-                DueDate = anchoredDue,
+                DueDate = scheduledDue,
                 Recurrence = resultingRecurrence,
                 RecurrenceUntil = until,
                 RecurrenceCount = count,
                 MonthAnchor = anchor,
-                AnchorDay = anchorDay
+                AnchorDay = anchorDay,
+                MonthDays = monthDays
             };
             active[index] = updated;
 
@@ -572,6 +584,14 @@ public sealed class TodoTools(TodoRepository repository)
         "original day of the month, using the month's last day when it is shorter (a 31st lands on Feb 28, then back on Mar 31); " +
         "last_day repeats on the last day of every month.";
 
+    private const string RecurrenceDescription =
+        "One of none, daily, weekly, biweekly (every 14 days), semimonthly (twice a month on the days in month_days, " +
+        "e.g. the 15th and month-end), monthly, quarterly, biannual or yearly.";
+
+    private const string MonthDaysDescription =
+        "Optional pair of days of the month for a semimonthly series, e.g. [1, 15] or [15, 31]. 31 means the last day of " +
+        "every month; any day past a month's end uses its last day. Defaults to [15, 31]. Only valid with semimonthly.";
+
     private const string RecurrenceCountDescription =
         "Optional total number of occurrences in a repeating series, counting the first. Completing the last one ends the series. " +
         "Only valid when recurrence is not none. For series created before series tracking existed, counting starts at the current occurrence.";
@@ -603,7 +623,8 @@ public sealed class TodoTools(TodoRepository repository)
         if (!Recurrence.IsMonthBased(recurrence))
         {
             if (requested is not null)
-                throw new McpException("month_anchor requires a monthly, quarterly, biannual or yearly recurrence");
+                throw new McpException("month_anchor requires a monthly, quarterly, biannual or yearly recurrence " +
+                                       "(semimonthly series use month_days instead)");
             return (null, null, dueDate);
         }
 
@@ -615,6 +636,32 @@ public sealed class TodoTools(TodoRepository repository)
         // unless the caller moved the due date or the task wasn't anchored on a day before.
         var keepDay = !dueDateExplicit && existing?.MonthAnchor == MonthAnchor.SameDay && existing.AnchorDay is not null;
         return (anchor, keepDay ? existing!.AnchorDay : dueDate.Day, dueDate);
+    }
+
+    /// <summary>
+    /// Works out a semimonthly series' two days of the month and moves the due date forward onto one of them.
+    /// Other recurrences have no month days; switching away from semimonthly clears them.
+    /// </summary>
+    private static (IReadOnlyList<int>? MonthDays, DateOnly DueDate) ResolveMonthDays(
+        RecurrenceType recurrence, int[]? requested, TodoItem? existing, DateOnly dueDate)
+    {
+        if (recurrence != RecurrenceType.SemiMonthly)
+        {
+            if (requested is not null)
+                throw new McpException("month_days requires a semimonthly recurrence");
+            return (null, dueDate);
+        }
+
+        if (requested is not null
+            && (requested.Length != 2 || requested[0] == requested[1] || requested.Any(d => d is < 1 or > 31)))
+        {
+            throw new McpException("invalid month_days, expected two different days of the month from 1 to 31, e.g. [1, 15] or [15, 31]");
+        }
+
+        IReadOnlyList<int> days = requested?.Order().ToArray()
+            ?? existing?.MonthDays
+            ?? Recurrence.DefaultMonthDays;
+        return (days, Recurrence.NextOnOrAfter(dueDate, days));
     }
 
     private DateTimeOffset PurgeAfter(DeletedTodoItem entry) => entry.DeletedAt.AddDays(repository.RetentionDays);
@@ -661,6 +708,7 @@ public sealed class TodoTools(TodoRepository repository)
         && next.RecurrenceUntil == expected.RecurrenceUntil
         && next.RecurrenceCount == expected.RecurrenceCount
         && next.MonthAnchor == expected.MonthAnchor
+        && (next.MonthDays ?? []).SequenceEqual(expected.MonthDays ?? [])
         && next.Notes is null or { Count: 0 };
 
     private static bool Matches(string? query, string title, string? description) =>

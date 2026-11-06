@@ -21,8 +21,8 @@ A persistent to-do list with recurring tasks, an activity log per task, and undo
 |------|-----------|
 | `list_tasks` | Overview of active tasks, sorted by due date. Use `compact: true` for id/title/due_date/recurrence only, and `query` to search title and description. Notes appear only as `note_count` + `last_note`. |
 | `get_task` | Full detail for one id, including all notes. Returns `{ status, task }`; status is `active`, `completed` or `deleted`. |
-| `add_task` | Create a task. Optional `recurrence`, `recurrence_until`, `recurrence_count`, `month_anchor`, `description`. |
-| `update_task` | Change fields on an active task. The id is always preserved. Can change `recurrence`, the series limits and `month_anchor`. |
+| `add_task` | Create a task. Optional `recurrence`, `recurrence_until`, `recurrence_count`, `month_anchor`, `month_days`, `description`. |
+| `update_task` | Change fields on an active task. The id is always preserved. Can change `recurrence`, the series limits, `month_anchor` and `month_days`. |
 | `add_task_note` | Append a status or observation to a task's log. Use this, not `description`, for progress updates. |
 | `complete_task` | Complete a task. Returns `{ completed, next, series_ended }`. Pass `stop_recurrence: true` to end a series. |
 | `uncomplete_task` | Undo a completion. Removes the auto-created next occurrence if it is untouched. |
@@ -32,13 +32,18 @@ A persistent to-do list with recurring tasks, an activity log per task, and undo
 
 ## Recurrence
 
-- **Values:** `none`, `daily`, `weekly`, `monthly`, `quarterly`, `biannual`, `yearly`.
+- **Values:** `none`, `daily`, `weekly`, `biweekly`, `semimonthly`, `monthly`, `quarterly`, `biannual`, `yearly`.
+- **`biweekly` vs `semimonthly`:** "every two weeks" is `biweekly` (every 14 days, 26 a year). "Twice a month" or "on the 15th and at month-end" is `semimonthly` (24 a year).
 - **The next occurrence is computed from the series' anchor, not the completion date.** Completing a monthly task late doesn't shift the schedule.
 - **`month_anchor`** applies to monthly, quarterly, biannual and yearly series:
   - `same_day` (default) keeps the original day of the month. A short month uses its last day, then the series returns to the anchor: Jan 31 → Feb 28 → Mar 31.
   - `last_day` lands on the last day of every month. Use it for "month-end" tasks.
   - Setting `last_day` moves the current due date to the end of its month, unless you also pass `due_date`.
-  - Using `month_anchor` with `none`, `daily` or `weekly` is an error.
+  - Using `month_anchor` with `none`, `daily`, `weekly`, `biweekly` or `semimonthly` is an error.
+- **`month_days`** sets the two days of the month a `semimonthly` series lands on. It defaults to `[15, 31]`.
+  - `31` means the last day of every month. Any day past a month's end uses its last day: `[15, 31]` gives Jan 15 → Jan 31 → Feb 15 → Feb 28 → Mar 15.
+  - If `due_date` isn't on one of the days, it moves forward to the next one. Check the returned `due_date`.
+  - It must be two different days from 1 to 31. Using it with any recurrence other than `semimonthly` is an error.
 - **Ending a series:**
   - `complete_task(id, stop_recurrence: true)` completes this occurrence and creates no more.
   - `update_task(id, recurrence: "none")` keeps the task (and its id) but stops it from repeating.
@@ -71,6 +76,16 @@ get_task({ "id": "<id from the list>" })
 **Create a month-end recurring task**
 ```json
 add_task({ "title": "PWOP invoice", "due_date": "2026-10-31", "recurrence": "monthly", "month_anchor": "last_day" })
+```
+
+**Create a task due on the 15th and at the end of every month**
+```json
+add_task({ "title": "Payroll", "due_date": "2026-11-15", "recurrence": "semimonthly", "month_days": [15, 31] })
+```
+
+**Create a task due every two weeks**
+```json
+add_task({ "title": "Sprint review", "due_date": "2026-11-13", "recurrence": "biweekly" })
 ```
 
 **Record progress on a task**

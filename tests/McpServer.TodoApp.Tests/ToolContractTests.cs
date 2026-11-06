@@ -17,7 +17,7 @@ public sealed class ToolContractTests : TodoServerTestBase
     public async Task Schema_RecurrenceIsLowercaseEnum()
     {
         var tools = await ToolsAsync();
-        var expected = new[] { "none", "daily", "weekly", "monthly", "quarterly", "biannual", "yearly" };
+        var expected = new[] { "none", "daily", "weekly", "biweekly", "semimonthly", "monthly", "quarterly", "biannual", "yearly" };
 
         CollectionAssert.AreEquivalent(expected, EnumValues(tools["add_task"], "recurrence"));
         CollectionAssert.AreEquivalent(expected, EnumValues(tools["update_task"], "recurrence"));
