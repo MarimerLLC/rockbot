@@ -154,6 +154,10 @@ public class McpWatchesEndToEndTests
         // And the reopened stream carries the next change as usual.
         store.Set("poll", "v3");
         await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated && r.Content == "v3");
+
+        // Closing and reopening a stream is routine, never a failure (it once threw on every close).
+        Assert.IsFalse(harness.BridgeLog.Any(e => e.Level >= Microsoft.Extensions.Logging.LogLevel.Error),
+            string.Join(" | ", harness.BridgeLog.Where(e => e.Level >= Microsoft.Extensions.Logging.LogLevel.Error).Select(e => e.Message)));
     }
 
     [TestMethod]

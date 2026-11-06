@@ -486,7 +486,7 @@ public sealed partial class McpBridgeService
             }
 
             if (listen is not null)
-                await listen.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                await ((Task)listen).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         }
     }
 
