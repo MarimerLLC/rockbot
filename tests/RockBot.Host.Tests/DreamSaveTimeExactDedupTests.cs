@@ -12,6 +12,12 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class DreamSaveTimeExactDedupTests
 {
+    // Shared across tests in this class: each LlmCostEstimator starts a FileSystemWatcher,
+    // and constructing a fresh one per test exhausts the inotify instance limit.
+    private static readonly LlmCostEstimator SharedCostEstimator = new(
+        Options.Create(new LlmPricingOptions { ConfigPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json") }),
+        NullLogger<LlmCostEstimator>.Instance);
+
     private const string Fact = "The staging cluster runs a nightly backup at 02:30 and keeps 14 snapshots.";
     private const string Category = "project/infrastructure";
 
@@ -309,6 +315,7 @@ public class DreamSaveTimeExactDedupTests
             memory,
             [],
             llm ?? new ScriptedLlmClient("{}"),
+            SharedCostEstimator,
             new AgentWorkSerializer(),
             new StubActivityMonitor(),
             new AgentClock(new ConfigurationBuilder().Build(), profile, NullLogger<AgentClock>.Instance),

@@ -1061,6 +1061,7 @@ public sealed partial class AgentLoopRunner(
             // Accumulate: a re-prompt or follow-up pass is another native loop in the same turn.
             diagNative.InputTokens += nativeInputTokens;
             diagNative.OutputTokens += nativeOutputTokens;
+            diagNative.CachedInputTokens += nativeCachedInputTokens;
             diagNative.ModelId = response.ModelId;
         }
 
@@ -1299,6 +1300,9 @@ public sealed partial class AgentLoopRunner(
         // Accumulate per-turn token and tool-call counts across all loop iterations.
         long totalInputTokens = firstResponse?.Usage?.InputTokenCount ?? 0;
         long totalOutputTokens = firstResponse?.Usage?.OutputTokenCount ?? 0;
+        long totalCachedInputTokens = firstResponse?.Usage is { } firstUsage
+            ? UsageReader.GetCachedInputTokens(firstUsage)
+            : 0;
         long totalToolCalls = 0;
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
         string? lastModelId = firstResponse?.ModelId;
@@ -1402,6 +1406,9 @@ public sealed partial class AgentLoopRunner(
 
                 totalInputTokens += response.Usage?.InputTokenCount ?? 0;
                 totalOutputTokens += response.Usage?.OutputTokenCount ?? 0;
+                totalCachedInputTokens += response.Usage is { } iterUsage
+                    ? UsageReader.GetCachedInputTokens(iterUsage)
+                    : 0;
                 lastModelId = response.ModelId ?? lastModelId;
             }
 
@@ -1925,6 +1932,7 @@ public sealed partial class AgentLoopRunner(
             {
                 diagTextFinal.InputTokens += totalInputTokens;
                 diagTextFinal.OutputTokens += totalOutputTokens;
+                diagTextFinal.CachedInputTokens += totalCachedInputTokens;
                 diagTextFinal.ModelId ??= lastModelId;
             }
         }

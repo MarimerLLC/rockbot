@@ -14,6 +14,12 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class DreamCodeOwnedSkillTests
 {
+    // Shared across tests in this class: each LlmCostEstimator starts a FileSystemWatcher,
+    // and constructing a fresh one per test exhausts the inotify instance limit.
+    private static readonly LlmCostEstimator SharedCostEstimator = new(
+        Options.Create(new LlmPricingOptions { ConfigPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json") }),
+        NullLogger<LlmCostEstimator>.Instance);
+
     private static readonly DateTimeOffset Old = DateTimeOffset.UtcNow.AddDays(-30);
 
     // ── Consolidation ────────────────────────────────────────────────────────
@@ -299,6 +305,7 @@ public class DreamCodeOwnedSkillTests
             new EmptyLongTermMemory(),
             [store],
             llm,
+            SharedCostEstimator,
             new AgentWorkSerializer(),
             new StubActivityMonitor(),
             new AgentClock(

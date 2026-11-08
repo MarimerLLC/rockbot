@@ -80,14 +80,33 @@ public sealed class LlmCostEstimator : IDisposable
         StartWatching();
     }
 
-    /// <summary>Estimates cost in USD. Returns 0 when no prefix matches.</summary>
-    public double EstimateCost(string modelId, long inputTokens, long outputTokens)
+    /// <summary>
+    /// Anthropic/OpenRouter prompt-cache reads are billed at a tenth of the normal input
+    /// rate (cache writes cost more, but we never see write pricing here — only the read
+    /// discount is visible in response usage). Applies to every provider's cached tokens
+    /// uniformly; providers that do not support caching simply report 0 cached tokens.
+    /// </summary>
+    private const double CacheReadMultiplier = 0.1;
+
+    /// <summary>
+    /// Estimates cost in USD. Returns 0 when no prefix matches.
+    /// <paramref name="cachedInputTokens"/> is the portion of <paramref name="inputTokens"/>
+    /// served from the provider's prompt cache (see <see cref="PromptCachingPolicy"/>) — it is
+    /// billed at <see cref="CacheReadMultiplier"/> of the normal input rate, not the full rate.
+    /// </summary>
+    public double EstimateCost(string modelId, long inputTokens, long outputTokens, long cachedInputTokens = 0)
     {
         var table = _table;
         foreach (var entry in table)
         {
             if (modelId.Contains(entry.Prefix, StringComparison.OrdinalIgnoreCase))
-                return (inputTokens * entry.InputPerM + outputTokens * entry.OutputPerM) / 1_000_000.0;
+            {
+                var cached = Math.Clamp(cachedInputTokens, 0, inputTokens);
+                var uncached = inputTokens - cached;
+                return (uncached * entry.InputPerM
+                        + cached * entry.InputPerM * CacheReadMultiplier
+                        + outputTokens * entry.OutputPerM) / 1_000_000.0;
+            }
         }
         return 0.0;
     }

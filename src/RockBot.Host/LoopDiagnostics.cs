@@ -49,6 +49,13 @@ public sealed class LoopDiagnostics
     /// <summary>Total output tokens produced across all loop iterations and passes.</summary>
     public long OutputTokens { get; set; }
 
+    /// <summary>
+    /// Of <see cref="InputTokens"/>, how many were served from the provider's prompt cache
+    /// (billed at a discount — see <see cref="LlmCostEstimator.EstimateCost"/>). Summed the same
+    /// way as <see cref="InputTokens"/>: across all loop iterations and passes.
+    /// </summary>
+    public long CachedInputTokens { get; set; }
+
     /// <summary>Number of LLM requests the run sent, auxiliary calls included (#670).</summary>
     public int LlmRequests { get; set; }
 

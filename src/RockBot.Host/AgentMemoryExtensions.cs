@@ -163,6 +163,7 @@ public static class AgentMemoryExtensions
 
         builder.Services.AddSingleton<DreamService>();
         builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DreamService>());
+        builder.Services.AddSingleton<IHostedService, DreamCostToolRegistrar>();
 
         return builder;
     }

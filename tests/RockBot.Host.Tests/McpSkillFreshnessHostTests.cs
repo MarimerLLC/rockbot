@@ -15,6 +15,12 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class McpSkillFreshnessHostTests
 {
+    // Shared across tests in this class: each LlmCostEstimator starts a FileSystemWatcher,
+    // and constructing a fresh one per test exhausts the inotify instance limit.
+    private static readonly LlmCostEstimator SharedCostEstimator = new(
+        Options.Create(new LlmPricingOptions { ConfigPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json") }),
+        NullLogger<LlmCostEstimator>.Instance);
+
     private static readonly SkillSurfaceBaseline OldBaseline =
         new("adjutant", "id-a", "fp-old", "1.0.0", "ident-a", new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
 
@@ -288,6 +294,7 @@ public class McpSkillFreshnessHostTests
         new(new EmptyLongTermMemory(),
             [store],
             llm,
+            SharedCostEstimator,
             new AgentWorkSerializer(),
             new StubActivityMonitor(),
             new AgentClock(

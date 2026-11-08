@@ -8,6 +8,12 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class ImportanceDecayTests
 {
+    // Shared across tests in this class: each LlmCostEstimator starts a FileSystemWatcher,
+    // and constructing a fresh one per test exhausts the inotify instance limit.
+    private static readonly LlmCostEstimator SharedCostEstimator = new(
+        Options.Create(new LlmPricingOptions { ConfigPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json") }),
+        NullLogger<LlmCostEstimator>.Instance);
+
     [TestMethod]
     public async Task Decay_WithinGracePeriod_IsNotDecayed()
     {
@@ -390,6 +396,7 @@ public class ImportanceDecayTests
         new(memory,
             [],
             new StubLlmClient(),
+            SharedCostEstimator,
             new AgentWorkSerializer(),
             new StubActivityMonitor(),
             new AgentClock(

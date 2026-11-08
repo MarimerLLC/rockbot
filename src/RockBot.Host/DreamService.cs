@@ -38,6 +38,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private readonly IKnowledgeGraph? _knowledgeGraph;
     private readonly IWorkingMemory? _workingMemory;
     private readonly ILlmClient _llmClient;
+    private readonly LlmCostEstimator _costEstimator;
     private readonly TieredChatClientRegistry? _tieredRegistry;
     private readonly IAgentWorkSerializer _workSerializer;
     private readonly IUserActivityMonitor _userActivityMonitor;
@@ -86,6 +87,7 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _repairTicketCreationDirective;
     private IReadOnlyList<LlmPricingRow>? _pricingRows;
     private DreamPassLedger? _passLedger;
+    private DreamCostTracker? _costTracker;
     private int _contentionRetries;
 
     // Fires at StopAsync so an in-flight cycle unwinds through its existing
@@ -101,6 +103,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         ILongTermMemory memory,
         IEnumerable<ISkillStore> skillStores,
         ILlmClient llmClient,
+        LlmCostEstimator costEstimator,
         IAgentWorkSerializer workSerializer,
         IUserActivityMonitor userActivityMonitor,
         AgentClock clock,
@@ -145,6 +148,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         _wispExecutionLog = wispExecutionLog;
         _workingMemory = workingMemory;
         _llmClient = llmClient;
+        _costEstimator = costEstimator;
         _tieredRegistry = tieredRegistry;
         _workSerializer = workSerializer;
         _userActivityMonitor = userActivityMonitor;
@@ -734,6 +738,7 @@ internal sealed class DreamService : IHostedService, IDisposable
         // Clear before loading so the finally below cannot re-save the previous cycle's
         // ledger if the load itself throws.
         _passLedger = null;
+        _costTracker = null;
 
         try
         {
@@ -746,6 +751,9 @@ internal sealed class DreamService : IHostedService, IDisposable
             // LLM call on a corpus that has not moved since they last looked at it.
             _passLedger = await DreamPassLedger.LoadAsync(
                 ResolvePath(DreamPassLedger.FileName, _profileOptions.BasePath), _logger);
+
+            _costTracker = await DreamCostTracker.LoadAsync(
+                ResolvePath(DreamCostTracker.FileName, _profileOptions.BasePath), _logger);
 
             _logger.LogInformation("DreamService: dream cycle starting");
 
@@ -842,6 +850,21 @@ internal sealed class DreamService : IHostedService, IDisposable
             // gated pass next time.
             if (_passLedger is not null)
                 await _passLedger.SaveAsync();
+
+            // Same reasoning for cost: fold whatever passes completed into the lifetime totals
+            // even on a preempted or failed cycle, rather than losing that spend from the record.
+            if (_costTracker is not null)
+            {
+                _costTracker.FinishCycle(_clock.Now);
+                var cycle = _costTracker.Lifetime;
+                _logger.LogInformation(
+                    "DreamService: dream cycle cost — ${CostUsd:F4} ({PassRuns} LLM call(s), " +
+                    "{InputTokens:N0} in / {OutputTokens:N0} out, {CachedTokens:N0} cached) — lifetime ${LifetimeCostUsd:F4} over {TotalCycles} cycle(s)",
+                    cycle.LastCycleCostUsd, cycle.LastCyclePassRuns, cycle.LastCycleInputTokens,
+                    cycle.LastCycleOutputTokens, cycle.LastCycleCachedInputTokens,
+                    cycle.TotalCostUsd, cycle.TotalCycles);
+                await _costTracker.SaveAsync();
+            }
 
             await slot.DisposeAsync();
         }
@@ -6273,6 +6296,16 @@ internal sealed class DreamService : IHostedService, IDisposable
             new ChatOptions { ResponseFormat = ChatResponseFormat.Json },
             ct);
 
+        if (response.Usage is { } usage && _costTracker is not null)
+        {
+            var inputTokens = usage.InputTokenCount ?? 0;
+            var outputTokens = usage.OutputTokenCount ?? 0;
+            var cachedInputTokens = UsageReader.GetCachedInputTokens(usage);
+            var modelId = _tieredRegistry?.GetModelId(_options.ModelTier) ?? _options.ModelTier.ToString();
+            var costUsd = _costEstimator.EstimateCost(modelId, inputTokens, outputTokens, cachedInputTokens);
+            _costTracker.RecordPass(inputTokens, outputTokens, cachedInputTokens, costUsd);
+        }
+
         var raw = response.Text?.Trim() ?? string.Empty;
         var json = ExtractJsonObject(raw);
         if (string.IsNullOrEmpty(json))
@@ -6714,7 +6747,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         return string.Empty;
     }
 
-    private static string ResolvePath(string path, string basePath)
+    /// <summary>
+    /// Resolves a filename relative to <paramref name="basePath"/>. Internal rather than private
+    /// because <see cref="DreamCostToolRegistrar"/> needs the exact same path DreamService itself
+    /// writes <see cref="DreamCostTracker"/> to, and two copies of this logic would drift.
+    /// </summary>
+    internal static string ResolvePath(string path, string basePath)
     {
         if (Path.IsPathRooted(path))
             return path;

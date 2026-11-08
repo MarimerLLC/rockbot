@@ -166,7 +166,8 @@ internal sealed class ScheduledTaskHandler(
         if (diagnostics.InputTokens > 0 || diagnostics.OutputTokens > 0)
         {
             var costUsd = costEstimator.EstimateCost(
-                diagnostics.ModelId ?? string.Empty, diagnostics.InputTokens, diagnostics.OutputTokens);
+                diagnostics.ModelId ?? string.Empty, diagnostics.InputTokens, diagnostics.OutputTokens,
+                diagnostics.CachedInputTokens);
             await scheduledTaskStore.RecordRunAsync(
                 message.TaskName, diagnostics.InputTokens, diagnostics.OutputTokens, costUsd);
         }

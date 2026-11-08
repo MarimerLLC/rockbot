@@ -16,6 +16,12 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class WispToolDriftTests
 {
+    // Shared across tests in this class: each LlmCostEstimator starts a FileSystemWatcher,
+    // and constructing a fresh one per test exhausts the inotify instance limit.
+    private static readonly LlmCostEstimator SharedCostEstimator = new(
+        Options.Create(new LlmPricingOptions { ConfigPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json") }),
+        NullLogger<LlmCostEstimator>.Instance);
+
     private const string Body =
         """{"description":"Events","steps":[{"id":"e","mode":"Direct","gateway":"Mcp","server":"calendar-mcp","tool":"get_events","params":{}}]}""";
 
@@ -214,6 +220,7 @@ public class WispToolDriftTests
         new(new EmptyLongTermMemory(),
             [store],
             new NoLlm(),
+            SharedCostEstimator,
             new AgentWorkSerializer(),
             new IdleActivityMonitor(),
             new AgentClock(

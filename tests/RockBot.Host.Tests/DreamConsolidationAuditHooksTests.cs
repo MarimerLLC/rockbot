@@ -18,6 +18,12 @@ namespace RockBot.Host.Tests;
 [TestClass]
 public class DreamConsolidationAuditHooksTests
 {
+    // Shared across tests in this class: each LlmCostEstimator starts a FileSystemWatcher,
+    // and constructing a fresh one per test exhausts the inotify instance limit.
+    private static readonly LlmCostEstimator SharedCostEstimator = new(
+        Options.Create(new LlmPricingOptions { ConfigPath = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json") }),
+        NullLogger<LlmCostEstimator>.Instance);
+
     private const string SourceA = "Rockford Duane Lhotka uses timezone America/Chicago.";
     private const string SourceB = "Accounts span Microsoft and Marimer LLC.";
     private const string LossyMerge = "The user has accounts across providers and a default timezone.";
@@ -141,6 +147,7 @@ public class DreamConsolidationAuditHooksTests
             memory,
             [],
             llm,
+            SharedCostEstimator,
             new AgentWorkSerializer(),
             new StubActivityMonitor(),
             new AgentClock(new ConfigurationBuilder().Build(), profile, NullLogger<AgentClock>.Instance),

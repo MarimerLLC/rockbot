@@ -76,6 +76,41 @@ public class LlmCostEstimatorTests
     }
 
     [TestMethod]
+    public void EstimateCost_AppliesCacheReadDiscount_ToCachedPortionOfInput()
+    {
+        // anthropic/claude-sonnet-5.5 = $2/M input, $10/M output. 400k of the 1M input
+        // tokens were served from cache and bill at 0.1x: (600k*2 + 400k*2*0.1)/1M = 1.28.
+        using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
+
+        var cost = estimator.EstimateCost("anthropic/claude-sonnet-5.5", 1_000_000, 0, cachedInputTokens: 400_000);
+
+        Assert.AreEqual(1.28, cost, 0.0001);
+    }
+
+    [TestMethod]
+    public void EstimateCost_WithZeroCachedTokens_MatchesUndiscountedCost()
+    {
+        using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
+
+        var discounted = estimator.EstimateCost("anthropic/claude-sonnet-5.5", 1_000_000, 500_000, cachedInputTokens: 0);
+        var undiscounted = estimator.EstimateCost("anthropic/claude-sonnet-5.5", 1_000_000, 500_000);
+
+        Assert.AreEqual(undiscounted, discounted, 0.0001);
+    }
+
+    [TestMethod]
+    public void EstimateCost_ClampsCachedTokens_WhenReportedLargerThanInput()
+    {
+        // Defensive: a provider usage quirk reporting cached > input must not go negative
+        // or overshoot — clamp to the full input at the discounted rate.
+        using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
+
+        var cost = estimator.EstimateCost("anthropic/claude-sonnet-5.5", 1_000_000, 0, cachedInputTokens: 5_000_000);
+
+        Assert.AreEqual(0.20, cost, 0.0001);
+    }
+
+    [TestMethod]
     public void EstimateCost_ReturnsZero_ForUnknownModel()
     {
         using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
