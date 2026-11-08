@@ -243,3 +243,31 @@ Suggested order: **1 + 2 in parallel → 3 → 4 → 5.** Phase 2 alone gives th
 - The `WispExecutionRecord.DefinitionBody` field is nullable; old records remain valid with `null` and are simply ineligible for promotion. New records carry bodies forward.
 - The `provisional` and `createdAt` fields on `SkillResource` are optional; the one existing populated manifest (`patrol/wisp-mcp-params`) reads back unchanged with both fields default-null.
 - `WispPromotionCandidateDto` is kept as a deprecated alias for one release cycle to avoid breaking any in-flight log consumers, then removed.
+
+---
+
+## Amendment 1 — Retrain before you delete (2026-11-08)
+
+Designing `design/reflex-tools.md` — making a validated resource directly callable, with no LLM in the loop to notice and compensate for a bad call — surfaced a mismatch in this document's own Phase 5: "fails M times (default 2) consecutively → manifest entry removed, body deleted" treats every failing resource as disposable on the second strike. That's too blunt once a resource can be called with nothing watching it the way a subagent watches a wisp-run-and-evaluate step, and it throws away a resource on cases where the fix is cheap and the resource is still largely right.
+
+### New rule
+
+A cluster-worthy failure (unchanged threshold: `Count >= 3 && SessionIds.Count >= 2 && LastSeen within 24h` via `FailureClusterStore`) no longer deletes the resource directly. It opens or advances a `RepairTicket` with `Target=SkillResource` — infrastructure `design/self-repair.md` already ships (`SkillResourceApplier`, DI-registered, three operations: `demote-provisional`, `attach`, `delete`). `delete` now fires only once that ticket reaches `Escalated` — after `RepairTicketOptions.MaxAttempts` (default 3) failed repair attempts, unchanged from self-repair's own default. Demotion is the last resort, not the first response to failure.
+
+This applies to every skill resource, not only ones `reflex-tools.md` exposes as a directly-callable tool. A provisional resource mid-validation and an already-validated one both route through the same repair path on failure; the only difference is which gate they re-enter afterward.
+
+### What changes in the codebase
+
+| Component | Action |
+|---|---|
+| Phase 5 failure handling (this document) | Superseded. A cluster-worthy failure opens/advances a `RepairTicket(Target=SkillResource)` instead of deleting directly. |
+| `SkillResourceApplier` | Unchanged — already supports `demote-provisional`, `attach`, `delete`. |
+| `skill-resource-repair-dream.md` (new) | New directive, shaped like `wisp-success-dream.md`/`wisp-failure-dream.md`. Given `FailureClusterStore` evidence for a `(skill, resource)` pair, chooses an operation — evidence-based: straight to `attach`/`delete` when the cause is already evident (e.g. detected tool-fingerprint drift), `demote-provisional` only when it isn't — and for `attach`, produces the corrected body. |
+| `DreamService` | New wiring: read the directive's output, create or advance the ticket, apply, verify — the same shape `wisp-success-dream.md`'s promotions already use. |
+
+### Acceptance
+
+- A failure cluster on a provisional or validated resource opens or advances a `RepairTicket(Target=SkillResource)`; no code path deletes a resource directly from a failure count anymore.
+- `demote-provisional` is chosen when the directive has no positive evidence of cause; `attach` or `delete` when it does.
+- A resource is deleted only when its ticket's status reaches `Escalated`.
+- Full detail, including the registration/activation work this repair path makes safe to build on top of, lives in `design/reflex-tools.md`.
