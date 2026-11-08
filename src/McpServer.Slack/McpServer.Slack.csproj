@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>McpServer.Slack</RootNamespace>
+    <UserSecretsId>mcpserver-slack-6c1e8a4f-2d7b-4f9e-b3a5-8e2c6d9f1a7b</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\McpServer.TodoApp\StrictArguments.cs" Link="StrictArguments.cs" />
+  </ItemGroup>
+
+</Project>
