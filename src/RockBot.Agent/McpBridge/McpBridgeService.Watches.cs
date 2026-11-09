@@ -1031,7 +1031,11 @@ public sealed partial class McpBridgeService
     internal async Task ExpireWatchesAsync()
     {
         var now = _time.GetUtcNow();
-        foreach (var watch in _watches.Values.Where(w => w.Confirmed && now >= w.Entry.ExpiresAt).ToList())
+        // Past either date: a stored renewal date can lie beyond the maximum lifetime (the maximum was
+        // lowered, or the entry predates it), and the maximum must not wait on a read that may never come.
+        foreach (var watch in _watches.Values
+                     .Where(w => w.Confirmed && (now >= w.Entry.ExpiresAt || now >= MaxLifetimeEnd(w.Entry)))
+                     .ToList())
         {
             if (now >= MaxLifetimeEnd(watch.Entry))
                 await EndWatchAsync(watch, ExpiredReason(watch.Entry), notify: true);

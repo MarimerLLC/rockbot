@@ -442,6 +442,37 @@ public class McpWatchesEndToEndTests
 
     [TestMethod]
     [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AWatch_EndsAtItsMaximumLifetime_EvenBeforeItsRenewalDate()
+    {
+        // A watch whose renewal date lies past its maximum lifetime (the maximum was lowered, or the
+        // entry predates it) still ends at the maximum, without waiting on a read of its resource.
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        McpBridgeOptions? options = null;
+        await using var harness = await StartAsync(store, timeProvider: clock, configureBridge: o =>
+        {
+            o.WatchTtlDays = 14;
+            o.WatchMaxLifetimeDays = 30;
+            o.WatchDebounceMs = 0;
+            // No stream recycle, so no catch-up read can end the watch: only the expiry check.
+            o.SubscriptionStreamMaxMinutes = 100_000;
+            options = o;
+        });
+        var watchId = await WatchAsync(harness);
+        Assert.IsTrue(Ledger(harness).Single().ExpiresAt > clock.GetUtcNow().AddDays(13));
+
+        // The stream can't reopen, so no catch-up read reaches the watch (as with a server that stays down).
+        store.RefuseListen = true;
+        store.EndStreams();
+        options!.WatchMaxLifetimeDays = 2;
+        clock.Advance(TimeSpan.FromDays(3));
+        var ended = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindWatchEnded);
+        Assert.AreEqual(watchId, ended.TaskId);
+        StringAssert.Contains(ended.Content, "maximum lifetime of 2 day(s)");    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
     public async Task AWatchDueForRenewal_WhoseResourceIsGone_Ends()
     {
         var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
