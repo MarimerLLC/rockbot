@@ -147,6 +147,28 @@ public class McpOrientationTests
         Assert.IsFalse(guide.Contains("display_name"), "mcp_register_server has no display_name");
     }
 
+    [TestMethod]
+    public void Guide_TellsTheAgentToWatchWhatItStarts_WithoutBeingAsked()
+    {
+        // #778: the agent organized a scheduler poll and never watched it.
+        var guide = new McpToolSkillProvider().GetDocument();
+        StringAssert.Contains(guide, "Watch on your own initiative");
+        StringAssert.Contains(guide, "scheduler://events/{shortCode}/status");
+        StringAssert.Contains(guide, "cut at 4,000 characters", "the guide states the instructions cap");
+        Assert.AreEqual(4000, McpInstructionsCap.DetailsMaxChars);
+    }
+
+    [TestMethod]
+    public void WatchToolDescription_TellsTheAgentToWatchWhatItStarts_WithoutBeingAsked()
+    {
+        // The description is in the tool list whenever a server can be watched, so it reaches
+        // every run that could watch, unlike the guide or the server's own instructions (#778).
+        var description = McpServersIndexedHandler.WatchResourceToolDescription;
+        StringAssert.Contains(description, "Don't wait to be asked");
+        StringAssert.Contains(description, "scheduler://events/{shortCode}/status");
+        StringAssert.Contains(description, "ask before acting on it");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /// <summary>Every MCP meta-tool's model-facing description, as the registry carries it.</summary>

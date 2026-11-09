@@ -196,7 +196,7 @@ Issue #614, ported from mcp-aggregator#48.
 
 - **Orientation.** Every run whose tool list holds an MCP tool carries a short orientation: `AgentLoopRunner.EnsureMcpOrientation` inserts it as a system message right after the system prompt, from `ITypedToolSurface.Orientation(mode)`. `McpOrientation` builds one fixed text per mode, so the prompt-cache prefix holds within a tier. It covers what MCP servers are for, the `{server}__{tool}` naming, the mode's workflow, the `mcp/{server}` skill to read first and the `mcp_invoke_tool` escape hatch, and stays under 2,000 characters (test-enforced). It repeats nothing the tool schemas already say.
 - **Full reference.** The `mcp` tool guide (`McpToolSkillProvider`), fetched with `get_tool_guide`.
-- **Server instructions.** A downstream server's own `instructions` are capped by `McpInstructionsCap`: 2,000 characters in `mcp_get_service_details` output, 8,000 in the prompt that writes the server's summary. Longer text is cut on a line boundary and ends with an explicit `[Server instructions truncated: N of M characters shown. ...]` marker, never a silent cut. The marker names the server's guide-like tools, if it has any, as the way to the rest.
+- **Server instructions.** A downstream server's own `instructions` are capped by `McpInstructionsCap`: 4,000 characters in `mcp_get_service_details` output (2,000 until #778, which hid the scheduler's paragraph on watching), 8,000 in the prompt that writes the server's summary. Longer text is cut on a line boundary and ends with an explicit `[Server instructions truncated: N of M characters shown. ...]` marker, never a silent cut. The marker names the server's guide-like tools, if it has any, as the way to the rest.
 
 ### Skill freshness
 
@@ -519,6 +519,11 @@ changes, and one stream carries every watched resource on a server.
 - `McpServerSummary.Subscriptions` is true when the entry opts in, the connection speaks
   2026-07-28, and the server advertises `resources.subscribe`. While any connected server has it,
   the agent offers `mcp_watch_resource(server_name, uri)` and `mcp_unwatch_resource(server_name, uri)`.
+- The agent is told to watch unasked (#778): `mcp_watch_resource`'s description, which is in the
+  tool list whenever something can be watched, and the code-owned `mcp` guide both say to watch
+  what it starts whose outcome comes later (a scheduler poll's `/status` right after
+  `create_event`), report each change, and ask before acting on it. It stays the model's choice;
+  a bridge-side watch started from a tool result's resource link was left for later.
 - Who can watch follows the task rules (`McpTaskContext`): a user conversation (`session/{id}`) or
   a subagent (`subagent/{id}`), never a wisp's step, a worker, a scheduled task or a patrol. The
   executor checks it and so does the bridge.
@@ -569,7 +574,13 @@ delivered.
 - A watch ends when the agent unwatches it (nothing is delivered), the resource is gone (a read
   answers not-found), the server stops acknowledging it, the server is removed, its entry turns
   `subscriptions` off or points elsewhere, the server stops offering subscriptions, or
-  `WatchTtlDays` (14) passes. Every ending but the agent's own is delivered as `watch-ended`.
+  `WatchMaxLifetimeDays` (90) passes. Every ending but the agent's own is delivered as `watch-ended`.
+- Renewal (#778): `WatchTtlDays` (14) is a renewal period, not an end, since a poll's deadline can
+  be weeks out. Once `ExpiresAt` passes, the hourly expiry check reads the resource through the
+  normal read path: a successful read moves `ExpiresAt` on by another period (capped at the
+  maximum lifetime) and delivers any change found; a not-found read ends the watch; a failed read
+  leaves it for the next check. At a restart only the maximum lifetime ends a watch; one past its
+  renewal date is renewed by its stream's catch-up read.
 - No server-side terminal marker: the agent decides when it is done (for the scheduler, a status
   of finalized or cancelled) and unwatches.
 - `MaxWatchesPerSession` (10) and `MaxWatches` (50, at the scheduler's 50-URIs-per-stream limit);

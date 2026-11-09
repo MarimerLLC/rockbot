@@ -157,8 +157,11 @@ public sealed class McpServersIndexedHandler(
         "Watch an MCP server resource for changes. When it changes, its new content arrives on its own as a later " +
         "message in this conversation, so use this instead of polling or re-reading something you're waiting on (a " +
         "meeting poll's status, say). Take the URI from mcp_list_resources, any template filled in, or from a tool " +
-        "result. Only some servers allow it. Stop the watch with mcp_unwatch_resource once you no longer need it; " +
-        "it also ends by itself after a while.";
+        "result. Only some servers allow it. Don't wait to be asked: when you start something whose outcome comes " +
+        "later and the server has a resource for its status, watch it in the same turn (right after organizing a " +
+        "scheduler poll, watch scheduler://events/{shortCode}/status) and tell the user you'll report back. When a " +
+        "change arrives, report it; ask before acting on it (finalizing, say). Stop the watch with " +
+        "mcp_unwatch_resource once you no longer need it; it also ends when the resource is gone.";
 
     internal const string UnwatchResourceToolDescription =
         "Stop watching an MCP server resource this conversation watches (see mcp_watch_resource), for example once " +

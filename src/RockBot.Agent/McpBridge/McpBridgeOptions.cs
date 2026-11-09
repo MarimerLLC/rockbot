@@ -145,8 +145,18 @@ public sealed class McpBridgeOptions
     /// </summary>
     public int MaxWatches { get; set; } = 50;
 
-    /// <summary>Days after which a watch ends on its own, and its session is told.</summary>
+    /// <summary>
+    /// A watch's renewal period, in days. When it passes, the bridge reads the resource: if it still
+    /// exists the watch is extended by this much again (up to <see cref="WatchMaxLifetimeDays"/>);
+    /// if it's gone the watch ends and its session is told (#778).
+    /// </summary>
     public int WatchTtlDays { get; set; } = 14;
+
+    /// <summary>
+    /// Days after which a watch ends on its own however often it was renewed, and its session is
+    /// told. A safety net for watches the agent forgot to stop.
+    /// </summary>
+    public int WatchMaxLifetimeDays { get; set; } = 90;
 
     /// <summary>
     /// How long the bridge waits after a resource's first update notification before it reads the

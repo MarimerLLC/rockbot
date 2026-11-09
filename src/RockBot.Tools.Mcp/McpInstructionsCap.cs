@@ -9,8 +9,11 @@ namespace RockBot.Tools.Mcp;
 /// </summary>
 public static class McpInstructionsCap
 {
-    /// <summary>The cap on instructions inlined in <c>mcp_get_service_details</c>.</summary>
-    public const int DetailsMaxChars = 2000;
+    /// <summary>
+    /// The cap on instructions inlined in <c>mcp_get_service_details</c>. Raised from 2,000 (#778):
+    /// the scheduler's guidance on watching its polls sat past that point and never reached the agent.
+    /// </summary>
+    public const int DetailsMaxChars = 4000;
 
     /// <summary>The cap on instructions in the prompt that writes a server's summary.</summary>
     public const int SummaryPromptMaxChars = 8000;

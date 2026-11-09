@@ -140,7 +140,7 @@ public sealed partial class McpBridgeService
                 RunOrigin = req.RunOrigin,
                 UserAskedFor = req.UserAskedFor,
                 CreatedAt = now,
-                ExpiresAt = now + TimeSpan.FromDays(Math.Max(1, _options.WatchTtlDays)),
+                ExpiresAt = now + TimeSpan.FromDays(Math.Max(1, Math.Min(_options.WatchTtlDays, _options.WatchMaxLifetimeDays))),
             };
 
             // Write-ahead: the agent hears of no watch the ledger doesn't hold.
@@ -159,7 +159,7 @@ public sealed partial class McpBridgeService
             _logger.LogInformation("Session {Session} now watches {Server} {Uri} ({WatchId})", sessionId, name, uri, entry.WatchId);
             return new McpWatchResourceResponse
             {
-                ServerName = name, Uri = uri, WatchId = entry.WatchId, Message = McpWatchText.Watching(entry),
+                ServerName = name, Uri = uri, WatchId = entry.WatchId, Message = McpWatchText.Watching(entry, Math.Max(1, _options.WatchMaxLifetimeDays)),
             };
         }
         finally
@@ -542,6 +542,8 @@ public sealed partial class McpBridgeService
 
     private static TimeSpan Min(TimeSpan a, TimeSpan b) => a < b ? a : b;
 
+    private static DateTimeOffset Min(DateTimeOffset a, DateTimeOffset b) => a < b ? a : b;
+
     // ── Notifications ───────────────────────────────────────────────────────
 
     /// <summary>
@@ -661,7 +663,7 @@ public sealed partial class McpBridgeService
             if (!_watches.ContainsKey(watch.WatchId))
                 return;
 
-            if (_time.GetUtcNow() >= entry.ExpiresAt)
+            if (_time.GetUtcNow() >= MaxLifetimeEnd(entry))
             {
                 await EndWatchAsync(watch, ExpiredReason(entry), notify: true);
                 return;
@@ -694,6 +696,10 @@ public sealed partial class McpBridgeService
                     return;
                 }
             }
+
+            // The resource still exists, so a watch past its renewal date runs on (#778).
+            if (_time.GetUtcNow() >= entry.ExpiresAt)
+                await RenewWatchAsync(entry);
 
             var hash = HashContents(result);
             if (string.Equals(hash, entry.LastHash, StringComparison.Ordinal))
@@ -983,7 +989,8 @@ public sealed partial class McpBridgeService
                 await EndWatchAsync(watch, $"its MCP server \"{entry.Server}\" is no longer configured", notify: true);
             else if (!config.WatchesResources)
                 await EndWatchAsync(watch, $"the MCP server \"{entry.Server}\" no longer allows resource watches", notify: true);
-            else if (now >= entry.ExpiresAt)
+            // One past only its renewal date is read by its stream's catch-up, which renews or ends it.
+            else if (now >= MaxLifetimeEnd(entry))
                 await EndWatchAsync(watch, ExpiredReason(entry), notify: true);
         }
 
@@ -997,7 +1004,7 @@ public sealed partial class McpBridgeService
         TrackParked(RunWatchExpiryAsync());
     }
 
-    /// <summary>Ends watches past their time-to-live, and tells their sessions.</summary>
+    /// <summary>Renews or ends watches past their renewal date, and ends those past their maximum lifetime.</summary>
     private async Task RunWatchExpiryAsync()
     {
         while (!_lifetime.IsCancellationRequested)
@@ -1015,16 +1022,49 @@ public sealed partial class McpBridgeService
         }
     }
 
-    /// <summary>Ends every watch past its time-to-live.</summary>
+    /// <summary>
+    /// Ends every watch past its maximum lifetime. A watch past only its renewal date
+    /// (<see cref="McpBridgeOptions.WatchTtlDays"/>) has its resource read: one that still exists
+    /// is renewed (and a change found is delivered as usual), one that's gone ends the watch, and
+    /// a read that fails leaves it for the next check (#778).
+    /// </summary>
     internal async Task ExpireWatchesAsync()
     {
         var now = _time.GetUtcNow();
-        foreach (var watch in _watches.Values.Where(w => now >= w.Entry.ExpiresAt).ToList())
-            await EndWatchAsync(watch, ExpiredReason(watch.Entry), notify: true);
+        foreach (var watch in _watches.Values.Where(w => w.Confirmed && now >= w.Entry.ExpiresAt).ToList())
+        {
+            if (now >= MaxLifetimeEnd(watch.Entry))
+                await EndWatchAsync(watch, ExpiredReason(watch.Entry), notify: true);
+            else
+                ScheduleWatchRead(watch, TimeSpan.Zero);
+        }
     }
 
-    private static string ExpiredReason(McpWatchEntry entry) =>
-        $"it expired after {(int)Math.Round((entry.ExpiresAt - entry.CreatedAt).TotalDays)} day(s)";
+    /// <summary>Extends a watch whose resource still exists by another renewal period, up to its maximum lifetime.</summary>
+    private async Task RenewWatchAsync(McpWatchEntry entry)
+    {
+        var renewed = Min(_time.GetUtcNow() + TimeSpan.FromDays(Math.Max(1, _options.WatchTtlDays)), MaxLifetimeEnd(entry));
+        entry.ExpiresAt = renewed;
+        try
+        {
+            await _watchLedger.UpdateAsync(entry.WatchId, e => e.ExpiresAt = renewed, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // At worst a restart reads it again sooner and renews it then.
+            _logger.LogWarning(ex, "Could not record the renewal of watch {WatchId}", entry.WatchId);
+        }
+
+        _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) renewed until {ExpiresAt:u}: its resource still exists",
+            entry.WatchId, entry.Server, entry.Uri, renewed);
+    }
+
+    /// <summary>When a watch ends however often it was renewed.</summary>
+    private DateTimeOffset MaxLifetimeEnd(McpWatchEntry entry) =>
+        entry.CreatedAt + TimeSpan.FromDays(Math.Max(1, _options.WatchMaxLifetimeDays));
+
+    private string ExpiredReason(McpWatchEntry entry) =>
+        $"it reached its maximum lifetime of {Math.Max(1, _options.WatchMaxLifetimeDays)} day(s)";
 
     // ── Lookups ─────────────────────────────────────────────────────────────
 

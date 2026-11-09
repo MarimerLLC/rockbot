@@ -309,7 +309,7 @@ naming, the workflow for the run's wrapper mode, the `mcp/{server}` skill to rea
 `mcp_invoke_tool` escape hatch. The full reference is the `mcp` tool guide
 (`McpToolSkillProvider`), fetched with `get_tool_guide`.
 
-A downstream server's own `instructions` are capped by `McpInstructionsCap`: 2,000 characters in
+A downstream server's own `instructions` are capped by `McpInstructionsCap`: 4,000 characters in
 `mcp_get_service_details` output, and 8,000 in the prompt the bridge uses to write the server's
 summary. Longer text is cut on a line boundary and ends with an explicit
 `[Server instructions truncated: N of M characters shown. ...]` marker, which names the server's
@@ -763,6 +763,9 @@ What happens:
   `mcp_watch_resource(server_name, uri)` and `mcp_unwatch_resource(server_name, uri)`. A watch
   reads the resource once as its baseline and succeeds only if the server acknowledges the
   subscription.
+- **Unasked.** The tool description and the `mcp` guide tell the agent to watch, without being
+  asked, what it starts whose outcome comes later: a scheduler poll it organizes is watched at
+  `scheduler://events/{shortCode}/status` right after `create_event` (#778).
 - **Stream.** The bridge holds one `subscriptions/listen` stream per server, carrying every
   watched URI. It reopens it whenever it ends (the scheduler ends its own after 25 minutes instead
   of sending keepalives), after `McpBridge:SubscriptionStreamMaxMinutes` (25), on a new connection
@@ -778,8 +781,10 @@ What happens:
 - **Restarts.** Watches are written to `McpBridge:WatchLedgerPath` (default `mcp/watches.json`):
   server, URI, session and the last delivered hash, never the content.
 - **Endings.** The agent unwatches; the resource is gone; the server stops acknowledging it, is
-  removed, or its entry turns `subscriptions` off; or `McpBridge:WatchTtlDays` (14) passes. Every
-  ending but the agent's own is told to the session.
+  removed, or its entry turns `subscriptions` off; or `McpBridge:WatchMaxLifetimeDays` (90)
+  passes. Every `McpBridge:WatchTtlDays` (14) the bridge reads the resource: one that still
+  exists renews the watch, one that's gone ends it. Every ending but the agent's own is told to
+  the session.
 - **Limits.** `McpBridge:MaxWatchesPerSession` (10) and `McpBridge:MaxWatches` (50). Past them
   the watch is refused with an error that lists the session's watches.
 
