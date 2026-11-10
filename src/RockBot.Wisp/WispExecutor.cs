@@ -351,11 +351,18 @@ internal sealed class WispExecutor(
             ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
 
         // Additionally write to shared volume file if output_to is specified
-        if (!string.IsNullOrEmpty(step.OutputTo))
+        if (await TryWriteOutputToAsync(step, wispId, stepContent, ct) is { } writeError)
         {
-            await WriteToSharedVolumeAsync(step.OutputTo, stepContent, ct);
-            logger.LogDebug("Wisp {WispId} step {StepId} wrote output to shared volume: {Path}",
-                wispId, step.Id, step.OutputTo);
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = call.Content,
+                Error = writeError,
+                Duration = stepSw.Elapsed,
+                ToolCalls = [call.ToolCall!]
+            };
         }
 
         return new WispStepResult
@@ -744,7 +751,7 @@ internal sealed class WispExecutor(
                 var item = new ForEachItem(items[i], i, step.As);
                 var route = GatewayRouter.Route(step, wispId, priorResults, typed, item);
                 var outcome = route.IsSuccess
-                    ? await InvokeOnceAsync(step, typed, route, $"wisp-{wispId}-{step.Id}-{i}", i, wispId, parentSessionId, ct)
+                    ? await InvokeOnceAsync(step, typed, route, ItemToolCallId(wispId, step.Id, i), i, wispId, parentSessionId, ct)
                     : DirectCallOutcome.Failed(new WispStepError
                     {
                         Category = route.ErrorCategory ?? FailureCategory.Structural,
@@ -849,11 +856,21 @@ internal sealed class WispExecutor(
             };
         }
 
-        if (!string.IsNullOrEmpty(step.OutputTo))
+        // A failed write leaves the step failed but keeps every item's outcome and call: their
+        // changes already happened, and a retry must not repeat them blindly.
+        if (await TryWriteOutputToAsync(step, wispId, content, ct) is { } writeError)
         {
-            await WriteToSharedVolumeAsync(step.OutputTo, content, ct);
-            logger.LogDebug("Wisp {WispId} step {StepId} wrote for_each output to shared volume: {Path}",
-                wispId, step.Id, step.OutputTo);
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = content,
+                Error = writeError,
+                Duration = stepSw.Elapsed,
+                ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
+                ItemOutcome = itemOutcome
+            };
         }
 
         return new WispStepResult
@@ -867,6 +884,16 @@ internal sealed class WispExecutor(
             ItemOutcome = itemOutcome
         };
     }
+
+    /// <summary>
+    /// The tool-call id of one <c>for_each</c> item. Some executors correlate a reply by this id
+    /// alone (<c>MessageBusScriptRunner</c>), so it must never equal another call's id: a plain
+    /// <c>{step}-{index}</c> suffix would match a later step named, say, <c>fetch-0</c>, and a late
+    /// reply to a timed-out item could complete that step. The random suffix keeps every item's id
+    /// unique; the index stays readable in logs.
+    /// </summary>
+    internal static string ItemToolCallId(string wispId, string stepId, int index) =>
+        $"wisp-{wispId}-{stepId}-item{index}-{Guid.NewGuid().ToString("N")[..8]}";
 
     private static readonly JsonWriterOptions ForEachWriterOptions = new()
     {
@@ -1371,6 +1398,41 @@ internal sealed class WispExecutor(
     }
 
     // ── Shared volume file I/O ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Writes a direct step's output to its <c>output_to</c> file, if it has one. Returns the error
+    /// when the write fails — a directory at the path, a read-only volume, cancellation — so the
+    /// caller can fail the step while keeping the tool calls that already ran. Thrown out of the
+    /// step, the failure would replace the step result and lose that evidence.
+    /// </summary>
+    private async Task<WispStepError?> TryWriteOutputToAsync(
+        WispStep step, string wispId, string content, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(step.OutputTo))
+            return null;
+
+        try
+        {
+            await WriteToSharedVolumeAsync(step.OutputTo, content, ct);
+            logger.LogDebug("Wisp {WispId} step {StepId} wrote output to shared volume: {Path}",
+                wispId, step.Id, step.OutputTo);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Wisp {WispId} step {StepId}: writing output_to '{Path}' failed",
+                wispId, step.Id, step.OutputTo);
+            var reason = ex is OperationCanceledException
+                ? "the step was cancelled while writing it"
+                : ex.Message;
+            return new WispStepError
+            {
+                Category = FailureCategory.External,
+                Message = $"The step's tool call(s) ran, but writing their output to output_to '{step.OutputTo}' " +
+                          $"failed: {reason}. The step output and calls are kept; don't repeat the calls that succeeded."
+            };
+        }
+    }
 
     private async Task WriteToSharedVolumeAsync(string relativePath, string content, CancellationToken ct)
     {

@@ -480,9 +480,77 @@ public class WispForEachTests
         var calls = result.StepResults[1].ToolCalls!;
         Assert.AreEqual(3, calls.Count);
         Assert.AreEqual("wisp wisp-fe step fetch item 2", calls[2].Detail);
-        CollectionAssert.AreEqual(
-            new[] { "wisp-wisp-fe-fetch-0", "wisp-wisp-fe-fetch-1", "wisp-wisp-fe-fetch-2" },
-            browse.Calls.Select(c => c.ToolCallId).ToArray());
+
+        // Item ids carry the index but are unique: some executors correlate replies by id alone,
+        // and "wisp-wisp-fe-fetch-0" is the id a later step named "fetch-0" would get.
+        var ids = browse.Calls.Select(c => c.ToolCallId).ToList();
+        for (var i = 0; i < ids.Count; i++)
+            StringAssert.StartsWith(ids[i], $"wisp-wisp-fe-fetch-item{i}-");
+        Assert.AreEqual(3, ids.Distinct().Count());
+        CollectionAssert.DoesNotContain(ids, "wisp-wisp-fe-fetch-0");
+    }
+
+    [TestMethod]
+    public void ItemToolCallIds_AreUniqueAcrossRuns()
+    {
+        Assert.AreNotEqual(
+            WispExecutor.ItemToolCallId("wisp-1", "fetch", 0),
+            WispExecutor.ItemToolCallId("wisp-1", "fetch", 0));
+    }
+
+    [TestMethod]
+    public async Task OutputToWriteFailure_FailsTheStep_ButKeepsEveryItemsOutcomeAndCall()
+    {
+        var volume = Path.Combine(Path.GetTempPath(), $"rockbot-foreach-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(volume, "taken")); // output_to names a directory
+        try
+        {
+            var (executor, registry, memory) = Create(new WispOptions { SharedVolumePath = volume });
+            Register(registry, "web_browse", _ => Ok("done"));
+            RegisterSource(registry, ThreeItems);
+
+            var fetch = ForEachStep() with { OutputTo = "taken" };
+            var result = await executor.ExecuteAsync(Wisp(fetch), "wisp-fe", CancellationToken.None);
+
+            var step = result.StepResults[1];
+            Assert.IsFalse(step.IsSuccess);
+            Assert.AreEqual(FailureCategory.External, step.Error!.Category);
+            StringAssert.Contains(step.Error.Message, "writing their output to output_to 'taken' failed");
+            Assert.AreEqual(3, step.ToolCalls!.Count(c => c.Succeeded), "the completed calls are still reported");
+            Assert.AreEqual(3, step.ItemOutcome!.Succeeded);
+            Assert.AreEqual(3, JsonDocument.Parse(step.Content!).RootElement.GetArrayLength());
+            Assert.AreEqual(step.Content, memory.Store["wisp/wisp-fe/fetch/output"]);
+        }
+        finally
+        {
+            try { Directory.Delete(volume, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [TestMethod]
+    public async Task OutputToWriteFailure_OnAPlainDirectStep_KeepsItsCall()
+    {
+        var volume = Path.Combine(Path.GetTempPath(), $"rockbot-foreach-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(volume, "taken"));
+        try
+        {
+            var (executor, registry, _) = Create(new WispOptions { SharedVolumePath = volume });
+            RegisterSource(registry, ThreeItems);
+
+            var result = await executor.ExecuteAsync(
+                new WispDefinition { Description = "d", Steps = [SearchStep() with { OutputTo = "taken" }] },
+                "wisp-fe", CancellationToken.None);
+
+            var step = result.StepResults[0];
+            Assert.IsFalse(step.IsSuccess);
+            StringAssert.Contains(step.Error!.Message, "output_to 'taken' failed");
+            Assert.IsTrue(step.ToolCalls!.Single().Succeeded);
+            Assert.AreEqual(ThreeItems, step.Content);
+        }
+        finally
+        {
+            try { Directory.Delete(volume, recursive: true); } catch { /* best-effort */ }
+        }
     }
 
     // ── Gateways ─────────────────────────────────────────────────────────────
