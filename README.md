@@ -2,7 +2,7 @@
 
 An event-driven autonomous agent framework.
 
-<img width="200" height="200" alt="rockbot" src="https://github.com/user-attachments/assets/bdc07b74-eaca-4255-acf2-6522c29c91ba" />
+<img width="153" height="153" alt="RockBot logo" src="docs/assets/images/rockbot-s.png" />
 
 ---
 
@@ -19,6 +19,36 @@ You can get an overview via this [RockBot web presentation](https://marimerllc.g
 ## Community
 
 * [Discord server](https://discord.gg/eQjxWG6KYN)
+
+## RockBot ecosystem
+
+RockBot is one part of a family of projects that work together. Each runs as its own service, and each holds only the secrets it needs.
+
+### Agents in this repo
+
+| Project | What it is |
+|---|---|
+| [`RockBot.Agent`](src/RockBot.Agent) | The primary RockBot agent: chat, memory, skills, scheduled tasks, subagents and the dream service |
+| [`RockBot.ResearchAgent`](src/RockBot.ResearchAgent) | Research agent served as an MCP server with one `research` tool: scoped, multi-source research with a source log |
+| [`RockBot.AdvisorCouncil`](src/RockBot.AdvisorCouncil) | Advisor council served as an MCP server with one `advise` tool: several advisor personas deliberate on a decision |
+| [`RockBot.SampleAgent`](src/RockBot.SampleAgent) / [`RockBot.SampleAgent.Http`](src/RockBot.SampleAgent.Http) | Minimal A2A agents, over the message bus and over HTTP, to start your own agent from |
+
+### MCP servers in this repo
+
+| Project | What it is |
+|---|---|
+| [`McpServer.Introspection`](src/McpServer.Introspection) | Agent self-inspection: its name, LLM pricing, Copilot quota, memory audit and tier-routing stats |
+| [`McpServer.TodoApp`](src/McpServer.TodoApp) | Persistent to-do list with due dates and recurrence |
+| [`McpServer.OpenRouter`](src/McpServer.OpenRouter) | Read-only OpenRouter account, credit, model and usage data |
+
+### Related projects
+
+| Project | What it is |
+|---|---|
+| [Adjutant](https://github.com/MarimerLLC/adjutant) | MCP server for email, calendar and contacts across multiple accounts: Microsoft 365, Outlook.com, Google Workspace, IMAP/SMTP, iCalendar feeds and JSON sources |
+| [Scheduler](https://github.com/MarimerLLC/scheduler) | Finds a meeting time across people and organizations without anyone sharing their calendar; an MCP server, web UI and email, where everyone votes on the organizer's proposed times |
+| [MCP Aggregator](https://github.com/MarimerLLC/mcp-aggregator) | Gateway that puts many MCP servers behind one endpoint, with lazy loading, dynamic registration and both MCP and REST interfaces |
+| [AgentRegistry](https://github.com/MarimerLLC/agentregistry) | Protocol-agnostic registry where agents (A2A, MCP, ACP) register and find each other, over HTTP or queues, including ephemeral agents |
 
 ## RockBot Implementation
 
