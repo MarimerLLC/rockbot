@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write   # NuGet trusted publishing (OIDC)
 
     steps:
       - uses: actions/checkout@v4
@@ -36,11 +37,20 @@ jobs:
       - name: Pack
         run: dotnet pack RockBot.slnx --configuration Release --no-build --output ./nupkgs -p:Version=${{ steps.version.outputs.version }}
 
+      # Trusted publishing: exchange the GitHub OIDC token for a short-lived
+      # (1 hour) NuGet API key. Requires a matching trusted publishing policy
+      # on nuget.org (repo MarimerLLC/rockbot, workflow release.yml).
+      - name: NuGet login
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: rockfordlhotka
+
       - name: Push to NuGet
         run: |
           for pkg in ./nupkgs/*.nupkg; do
             dotnet nuget push "$pkg" \
-              --api-key ${{ secrets.NUGET_API_KEY }} \
+              --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
               --source https://api.nuget.org/v3/index.json \
               --skip-duplicate
           done
