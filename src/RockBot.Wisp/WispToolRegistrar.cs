@@ -69,7 +69,12 @@ internal sealed class WispToolRegistrar(
                             "action": { "type": "string", "enum": ["abort", "skip_to"] },
                             "skip_to": { "type": "string", "description": "Step ID to jump to on failure." }
                           }
-                        }
+                        },
+                        "for_each": { "type": "string", "description": "Direct steps only, not A2A. Run this step once per element of a JSON array from an earlier step: a single {{steps.<id>.result}} or {{steps.<id>.result.<path>}} template that resolves to an array. Reference the element in params as {{item}} / {{item.<field>}}, its position as {{item_index}}. Zero LLM tokens. Result: a JSON array in input order of {index, ok, result} or {index, ok:false, error}." },
+                        "as": { "type": "string", "description": "for_each only: an alias for {{item}}, e.g. \"msg\" for {{msg.id}}." },
+                        "max_items": { "type": "integer", "minimum": 1, "description": "for_each only: most elements allowed (default 25, ceiling 100). A longer list fails the step before any element runs." },
+                        "concurrency": { "type": "integer", "minimum": 1, "description": "for_each only: elements run at once (default 1, maximum 4)." },
+                        "on_item_failure": { "type": "string", "enum": ["abort", "continue"], "description": "for_each only: abort (default) stops at the first failed element and fails the step; continue runs the rest and succeeds if any element succeeded." }
                       },
                       "required": ["id", "mode"]
                     }
@@ -117,6 +122,12 @@ internal sealed class WispToolRegistrar(
                 - `{{steps.<id>.output_to}}` — the file path that step wrote to.
                 If a template can't be resolved it is left literal in the params and the
                 tool call will fail — check your path against the upstream step's output.
+
+                Fan-out: a Direct step with `"for_each": "{{steps.<id>.result.<path>}}"` runs once
+                per element of that array, with zero LLM tokens. Its params use `{{item}}`,
+                `{{item.<field>}}` and `{{item_index}}`. Use for_each when the list comes from an
+                earlier step; put independent work you already know in separate definitions of
+                one batch instead. See get_tool_guide("wisp") for limits and the result shape.
                 """,
             ParametersSchema = SpawnWispsSchema,
             Source = "wisp"

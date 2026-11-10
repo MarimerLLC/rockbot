@@ -144,23 +144,39 @@ internal sealed class WispExecutor(
 
             try
             {
-                stepResult = step.Mode switch
+                // #779: for_each is checked before either mode runs, so an LLM step that tries to
+                // iterate is refused rather than silently running once.
+                if (ForEachStepValidator.Validate(step, i, definition) is { } forEachError)
                 {
-                    StepMode.Direct => await ExecuteDirectStepAsync(step, i, wispId, parentSessionId, wispNamespace, resultsByStepId, ct),
-                    StepMode.Llm => await ExecuteLlmStepAsync(step, i, definition, wispId, parentSessionId, wispNamespace, resultsByStepId, ct),
-                    _ => new WispStepResult
+                    stepResult = new WispStepResult
                     {
                         StepId = step.Id,
                         StepIndex = i,
                         IsSuccess = false,
-                        Error = new WispStepError
-                        {
-                            Category = FailureCategory.Structural,
-                            Message = $"Unknown step mode: {step.Mode}"
-                        },
+                        Error = forEachError,
                         Duration = stepSw.Elapsed
-                    }
-                };
+                    };
+                }
+                else
+                {
+                    stepResult = step.Mode switch
+                    {
+                        StepMode.Direct => await ExecuteDirectStepAsync(step, i, wispId, parentSessionId, wispNamespace, resultsByStepId, ct),
+                        StepMode.Llm => await ExecuteLlmStepAsync(step, i, definition, wispId, parentSessionId, wispNamespace, resultsByStepId, ct),
+                        _ => new WispStepResult
+                        {
+                            StepId = step.Id,
+                            StepIndex = i,
+                            IsSuccess = false,
+                            Error = new WispStepError
+                            {
+                                Category = FailureCategory.Structural,
+                                Message = $"Unknown step mode: {step.Mode}"
+                            },
+                            Duration = stepSw.Elapsed
+                        }
+                    };
+                }
             }
             catch (OperationCanceledException)
             {
@@ -289,22 +305,109 @@ internal sealed class WispExecutor(
     {
         var stepSw = Stopwatch.StartNew();
 
-        // Structural validation that doesn't depend on the registry. Catches
-        // semantic-incompatibility authoring mistakes (e.g. output_to on an A2A
-        // step, which would silently capture a dispatch stub and cause a
-        // downstream step to fail while the remote task kept running).
-        var structuralError = A2AStepValidator.Validate(step);
-        if (structuralError is not null)
+        // Validation, MCP resolution and schema correction happen once, on the step as written.
+        // For a for_each step its {{item...}} placeholders stay literal here; they don't change the
+        // params' keys, which is all the schema check looks at.
+        var prepared = await PrepareDirectStepAsync(step, wispId, parentSessionId, priorResults, ct);
+        if (prepared.Error is { } prepareError)
         {
             return new WispStepResult
             {
                 StepId = step.Id,
                 StepIndex = index,
                 IsSuccess = false,
-                Error = structuralError,
+                Error = prepareError,
                 Duration = stepSw.Elapsed
             };
         }
+        step = prepared.Step;
+
+        if (step.IsIterated)
+            return await ExecuteForEachStepAsync(step, prepared.Typed, index, wispId, parentSessionId,
+                wispNamespace, priorResults, stepSw, ct);
+
+        var call = await InvokeOnceAsync(step, prepared.Typed, prepared.Route!, $"wisp-{wispId}-{step.Id}",
+            itemIndex: null, wispId, parentSessionId, ct);
+        stepSw.Stop();
+
+        if (!call.Succeeded)
+        {
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = call.Content,
+                Error = call.Error,
+                Duration = stepSw.Elapsed,
+                ToolCalls = call.ToolCall is { } failedCall ? [failedCall] : null
+            };
+        }
+
+        // Always write step output to working memory for inter-step access by LLM steps
+        var stepContent = call.Content ?? "";
+        var outputKey = $"{wispNamespace}/{step.Id}/output";
+        await workingMemory.SetAsync(outputKey, stepContent,
+            ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
+
+        // Additionally write to shared volume file if output_to is specified
+        if (await TryWriteOutputToAsync(step, wispId, stepContent, ct) is { } writeError)
+        {
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = call.Content,
+                Error = writeError,
+                Duration = stepSw.Elapsed,
+                ToolCalls = [call.ToolCall!]
+            };
+        }
+
+        return new WispStepResult
+        {
+            StepId = step.Id,
+            StepIndex = index,
+            IsSuccess = true,
+            Content = call.Content,
+            Duration = stepSw.Elapsed,
+            ToolCalls = [call.ToolCall!]
+        };
+    }
+
+    /// <summary>
+    /// A direct step after validation: the step to run (MCP shorthand canonicalized, params
+    /// possibly filled or corrected), its typed MCP wrapper if any, and its route — or the error
+    /// that stopped it before any tool ran.
+    /// </summary>
+    private sealed record PreparedDirectStep(
+        WispStep Step, McpToolEntry? Typed, ToolRouteResult? Route, WispStepError? Error);
+
+    private static PreparedDirectStep PrepareFailed(WispStep step, WispStepError error) =>
+        new(step, null, null, error);
+
+    private static PreparedDirectStep PrepareFailed(WispStep step, ToolRouteResult route) =>
+        PrepareFailed(step, new WispStepError
+        {
+            Category = route.ErrorCategory ?? FailureCategory.Structural,
+            Message = route.ErrorMessage!
+        });
+
+    private async Task<PreparedDirectStep> PrepareDirectStepAsync(
+        WispStep step,
+        string wispId,
+        string? parentSessionId,
+        IReadOnlyDictionary<string, WispStepResult> priorResults,
+        CancellationToken ct)
+    {
+        // Structural validation that doesn't depend on the registry. Catches
+        // semantic-incompatibility authoring mistakes (e.g. output_to on an A2A
+        // step, which would silently capture a dispatch stub and cause a
+        // downstream step to fail while the remote task kept running).
+        var structuralError = A2AStepValidator.Validate(step);
+        if (structuralError is not null)
+            return PrepareFailed(step, structuralError);
 
         // Resolve an MCP step to its downstream tool and, when it has one, its typed wrapper
         // (#647). The shorthand ("tool": "server__tool") becomes server + tool here, so validation
@@ -314,37 +417,16 @@ internal sealed class WispExecutor(
         {
             var (resolvedStep, entry, resolveError) = await ResolveMcpStepAsync(step, wispId, ct);
             if (resolveError is not null)
-            {
-                return new WispStepResult
-                {
-                    StepId = step.Id,
-                    StepIndex = index,
-                    IsSuccess = false,
-                    Error = resolveError,
-                    Duration = stepSw.Elapsed
-                };
-            }
+                return PrepareFailed(step, resolveError);
             step = resolvedStep;
             typed = entry?.Wrapper is not null ? entry : null;
         }
 
-        // Route the step to a tool invocation
+        // Route the step to a tool invocation. A for_each step is routed again per item; this
+        // pass catches the structural errors (missing tool, agent, script) that don't depend on it.
         var route = GatewayRouter.Route(step, wispId, priorResults, typed);
         if (!route.IsSuccess)
-        {
-            return new WispStepResult
-            {
-                StepId = step.Id,
-                StepIndex = index,
-                IsSuccess = false,
-                Error = new WispStepError
-                {
-                    Category = route.ErrorCategory ?? FailureCategory.Structural,
-                    Message = route.ErrorMessage!
-                },
-                Duration = stepSw.Elapsed
-            };
-        }
+            return PrepareFailed(step, route);
 
         // Pre-flight schema validation for MCP gateway steps. Catches authoring
         // mistakes (missing required fields, unknown fields under a closed schema)
@@ -358,128 +440,106 @@ internal sealed class WispExecutor(
         // round-trip; otherwise we fall through to a single focused LLM correction.
         var validation = await McpStepValidator.ValidateDetailedAsync(
             step, toolRegistry, preflightRecovery, ct);
-        if (validation.Error is { } validationError)
+        if (validation.Error is not { } validationError)
+            return new PreparedDirectStep(step, typed, route, null);
+
+        string? enrichedContext = null;
+
+        if (preflightRecovery is not null && validation.MissingFields.Count > 0)
         {
-            string? enrichedContext = null;
+            var (filledStep, unresolved, enriched) =
+                await TryFillPreflightDefaultsAsync(step, validation.MissingFields, parentSessionId, ct);
+            enrichedContext = enriched;
 
-            if (preflightRecovery is not null && validation.MissingFields.Count > 0)
+            if (filledStep is not null)
             {
-                var (filledStep, unresolved, enriched) =
-                    await TryFillPreflightDefaultsAsync(step, validation.MissingFields, parentSessionId, ct);
-                enrichedContext = enriched;
-
-                if (filledStep is not null)
+                // Some (possibly all) missing fields filled silently — re-route +
+                // re-validate against the merged params. A clean pass proceeds
+                // to invocation; otherwise we keep filledStep as the new baseline
+                // for the LLM correction so it doesn't have to re-derive defaults.
+                step = filledStep;
+                route = GatewayRouter.Route(step, wispId, priorResults, typed);
+                if (!route.IsSuccess)
+                    return PrepareFailed(step, route);
+                var afterFill = await McpStepValidator.ValidateDetailedAsync(
+                    step, toolRegistry, preflightRecovery, ct);
+                if (afterFill.Error is null)
                 {
-                    // Some (possibly all) missing fields filled silently — re-route +
-                    // re-validate against the merged params. A clean pass proceeds
-                    // to invocation; otherwise we keep filledStep as the new baseline
-                    // for the LLM correction so it doesn't have to re-derive defaults.
-                    step = filledStep;
-                    route = GatewayRouter.Route(step, wispId, priorResults, typed);
-                    if (!route.IsSuccess)
-                    {
-                        return new WispStepResult
-                        {
-                            StepId = step.Id,
-                            StepIndex = index,
-                            IsSuccess = false,
-                            Error = new WispStepError
-                            {
-                                Category = route.ErrorCategory ?? FailureCategory.Structural,
-                                Message = route.ErrorMessage!
-                            },
-                            Duration = stepSw.Elapsed
-                        };
-                    }
-                    var afterFill = await McpStepValidator.ValidateDetailedAsync(
-                        step, toolRegistry, preflightRecovery, ct);
-                    if (afterFill.Error is null)
-                    {
-                        logger.LogInformation(
-                            "Wisp {WispId} step {StepId}: pre-flight recovery filled environmental defaults for {Server}/{Tool}; proceeding without LLM correction",
-                            wispId, step.Id, step.Server, step.Tool);
-                        goto invoke;
-                    }
-                    // Still failing — carry the residual validation error into auto-correction.
-                    validationError = afterFill.Error;
+                    logger.LogInformation(
+                        "Wisp {WispId} step {StepId}: pre-flight recovery filled environmental defaults for {Server}/{Tool}; proceeding without LLM correction",
+                        wispId, step.Id, step.Server, step.Tool);
+                    return new PreparedDirectStep(step, typed, route, null);
                 }
+                // Still failing — carry the residual validation error into auto-correction.
+                validationError = afterFill.Error;
             }
-
-            var corrected = await TryAutoCorrectMcpParamsAsync(step, validationError, enrichedContext, ct);
-            if (corrected is null)
-            {
-                return new WispStepResult
-                {
-                    StepId = step.Id,
-                    StepIndex = index,
-                    IsSuccess = false,
-                    Error = validationError,
-                    Duration = stepSw.Elapsed
-                };
-            }
-
-            // Re-route with corrected params. A fresh validation pass proves the
-            // correction is schema-clean; if it isn't, bubble the original error
-            // rather than trying again.
-            step = corrected;
-            route = GatewayRouter.Route(step, wispId, priorResults, typed);
-            if (!route.IsSuccess)
-            {
-                return new WispStepResult
-                {
-                    StepId = step.Id,
-                    StepIndex = index,
-                    IsSuccess = false,
-                    Error = new WispStepError
-                    {
-                        Category = route.ErrorCategory ?? FailureCategory.Structural,
-                        Message = route.ErrorMessage!
-                    },
-                    Duration = stepSw.Elapsed
-                };
-            }
-            var recheck = await McpStepValidator.ValidateAsync(
-                step, toolRegistry, preflightRecovery, ct);
-            if (recheck is not null)
-            {
-                return new WispStepResult
-                {
-                    StepId = step.Id,
-                    StepIndex = index,
-                    IsSuccess = false,
-                    Error = validationError,
-                    Duration = stepSw.Elapsed
-                };
-            }
-            logger.LogInformation(
-                "Wisp {WispId} step {StepId}: auto-corrected schema validation failure for {Server}/{Tool}",
-                wispId, step.Id, step.Server, step.Tool);
         }
 
-    invoke:
+        var corrected = await TryAutoCorrectMcpParamsAsync(step, validationError, enrichedContext, ct);
+        if (corrected is null)
+            return PrepareFailed(step, validationError);
+
+        // Re-route with corrected params. A fresh validation pass proves the
+        // correction is schema-clean; if it isn't, bubble the original error
+        // rather than trying again.
+        step = corrected;
+        route = GatewayRouter.Route(step, wispId, priorResults, typed);
+        if (!route.IsSuccess)
+            return PrepareFailed(step, route);
+        var recheck = await McpStepValidator.ValidateAsync(
+            step, toolRegistry, preflightRecovery, ct);
+        if (recheck is not null)
+            return PrepareFailed(step, validationError);
+        logger.LogInformation(
+            "Wisp {WispId} step {StepId}: auto-corrected schema validation failure for {Server}/{Tool}",
+            wispId, step.Id, step.Server, step.Tool);
+
+        return new PreparedDirectStep(step, typed, route, null);
+    }
+
+    /// <summary>
+    /// The outcome of one tool call made by a direct step: the step's single call, or one element
+    /// of a <c>for_each</c> step (#779). <see cref="ToolCall"/> is null when no tool ran (the
+    /// executor wasn't registered).
+    /// </summary>
+    private sealed record DirectCallOutcome(
+        bool Succeeded, string? Content, WispStepError? Error, LoopToolCall? ToolCall)
+    {
+        public static DirectCallOutcome Failed(WispStepError error, string? content = null, LoopToolCall? call = null) =>
+            new(false, content, error, call);
+    }
+
+    /// <summary>
+    /// Makes one routed call of a direct step: the consequential-action gate, executor resolution,
+    /// the invocation itself, and classification of an error or soft-error response. Shared by
+    /// plain direct steps and each element of a <c>for_each</c> step.
+    /// </summary>
+    private async Task<DirectCallOutcome> InvokeOnceAsync(
+        WispStep step,
+        McpToolEntry? typed,
+        ToolRouteResult route,
+        string toolCallId,
+        int? itemIndex,
+        string wispId,
+        string? parentSessionId,
+        CancellationToken ct)
+    {
         // #685: a direct step runs inside its parent's tool call, under the parent run's
         // consequential-action scope. An external change the originating user message didn't ask
         // for is refused before the tool is resolved or run.
         if (await ActionGateContext.CheckAsync(route.ToolName!, route.Arguments, ct) is { } refusal)
         {
-            stepSw.Stop();
             logger.LogInformation("Wisp {WispId} step {StepId}: {Tool} refused by the consequential-action gate",
                 wispId, step.Id, route.ToolName);
-            return new WispStepResult
-            {
-                StepId = step.Id,
-                StepIndex = index,
-                IsSuccess = false,
-                Content = refusal,
-                Error = new WispStepError
+            return DirectCallOutcome.Failed(
+                new WispStepError
                 {
                     Category = FailureCategory.Judgment,
                     Message = refusal,
                     ToolName = route.ToolName
                 },
-                Duration = stepSw.Elapsed,
-                ToolCalls = [NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false)]
-            };
+                content: refusal,
+                call: NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false, itemIndex));
         }
 
         // Resolve the executor from the registry. MCP management tools (e.g.
@@ -500,34 +560,20 @@ internal sealed class WispExecutor(
                 logger.LogWarning(
                     "Wisp {WispId} step {StepId}: MCP management tool '{Tool}' not registered after waiting {Wait} — treating as transient (MCP bridge index not yet received)",
                     wispId, step.Id, route.ToolName, options.McpReadinessWait);
-                return new WispStepResult
+                return DirectCallOutcome.Failed(new WispStepError
                 {
-                    StepId = step.Id,
-                    StepIndex = index,
-                    IsSuccess = false,
-                    Error = new WispStepError
-                    {
-                        Category = FailureCategory.External,
-                        Message = $"MCP management tool '{route.ToolName}' is not registered yet (MCP bridge index not yet received); treating as transient.",
-                        ToolName = route.ToolName
-                    },
-                    Duration = stepSw.Elapsed
-                };
+                    Category = FailureCategory.External,
+                    Message = $"MCP management tool '{route.ToolName}' is not registered yet (MCP bridge index not yet received); treating as transient.",
+                    ToolName = route.ToolName
+                });
             }
 
-            return new WispStepResult
+            return DirectCallOutcome.Failed(new WispStepError
             {
-                StepId = step.Id,
-                StepIndex = index,
-                IsSuccess = false,
-                Error = new WispStepError
-                {
-                    Category = FailureCategory.Structural,
-                    Message = $"Tool '{route.ToolName}' is not registered",
-                    ToolName = route.ToolName
-                },
-                Duration = stepSw.Elapsed
-            };
+                Category = FailureCategory.Structural,
+                Message = $"Tool '{route.ToolName}' is not registered",
+                ToolName = route.ToolName
+            });
         }
 
         // Invoke the tool. Use the parent session id when available so
@@ -536,14 +582,35 @@ internal sealed class WispExecutor(
         // preserve pre-existing behaviour for callers that don't track one.
         var request = new ToolInvokeRequest
         {
-            ToolCallId = $"wisp-{wispId}-{step.Id}",
+            ToolCallId = toolCallId,
             ToolName = route.ToolName!,
             Arguments = route.Arguments,
             SessionId = parentSessionId ?? wispId
         };
 
-        var response = await executor.ExecuteAsync(request, ct);
-        stepSw.Stop();
+        ToolInvokeResponse response;
+        try
+        {
+            response = await executor.ExecuteAsync(request, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // The call was attempted, so it is reported as a failed call: a write that threw has
+            // to count toward the batch's failed state-changing calls like one that returned an error.
+            logger.LogWarning(ex, "Wisp {WispId} step {StepId}: {Tool} threw", wispId, step.Id, route.ToolName);
+            return DirectCallOutcome.Failed(
+                new WispStepError
+                {
+                    Category = FailureCategory.External,
+                    Message = ex.Message,
+                    ToolName = route.ToolName
+                },
+                call: NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false, itemIndex));
+        }
 
         // #665: a direct step runs outside any agent loop, so record its artifact here.
         try
@@ -560,21 +627,15 @@ internal sealed class WispExecutor(
         {
             // Classify: tool returned an error
             var category = ClassifyToolError(response.Content);
-            return new WispStepResult
-            {
-                StepId = step.Id,
-                StepIndex = index,
-                IsSuccess = false,
-                Content = response.Content,
-                Error = new WispStepError
+            return DirectCallOutcome.Failed(
+                new WispStepError
                 {
                     Category = category,
                     Message = response.Content ?? "Tool returned an error with no message",
                     ToolName = route.ToolName
                 },
-                Duration = stepSw.Elapsed,
-                ToolCalls = [NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false)]
-            };
+                content: response.Content,
+                call: NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false, itemIndex));
         }
 
         // "Soft" error detection: some MCP servers return 200 OK with a body like
@@ -584,35 +645,232 @@ internal sealed class WispExecutor(
         var softErrorMessage = TryExtractSoftError(response.Content);
         if (softErrorMessage is not null)
         {
-            return new WispStepResult
-            {
-                StepId = step.Id,
-                StepIndex = index,
-                IsSuccess = false,
-                Content = response.Content,
-                Error = new WispStepError
+            return DirectCallOutcome.Failed(
+                new WispStepError
                 {
                     Category = ClassifyToolError(softErrorMessage),
                     Message = softErrorMessage,
                     ToolName = route.ToolName
                 },
+                content: response.Content,
+                call: NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false, itemIndex));
+        }
+
+        return new DirectCallOutcome(true, response.Content, null,
+            NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: true, itemIndex));
+    }
+
+    /// <summary>
+    /// Runs a <c>for_each</c> step (#779): the prepared step once per element of the source array,
+    /// with zero LLM tokens. Elements run up to the step's <c>concurrency</c> at a time; the result
+    /// is a JSON array of per-element outcomes in input order, whatever order they finished in.
+    /// </summary>
+    private async Task<WispStepResult> ExecuteForEachStepAsync(
+        WispStep step,
+        McpToolEntry? typed,
+        int index,
+        string wispId,
+        string? parentSessionId,
+        string wispNamespace,
+        IReadOnlyDictionary<string, WispStepResult> priorResults,
+        Stopwatch stepSw,
+        CancellationToken ct)
+    {
+        WispStepResult Failed(FailureCategory category, string message) => new()
+        {
+            StepId = step.Id,
+            StepIndex = index,
+            IsSuccess = false,
+            Error = new WispStepError { Category = category, Message = message },
+            Duration = stepSw.Elapsed
+        };
+
+        if (!GatewayRouter.TryResolveForEachSource(step.ForEach, priorResults, out var source, out var sourceError))
+            return Failed(FailureCategory.Data, sourceError);
+
+        var items = source.EnumerateArray().ToList();
+        var ceiling = Math.Max(1, options.ForEachMaxItemsCeiling);
+        var maxItems = Math.Min(step.MaxItems ?? options.ForEachDefaultMaxItems, ceiling);
+
+        // Over the cap fails the step before anything runs. Running only the first N would leave
+        // the rest undone while the step reads as complete.
+        if (items.Count > maxItems)
+        {
+            var raise = maxItems < ceiling
+                ? $"Raise 'max_items' (the ceiling is {ceiling}) or narrow the source"
+                : $"{ceiling} is the ceiling, so narrow the source";
+            return Failed(FailureCategory.Data,
+                $"'for_each' source {step.ForEach} has {items.Count} items, more than this step's limit of {maxItems}. " +
+                $"Nothing was run. {raise} (a smaller page size, a stricter search), or split the work across wisps.");
+        }
+
+        var concurrency = Math.Clamp(step.Concurrency ?? 1, 1, Math.Max(1, options.ForEachMaxConcurrency));
+        var continueOnFailure = step.ContinuesOnItemFailure;
+
+        logger.LogInformation(
+            "Wisp {WispId} step {StepId}: for_each over {Count} item(s), concurrency {Concurrency}, on_item_failure={Mode}",
+            wispId, step.Id, items.Count, concurrency, continueOnFailure ? "continue" : "abort");
+
+        // Null until an element has run; one left null never ran (abort stopped launches).
+        var outcomes = new DirectCallOutcome?[items.Count];
+        using var abort = new CancellationTokenSource(); // a flag only: in-flight elements are never cancelled
+        using var slots = new SemaphoreSlim(concurrency);
+        var running = new List<Task>(items.Count);
+        var cancelled = false; // set when cancellation stopped a launch or an item's call
+
+        try
+        {
+            for (var i = 0; i < items.Count; i++)
+            {
+                await slots.WaitAsync(ct);
+                if (abort.IsCancellationRequested)
+                {
+                    slots.Release();
+                    break;
+                }
+                running.Add(RunItemAsync(i));
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Stop launching; the items already done are reported below.
+            cancelled = true;
+        }
+        finally
+        {
+            // Wait for the items already running, cancelled or not: they use the semaphore and
+            // flag disposed when this method returns. RunItemAsync catches everything.
+            await Task.WhenAll(running);
+        }
+        stepSw.Stop();
+
+        async Task RunItemAsync(int i)
+        {
+            try
+            {
+                var item = new ForEachItem(items[i], i, step.As);
+                var route = GatewayRouter.Route(step, wispId, priorResults, typed, item);
+                var outcome = route.IsSuccess
+                    ? await InvokeOnceAsync(step, typed, route, ItemToolCallId(wispId, step.Id, i), i, wispId, parentSessionId, ct)
+                    : DirectCallOutcome.Failed(new WispStepError
+                    {
+                        Category = route.ErrorCategory ?? FailureCategory.Structural,
+                        Message = route.ErrorMessage!
+                    });
+                outcomes[i] = outcome;
+
+                // Items are not written to working memory one by one: a wisp's namespace holds a
+                // limited number of entries, and a large fan-out would push out the aggregate and
+                // later steps' outputs. The aggregate below carries every item's result.
+                if (!outcome.Succeeded && !continueOnFailure)
+                    abort.Cancel();
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                outcomes[i] = DirectCallOutcome.Failed(new WispStepError
+                {
+                    Category = FailureCategory.External,
+                    Message = "Step was cancelled"
+                });
+                cancelled = true;
+                abort.Cancel();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Wisp {WispId} step {StepId}: item {Index} threw", wispId, step.Id, i);
+                outcomes[i] = DirectCallOutcome.Failed(new WispStepError
+                {
+                    Category = FailureCategory.External,
+                    Message = ex.Message
+                });
+                if (!continueOnFailure)
+                    abort.Cancel();
+            }
+            finally
+            {
+                slots.Release();
+            }
+        }
+
+        var failedIndices = new List<int>();
+        var succeeded = 0;
+        var skipped = 0;
+        for (var i = 0; i < outcomes.Length; i++)
+        {
+            if (outcomes[i] is null) skipped++;
+            else if (outcomes[i]!.Succeeded) succeeded++;
+            else failedIndices.Add(i);
+        }
+
+        var itemOutcome = new ForEachItemOutcome(
+            items.Count, succeeded, failedIndices.Count, skipped, failedIndices, continueOnFailure);
+        var content = BuildForEachContent(outcomes);
+        var toolCalls = outcomes.Where(o => o?.ToolCall is not null).Select(o => o!.ToolCall!).ToList();
+
+        logger.LogInformation(
+            "Wisp {WispId} step {StepId}: for_each finished, {Succeeded} of {Count} item(s) succeeded, {Failed} failed, {Skipped} not run",
+            wispId, step.Id, succeeded, items.Count, failedIndices.Count, skipped);
+
+        var isSuccess = !cancelled && (continueOnFailure
+            ? items.Count == 0 || succeeded > 0
+            : failedIndices.Count == 0);
+
+        // The aggregate is the step's output, like a single call's response. It is kept on failure
+        // too, so the parent can see which items did their work before deciding what to redo.
+        await workingMemory.SetAsync($"{wispNamespace}/{step.Id}/output", content,
+            ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
+
+        if (!isSuccess)
+        {
+            WispStepError error;
+            if (cancelled)
+            {
+                error = new WispStepError
+                {
+                    Category = FailureCategory.External,
+                    Message = $"Step was cancelled after {succeeded} of {items.Count} items succeeded " +
+                              $"({failedIndices.Count} failed or were cancelled, {skipped} not run). " +
+                              "The step output lists which items completed."
+                };
+            }
+            else
+            {
+                var first = failedIndices[0];
+                var firstError = outcomes[first]!.Error!;
+                var summary = continueOnFailure
+                    ? $"All {items.Count} items failed. Item {first}: "
+                    : $"Item {first} of {items.Count} failed (on_item_failure: abort; {succeeded} succeeded, {skipped} not run): ";
+                error = firstError with { Message = summary + firstError.Message };
+            }
+
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = content,
+                Error = error,
                 Duration = stepSw.Elapsed,
-                ToolCalls = [NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false)]
+                ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
+                ItemOutcome = itemOutcome
             };
         }
 
-        // Always write step output to working memory for inter-step access by LLM steps
-        var stepContent = response.Content ?? "";
-        var outputKey = $"{wispNamespace}/{step.Id}/output";
-        await workingMemory.SetAsync(outputKey, stepContent,
-            ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
-
-        // Additionally write to shared volume file if output_to is specified
-        if (!string.IsNullOrEmpty(step.OutputTo))
+        // A failed write leaves the step failed but keeps every item's outcome and call: their
+        // changes already happened, and a retry must not repeat them blindly.
+        if (await TryWriteOutputToAsync(step, wispId, content, ct) is { } writeError)
         {
-            await WriteToSharedVolumeAsync(step.OutputTo, stepContent, ct);
-            logger.LogDebug("Wisp {WispId} step {StepId} wrote output to shared volume: {Path}",
-                wispId, step.Id, step.OutputTo);
+            return new WispStepResult
+            {
+                StepId = step.Id,
+                StepIndex = index,
+                IsSuccess = false,
+                Content = content,
+                Error = writeError,
+                Duration = stepSw.Elapsed,
+                ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
+                ItemOutcome = itemOutcome
+            };
         }
 
         return new WispStepResult
@@ -620,10 +878,93 @@ internal sealed class WispExecutor(
             StepId = step.Id,
             StepIndex = index,
             IsSuccess = true,
-            Content = response.Content,
+            Content = content,
             Duration = stepSw.Elapsed,
-            ToolCalls = [NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: true)]
+            ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
+            ItemOutcome = itemOutcome
         };
+    }
+
+    /// <summary>
+    /// The tool-call id of one <c>for_each</c> item. Some executors correlate a reply by this id
+    /// alone (<c>MessageBusScriptRunner</c>), so it must never equal another call's id: a plain
+    /// <c>{step}-{index}</c> suffix would match a later step named, say, <c>fetch-0</c>, and a late
+    /// reply to a timed-out item could complete that step. The random suffix keeps every item's id
+    /// unique; the index stays readable in logs.
+    /// </summary>
+    internal static string ItemToolCallId(string wispId, string stepId, int index) =>
+        $"wisp-{wispId}-{stepId}-item{index}-{Guid.NewGuid().ToString("N")[..8]}";
+
+    private static readonly JsonWriterOptions ForEachWriterOptions = new()
+    {
+        // The aggregate is read by later steps and by the model; keep text readable.
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    /// <summary>
+    /// A <c>for_each</c> step's result (#779): one entry per element, in input order.
+    /// <c>{"index":0,"ok":true,"result":...}</c> carries the call's output (as its JSON value when
+    /// it parses as JSON, scalars included, otherwise as a string); a failed element has <c>"ok":false</c> with its
+    /// <c>error</c> and <c>category</c>; one that never ran has <c>"skipped":true</c>.
+    /// </summary>
+    internal static string BuildForEachContent(IReadOnlyList<(bool Ran, bool Ok, string? Result, WispStepError? Error)> entries)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream, ForEachWriterOptions))
+        {
+            writer.WriteStartArray();
+            for (var i = 0; i < entries.Count; i++)
+            {
+                var (ran, ok, result, error) = entries[i];
+                writer.WriteStartObject();
+                writer.WriteNumber("index", i);
+                writer.WriteBoolean("ok", ran && ok);
+                if (!ran)
+                {
+                    writer.WriteBoolean("skipped", true);
+                }
+                else if (ok)
+                {
+                    writer.WritePropertyName("result");
+                    WriteResultValue(writer, result);
+                }
+                else
+                {
+                    writer.WriteString("error", error?.Message ?? "unknown error");
+                    if (error is not null)
+                        writer.WriteString("category", error.Category.ToString());
+                }
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static string BuildForEachContent(DirectCallOutcome?[] outcomes) =>
+        BuildForEachContent(outcomes
+            .Select(o => (o is not null, o?.Succeeded == true, o?.Content, o?.Error))
+            .ToList());
+
+    private static void WriteResultValue(Utf8JsonWriter writer, string? result)
+    {
+        if (string.IsNullOrWhiteSpace(result))
+        {
+            writer.WriteStringValue(result ?? "");
+            return;
+        }
+
+        // Any JSON value keeps its type — an object, an array, 42, true, null, or a quoted string
+        // (which then appears unquoted). Plain text becomes a string.
+        try
+        {
+            using var doc = JsonDocument.Parse(result);
+            doc.RootElement.WriteTo(writer);
+        }
+        catch (JsonException)
+        {
+            writer.WriteStringValue(result);
+        }
     }
 
     /// <summary>
@@ -631,14 +972,16 @@ internal sealed class WispExecutor(
     /// step routed through <c>mcp_invoke_tool</c> is named <c>{server}__{tool}</c>, like its typed
     /// wrapper, so the evaluator and the side-effect classifier see the downstream tool.
     /// </summary>
-    internal static LoopToolCall NestedCall(WispStep step, string wispId, string? toolName, string? arguments, bool succeeded)
+    internal static LoopToolCall NestedCall(
+        WispStep step, string wispId, string? toolName, string? arguments, bool succeeded, int? itemIndex = null)
     {
         var name = string.Equals(toolName, "mcp_invoke_tool", StringComparison.OrdinalIgnoreCase)
                    && !string.IsNullOrEmpty(step.Server) && !string.IsNullOrEmpty(step.Tool)
             ? $"{step.Server}__{step.Tool}"
             : toolName ?? step.Tool ?? step.Id;
         var args = arguments is { Length: > MaxNestedArgumentChars } ? arguments[..MaxNestedArgumentChars] : arguments;
-        return new LoopToolCall(name, args, succeeded) { Detail = $"wisp {wispId} step {step.Id}" };
+        var where = itemIndex is { } i ? $"wisp {wispId} step {step.Id} item {i}" : $"wisp {wispId} step {step.Id}";
+        return new LoopToolCall(name, args, succeeded) { Detail = where };
     }
 
     private async Task<WispStepResult> ExecuteLlmStepAsync(
@@ -1055,6 +1398,41 @@ internal sealed class WispExecutor(
     }
 
     // ── Shared volume file I/O ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Writes a direct step's output to its <c>output_to</c> file, if it has one. Returns the error
+    /// when the write fails — a directory at the path, a read-only volume, cancellation — so the
+    /// caller can fail the step while keeping the tool calls that already ran. Thrown out of the
+    /// step, the failure would replace the step result and lose that evidence.
+    /// </summary>
+    private async Task<WispStepError?> TryWriteOutputToAsync(
+        WispStep step, string wispId, string content, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(step.OutputTo))
+            return null;
+
+        try
+        {
+            await WriteToSharedVolumeAsync(step.OutputTo, content, ct);
+            logger.LogDebug("Wisp {WispId} step {StepId} wrote output to shared volume: {Path}",
+                wispId, step.Id, step.OutputTo);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Wisp {WispId} step {StepId}: writing output_to '{Path}' failed",
+                wispId, step.Id, step.OutputTo);
+            var reason = ex is OperationCanceledException
+                ? "the step was cancelled while writing it"
+                : ex.Message;
+            return new WispStepError
+            {
+                Category = FailureCategory.External,
+                Message = $"The step's tool call(s) ran, but writing their output to output_to '{step.OutputTo}' " +
+                          $"failed: {reason}. The step output and calls are kept; don't repeat the calls that succeeded."
+            };
+        }
+    }
 
     private async Task WriteToSharedVolumeAsync(string relativePath, string content, CancellationToken ct)
     {

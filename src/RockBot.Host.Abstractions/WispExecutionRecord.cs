@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace RockBot.Host;
 
 /// <summary>
@@ -87,4 +89,40 @@ public sealed record WispExecutionRecord
     /// records as ineligible.
     /// </summary>
     public bool BodyOmittedTooLarge { get; init; }
+
+    /// <summary>
+    /// A compact per-step tally for each <c>for_each</c> step that ran its items (#779). Null —
+    /// and left out of the JSONL line — for a wisp with no such step, and on records from before
+    /// this field existed.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<WispIteratedStepSummary>? IteratedSteps { get; init; }
+}
+
+/// <summary>
+/// How the items of one <c>for_each</c> wisp step fared (#779), as kept in the execution log.
+/// </summary>
+public sealed record WispIteratedStepSummary
+{
+    /// <summary>At most this many failed indices are kept, so a large fan-out stays one short line.</summary>
+    public const int MaxFailedIndices = 10;
+
+    /// <summary>The iterated step's ID.</summary>
+    public required string StepId { get; init; }
+
+    /// <summary>Items in the source list.</summary>
+    public required int Total { get; init; }
+
+    /// <summary>Items whose call succeeded.</summary>
+    public required int Succeeded { get; init; }
+
+    /// <summary>Items whose call failed.</summary>
+    public required int Failed { get; init; }
+
+    /// <summary>Items that never ran because an earlier one failed under <c>on_item_failure: abort</c>.</summary>
+    public int Skipped { get; init; }
+
+    /// <summary>The first <see cref="MaxFailedIndices"/> failed item indices; null when none failed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<int>? FailedIndices { get; init; }
 }

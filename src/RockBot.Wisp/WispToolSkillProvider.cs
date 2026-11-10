@@ -15,10 +15,11 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         # Wisp Pipeline Guide
 
         A wisp is a **deterministic pipeline** — a static step graph the harness executes
-        top-down. No loops. No runtime branching on discovered data. No cross-wisp state.
-        If your workflow requires iterating over items that aren't known when you write
-        the definition, the iteration happens in the *parent agent* — by calling
-        `spawn_wisps` multiple times — not inside a single wisp.
+        top-down. It has exactly one loop: a Direct step can run once per element of a list
+        an earlier step returned (`for_each`, below). No other loops, no runtime branching
+        beyond `on_failure`, no cross-wisp state. Iteration that needs more than that —
+        nested discovery, judgment between stages — happens in the *parent agent*, by
+        calling `spawn_wisps` more than once.
 
         Unlike subagents (which receive full agent context on every LLM round-trip),
         wisps execute steps with minimal or zero LLM involvement — saving 80-95% of tokens
@@ -29,8 +30,9 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         | Good wisp | Bad wisp |
         |-----------|----------|
         | `fetch_event → transform → write_file → send_email` | `discover_accounts → for-each-account: discover_calendars → for-each-calendar: fetch_events` |
-        | Every step's inputs are known (or come from a prior step) | Step count depends on runtime data |
-        | Fan-out is over a list you already have | Fan-out requires looping over a discovered list |
+        | `search_mail → for_each message: get_message` | Step count depends on runtime data |
+        | Every step's inputs are known (or come from a prior step) | A loop nested inside another loop |
+        | Fan-out is one Direct call per element of one list | A loop whose body needs several steps or judgment |
 
         If the shape on the right is what you need, the iteration lives in the parent agent
         (see "When a single wisp is not enough" below).
@@ -47,8 +49,9 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         **Wisps are a bad fit when:**
 
         - The number of steps isn't known until something earlier runs.
-        - A loop is required (for-each over a discovered list, while-condition, retry-until).
-        - Results of one step determine how many downstream steps there should be.
+        - A loop other than `for_each` is required (while-condition, retry-until, a loop
+          nested inside another loop, a loop body of several steps).
+        - Results of one step determine how many *different* downstream steps there should be.
         - Complex conditional branching is needed (if/else trees beyond simple `on_failure`).
         - Heavy reasoning or multi-turn deliberation is required inside the pipeline.
 
@@ -58,9 +61,14 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
 
         ## When a single wisp is not enough
 
-        A wisp has a static step graph — it cannot loop over results or generate new steps
-        from runtime data. When you need per-item processing of items you don't know in
-        advance, iterate at the agent level by calling `spawn_wisps` more than once.
+        A wisp has a static step graph — it cannot generate new steps from runtime data. It
+        can run one Direct step once per element of a discovered list (`for_each`, next
+        section). When the per-item work is more than that one call, or the fan-out is
+        nested, iterate at the agent level by calling `spawn_wisps` more than once.
+
+        **Batch or `for_each`?** Independent work you already know goes in a **batch**: one
+        definition per item in a single `spawn_wisps` call. Fan-out over a list a step
+        discovers at runtime uses **`for_each`** inside one wisp.
 
         **Static fan-out** — you know the N items up front (e.g. a known list of accounts
         to query). Put N definitions in a single `spawn_wisps` call; each has a literal
@@ -85,18 +93,18 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         }
         ```
 
-        **Dynamic fan-out** — you discover the N items at runtime:
+        **Dynamic fan-out, one level** — you discover the N items at runtime and each needs
+        one call: use `for_each` (next section). `list_accounts → for_each account:
+        get_calendar_events` is one wisp, zero LLM tokens.
+
+        **Dynamic fan-out, more than one level, or more than one call per item** — iterate
+        in the parent agent:
 
         1. Discover. Either a direct call to the typed tool (`calendar-mcp__list_accounts`) or a
            small discovery wisp that returns the list.
         2. Read the result in the parent agent.
         3. Compose a second `spawn_wisps` call with N definitions, one per discovered
-           item. Each has a literal `params` — no template can insert a per-account
-           value into a fixed-shape step graph.
-
-        Do **not** try to write a single wisp of the form
-        `list_accounts → [something that loops] → get_calendar_events`. There is no "for
-        each" step. The outer iteration belongs in the parent agent.
+           item. Each has literal `params`, and each can be a multi-step pipeline.
 
         **Multi-stage fan-out — a worked example.** Suppose the user asks "show me every
         meeting tomorrow across all my accounts." The enumeration shape is
@@ -109,6 +117,8 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         2. **Read** the result in the parent agent.
         3. **Batch 2 — parallel per account.** One `spawn_wisps` call with N=3 definitions,
            each calling `list_calendars` with a literal `accountId`. They run concurrently.
+           (Steps 1-3 alone could be one wisp with `for_each`; it is the second level of
+           fan-out, over every account's calendars, that needs the parent.)
         4. **Read** the batch summary; collect the (accountId, calendarId) pairs.
         5. **Batch 3 — parallel per calendar.** One `spawn_wisps` call with one definition
            per (accountId, calendarId) pair, each calling `get_calendar_events` with literal
@@ -119,6 +129,82 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         agent's decision to build the next batch from the previous batch's output. This
         is much cheaper than a subagent — each per-item wisp costs zero LLM tokens — but
         it does require the parent agent to hold state between batches.
+
+        ## for_each — fan a Direct step out over a list
+
+        A Direct step with `for_each` runs once per element of a JSON array an earlier step
+        returned. The harness does the iterating: **zero LLM tokens**, however many items.
+
+        ```json
+        {
+          "description": "Fetch every unread message from Contoso",
+          "steps": [
+            {
+              "id": "search",
+              "mode": "Direct",
+              "gateway": "Mcp",
+              "tool": "mail__search_messages",
+              "params": { "accountId": "work", "query": "from:contoso is:unread" }
+            },
+            {
+              "id": "fetch",
+              "mode": "Direct",
+              "gateway": "Mcp",
+              "tool": "mail__get_message",
+              "for_each": "{{steps.search.result.messages}}",
+              "as": "msg",
+              "params": { "accountId": "work", "messageId": "{{msg.id}}" },
+              "max_items": 25,
+              "concurrency": 4,
+              "on_item_failure": "continue"
+            }
+          ]
+        }
+        ```
+
+        - **`for_each`** — exactly one `{{steps.<id>.result}}` or `{{steps.<id>.result.<path>}}`
+          template naming an **earlier** step. It must resolve to a JSON array (the output
+          itself, or the field at the path). Anything else fails the step (Data) with a
+          message naming what it found — point the path at the array field.
+        - **Item templates** — in `params`: `{{item}}` is the current
+          element, `{{item.a.b}}` a field inside it, `{{item_index}}` its zero-based position.
+          `"as": "msg"` adds `{{msg}}` / `{{msg.id}}` as an alias. Values are inserted like
+          step templates: strings unwrapped, objects/arrays as JSON. `{{steps.<id>.result...}}`
+          templates still work alongside them.
+        - **`max_items`** — default 25, ceiling 100. A longer list **fails the step before any
+          item runs**; nothing is silently dropped. Raise `max_items` or narrow the source
+          (smaller page size, stricter query).
+        - **`concurrency`** — items in flight at once; default 1, maximum 4.
+        - **`on_item_failure`** — `abort` (default): the first failure stops launching new
+          items and fails the step (use `on_failure` to skip past it). `continue`: the rest
+          still run, and the step succeeds if at least one item did; the batch result then
+          says how many items FAILED and which.
+        - An **empty list** succeeds with `[]` and makes no calls.
+
+        **Result.** The step's output is a JSON array in input order, whatever order the
+        items finished in:
+
+        ```json
+        [
+          { "index": 0, "ok": true, "result": { "id": "m1", "subject": "..." } },
+          { "index": 1, "ok": false, "error": "Message not found", "category": "Data" },
+          { "index": 2, "ok": false, "skipped": true }
+        ]
+        ```
+
+        `result` is the call's output as its JSON value when it is JSON (objects, arrays,
+        numbers, booleans), otherwise a string. `skipped` marks items that never ran because
+        an earlier one failed under `abort`. Later steps use `{{steps.fetch.result}}` as
+        usual, and an `Llm` step gets it in its prior-step input. The array is kept in working
+        memory at `wisp/{wispId}/{stepId}/output` even when the step fails, so you can see
+        which items did their work. The batch result shows at most ~4,000 characters of it.
+
+        **Limits.** `for_each` works on Direct steps only (Mcp, Script, Web). An `Llm` step
+        cannot iterate — make the per-item call a Direct step, or give one `Llm` step the
+        whole list. A2A steps cannot iterate either: `invoke_agent` allows one pending agent
+        task per session. Send the agent the whole list in one message instead. `{{item}}` in a step without `for_each` is an error, not a literal.
+        One `for_each` step is one tool call per item; a multi-step loop body, or a loop
+        inside a loop, belongs in the parent agent (see above).
 
         ## spawn_wisps
 
@@ -332,10 +418,11 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
 
         - Upstream content must parse as a **JSON object**. Plain text, arrays at the root,
           or invalid JSON all cause the template to fall back to the literal.
-        - **No array indexing.** There is no `[0]` syntax. If the upstream output is an
-          array, add an `Llm` step between that flattens the element you want into a
-          top-level object (e.g. `{ "eventId": "...", "accountId": "..." }`), then
-          field-path the next step's params from that.
+        - **No array indexing.** There is no `[0]` syntax. To call a tool once per element
+          of an array, use `for_each`. To pick one element, add an `Llm` step between that
+          flattens the element you want into a top-level object (e.g.
+          `{ "eventId": "...", "accountId": "..." }`), then field-path the next step's
+          params from that.
         - **Silent fallback** — if the upstream isn't JSON or the path doesn't resolve,
           the literal `{{steps.id.result.path}}` is passed to the tool unchanged. The
           downstream call will then fail visibly (soft-error detection catches these).
@@ -493,7 +580,10 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
            and failure pattern analysis across sessions.
         6. **Batch independent work.** When you need multiple unrelated data fetches,
            put them in a single `spawn_wisps` call to run concurrently.
-        7. **Save working wisps as skill resources.** Once a wisp has been authored,
+        7. **Use `for_each` for data-dependent fan-out.** One call per element of a list a
+           step returned is a `for_each` step — not an `Llm` step making N tool calls, and
+           not N hand-written steps.
+        8. **Save working wisps as skill resources.** Once a wisp has been authored,
            debugged, and confirmed working, save the final definition as a `Wisp`-type
            resource on the relevant skill (via `save_skill`). Future sessions can then
            reuse the proven pipeline via `get_skill_resource` + `spawn_wisps` instead of

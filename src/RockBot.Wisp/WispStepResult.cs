@@ -55,4 +55,22 @@ public sealed record WispStepResult
     /// can be checked against what actually ran.
     /// </summary>
     public IReadOnlyList<LoopToolCall>? ToolCalls { get; init; }
+
+    /// <summary>
+    /// For a <c>for_each</c> step (#779): how its elements fared. Null for a step that doesn't
+    /// iterate, and for one that failed before any element ran.
+    /// </summary>
+    public ForEachItemOutcome? ItemOutcome { get; init; }
 }
+
+/// <summary>
+/// How the elements of a <c>for_each</c> step fared (#779). <see cref="Skipped"/> counts elements
+/// that never ran because an earlier one failed under <c>on_item_failure: abort</c>.
+/// </summary>
+public sealed record ForEachItemOutcome(
+    int Total,
+    int Succeeded,
+    int Failed,
+    int Skipped,
+    IReadOnlyList<int> FailedIndices,
+    bool ContinueOnFailure);

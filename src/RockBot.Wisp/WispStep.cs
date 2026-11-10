@@ -142,6 +142,62 @@ public sealed record WispStep
     [JsonPropertyName("on_failure")]
     public OnFailureAction? OnFailure { get; init; }
 
+    // The for_each properties are left out when null so a wisp that doesn't iterate serializes,
+    // and therefore hashes, exactly as it did before they existed (#779).
+
+    /// <summary>
+    /// Runs this <c>direct</c> step once per element of a JSON array produced by an earlier step.
+    /// Must be a single <c>{{steps.&lt;id&gt;.result[.path]}}</c> template that resolves to an
+    /// array. Each run can reference the element as <c>{{item}}</c> / <c>{{item.a.b}}</c> (or the
+    /// <see cref="As"/> alias) and its position as <c>{{item_index}}</c>.
+    /// </summary>
+    [JsonPropertyName("for_each")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ForEach { get; init; }
+
+    /// <summary>
+    /// Optional alias for the current element of <see cref="ForEach"/>: with <c>"as": "msg"</c>,
+    /// <c>{{msg.id}}</c> works alongside <c>{{item.id}}</c>.
+    /// </summary>
+    [JsonPropertyName("as")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? As { get; init; }
+
+    /// <summary>
+    /// Maximum number of elements <see cref="ForEach"/> may iterate. A longer list fails the step
+    /// before any element runs. Defaults to <see cref="WispOptions.ForEachDefaultMaxItems"/> and is
+    /// clamped to <see cref="WispOptions.ForEachMaxItemsCeiling"/>.
+    /// </summary>
+    [JsonPropertyName("max_items")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxItems { get; init; }
+
+    /// <summary>
+    /// How many <see cref="ForEach"/> elements run at once. Defaults to 1 and is clamped to
+    /// <see cref="WispOptions.ForEachMaxConcurrency"/>.
+    /// </summary>
+    [JsonPropertyName("concurrency")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Concurrency { get; init; }
+
+    /// <summary>
+    /// What a failed <see cref="ForEach"/> element does: <c>abort</c> (default) stops launching
+    /// further elements and fails the step; <c>continue</c> runs the rest, and the step succeeds
+    /// when at least one element succeeded.
+    /// </summary>
+    [JsonPropertyName("on_item_failure")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? OnItemFailure { get; init; }
+
+    /// <summary>Whether this step iterates (<see cref="ForEach"/> is set).</summary>
+    [JsonIgnore]
+    public bool IsIterated => !string.IsNullOrWhiteSpace(ForEach);
+
+    /// <summary>Whether a failed element lets the remaining elements run.</summary>
+    [JsonIgnore]
+    internal bool ContinuesOnItemFailure =>
+        string.Equals(OnItemFailure, "continue", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Attempts to parse <see cref="InputFrom"/> as a JSON object. LLMs sometimes
     /// stuff tool arguments into <c>input_from</c> as a JSON string instead of using
