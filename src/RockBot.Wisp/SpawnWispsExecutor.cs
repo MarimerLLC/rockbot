@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using RockBot.Host;
 using RockBot.Tools;
@@ -240,7 +241,8 @@ internal sealed class SpawnWispsExecutor(
                 RetryOf = retryOf,
                 BatchId = batchId,
                 DefinitionBody = definitionBody,
-                BodyOmittedTooLarge = bodyOmittedTooLarge
+                BodyOmittedTooLarge = bodyOmittedTooLarge,
+                IteratedSteps = SummarizeIteratedSteps(result)
             };
 
             await executionLog.AppendAsync(record, ct);
@@ -522,29 +524,74 @@ internal sealed class SpawnWispsExecutor(
     {
         var canonical = new
         {
-            steps = definition.Steps.Select(s => new
+            steps = definition.Steps.Select(s => new ShapeStep
             {
-                id = s.Id,
-                mode = s.Mode.ToString(),
-                gateway = s.Gateway?.ToString(),
-                server = s.Server,
-                tool = s.Tool,
-                language = s.Language,
-                agent = s.Agent,
-                skill = s.Skill,
-                hasPrompt = !string.IsNullOrEmpty(s.Prompt),
-                hasMessage = !string.IsNullOrEmpty(s.Message),
-                paramKeys = ExtractParamKeys(s.ResolvedParams),
-                metadataKeys = ExtractParamKeys(s.Metadata),
-                hasInputFrom = !string.IsNullOrEmpty(s.InputFrom),
-                hasOutputTo = !string.IsNullOrEmpty(s.OutputTo),
-                onFailure = s.OnFailure?.Action.ToString()
+                Id = s.Id,
+                Mode = s.Mode.ToString(),
+                Gateway = s.Gateway?.ToString(),
+                Server = s.Server,
+                Tool = s.Tool,
+                Language = s.Language,
+                Agent = s.Agent,
+                Skill = s.Skill,
+                HasPrompt = !string.IsNullOrEmpty(s.Prompt),
+                HasMessage = !string.IsNullOrEmpty(s.Message),
+                ParamKeys = ExtractParamKeys(s.ResolvedParams),
+                MetadataKeys = ExtractParamKeys(s.Metadata),
+                HasInputFrom = !string.IsNullOrEmpty(s.InputFrom),
+                HasOutputTo = !string.IsNullOrEmpty(s.OutputTo),
+                OnFailure = s.OnFailure?.Action.ToString(),
+                ForEach = s.ForEach,
+                As = s.As,
+                MaxItems = s.MaxItems,
+                Concurrency = s.Concurrency,
+                OnItemFailure = s.OnItemFailure
             }).ToList()
         };
 
         var json = JsonSerializer.Serialize(canonical, JsonOptions);
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexStringLower(bytes)[..16];
+    }
+
+    /// <summary>
+    /// One step of a wisp's shape. The fields up to <see cref="OnFailure"/> serialize exactly as the
+    /// anonymous object that preceded this record did, so existing shape hashes are unchanged. The
+    /// for_each fields (#779) are left out when null, so a wisp that doesn't iterate keeps its hash;
+    /// the for_each source is structural, like the tool, so it is hashed as written.
+    /// </summary>
+    private sealed record ShapeStep
+    {
+        public required string Id { get; init; }
+        public required string Mode { get; init; }
+        public string? Gateway { get; init; }
+        public string? Server { get; init; }
+        public string? Tool { get; init; }
+        public string? Language { get; init; }
+        public string? Agent { get; init; }
+        public string? Skill { get; init; }
+        public bool HasPrompt { get; init; }
+        public bool HasMessage { get; init; }
+        public required IReadOnlyList<string> ParamKeys { get; init; }
+        public required IReadOnlyList<string> MetadataKeys { get; init; }
+        public bool HasInputFrom { get; init; }
+        public bool HasOutputTo { get; init; }
+        public string? OnFailure { get; init; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? ForEach { get; init; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? As { get; init; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? MaxItems { get; init; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? Concurrency { get; init; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? OnItemFailure { get; init; }
     }
 
     private static IReadOnlyList<string> ExtractParamKeys(JsonElement? element)
@@ -602,12 +649,15 @@ internal sealed class SpawnWispsExecutor(
                     : $"all {batch.TotalCount} wisps succeeded");
     }
 
-    // The failed state-changing calls of steps whose failure on_failure handled, and the batch's
-    // state-changing calls in all. A failure that aborted its wisp already counts as a failed wisp.
+    // The failed state-changing calls of steps that let the wisp carry on past them, and the batch's
+    // state-changing calls in all. Those steps are ones whose failure on_failure handled, and
+    // for_each steps that succeeded with failed items (on_item_failure: continue, #779). A failure
+    // that aborted its wisp already counts as a failed wisp.
     private static (int HandledFailed, int Total) CountHandledFailedWrites(WispBatchResult batch)
     {
         var handled = batch.Results
-            .SelectMany(r => r.StepResults.Where(s => s.FailureHandled))
+            .SelectMany(r => r.StepResults.Where(s =>
+                s.FailureHandled || (s.IsSuccess && s.ItemOutcome is { Failed: > 0 })))
             .SelectMany(s => s.ToolCalls ?? [])
             .Count(c => !c.Succeeded && ToolSideEffects.IsSideEffecting(c));
         var total = batch.Results.SelectMany(r => r.ToolCalls).Count(ToolSideEffects.IsSideEffecting);
@@ -633,7 +683,7 @@ internal sealed class SpawnWispsExecutor(
         else if (CountHandledFailedWrites(batch) is { HandledFailed: > 0 } writes)
         {
             // A wisp that skips past a failed write (on_failure) still counts as succeeded.
-            sb.AppendLine($"WRITES FAILED: {writes.HandledFailed} of {writes.Total} state-changing calls failed inside wisps that continued past them (on_failure). Those changes did NOT happen; do not report them as done.");
+            sb.AppendLine($"WRITES FAILED: {writes.HandledFailed} of {writes.Total} state-changing calls failed inside wisps that continued past them (on_failure or on_item_failure). Those changes did NOT happen; do not report them as done.");
         }
 
         sb.AppendLine($"{batch.TotalCount} wisp(s) completed ({batch.SucceededCount} succeeded, {batch.FailedCount} failed, {batch.TotalDuration.TotalSeconds:F1}s total):");
@@ -667,11 +717,20 @@ internal sealed class SpawnWispsExecutor(
             foreach (var handled in result.StepResults.Where(s => s.FailureHandled))
                 sb.AppendLine($"  Step {handled.StepId} FAILED (handled by on_failure, the wisp continued): {handled.Error?.Message ?? "no error message"}");
 
+            // #779: a for_each step that continued past failed items succeeded, but those items'
+            // work did not happen. Name them; the per-item errors are in the step's output.
+            foreach (var iterated in result.StepResults.Where(s => s.IsSuccess && s.ItemOutcome is { Failed: > 0 }))
+            {
+                var items = iterated.ItemOutcome!;
+                sb.AppendLine($"  Step {iterated.StepId}: {items.Failed} of {items.Total} items FAILED (on_item_failure: continue), " +
+                              $"indices {FormatIndices(items.FailedIndices)}. Their work did NOT happen; the per-item errors are in the step output.");
+            }
+
             if (result.IsSuccess)
             {
                 var lastStep = result.StepResults.LastOrDefault(s => s.IsSuccess && s.Content is not null);
                 if (lastStep?.Content is not null)
-                    sb.AppendLine($"  Output: {lastStep.Content}");
+                    sb.AppendLine($"  Output: {CapIteratedOutput(result.WispId, lastStep)}");
             }
         }
 
@@ -680,6 +739,49 @@ internal sealed class SpawnWispsExecutor(
         sb.AppendLine($"Batch summary: `wisp/batch-{batch.BatchId}/summary`");
 
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>How much of a <c>for_each</c> step's output the batch result shows (#779).</summary>
+    internal const int MaxIteratedOutputChars = 4_000;
+
+    // A for_each step's output holds every item's result, so it is capped like prior-step input to
+    // an LLM step; the full array stays in working memory.
+    private static string CapIteratedOutput(string wispId, WispStepResult step)
+    {
+        var content = step.Content!;
+        if (step.ItemOutcome is null || content.Length <= MaxIteratedOutputChars)
+            return content;
+        return content[..MaxIteratedOutputChars] +
+               $"\n  ... (truncated, {content.Length:N0} chars total; the full result is in working memory at " +
+               $"`wisp/{wispId}/{step.StepId}/output`, and each item's at `wisp/{wispId}/{step.StepId}/<index>/output`)";
+    }
+
+    private static string FormatIndices(IReadOnlyList<int> indices, int max = 10) =>
+        indices.Count <= max
+            ? string.Join(", ", indices)
+            : $"{string.Join(", ", indices.Take(max))} and {indices.Count - max} more";
+
+    /// <summary>
+    /// The execution-log summary of each <c>for_each</c> step that ran its items (#779), or null
+    /// when the wisp had none, so a record for a wisp that doesn't iterate stays as it was.
+    /// </summary>
+    internal static IReadOnlyList<WispIteratedStepSummary>? SummarizeIteratedSteps(WispExecutionResult result)
+    {
+        var summaries = result.StepResults
+            .Where(s => s.ItemOutcome is not null)
+            .Select(s => new WispIteratedStepSummary
+            {
+                StepId = s.StepId,
+                Total = s.ItemOutcome!.Total,
+                Succeeded = s.ItemOutcome.Succeeded,
+                Failed = s.ItemOutcome.Failed,
+                Skipped = s.ItemOutcome.Skipped,
+                FailedIndices = s.ItemOutcome.FailedIndices.Count > 0
+                    ? s.ItemOutcome.FailedIndices.Take(WispIteratedStepSummary.MaxFailedIndices).ToList()
+                    : null
+            })
+            .ToList();
+        return summaries.Count > 0 ? summaries : null;
     }
 
     private static ToolInvokeResponse Error(ToolInvokeRequest req, string msg) =>

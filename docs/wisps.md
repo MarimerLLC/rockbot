@@ -77,6 +77,54 @@ The harness invokes a tool with the exact parameters provided in the step defini
 No LLM is involved — zero token cost. Use for all deterministic operations where you
 know the tool name, server, and parameters in advance.
 
+### Iterated direct steps (`for_each`)
+
+A direct step can run once per element of a JSON array that an earlier step returned
+(#779). The harness does the iterating, so a data-dependent fan-out (search mail, then
+fetch each message) costs zero LLM tokens instead of an LLM step making N tool calls or
+a subagent.
+
+```json
+{
+  "id": "fetch",
+  "mode": "Direct",
+  "gateway": "Mcp",
+  "tool": "mail__get_message",
+  "for_each": "{{steps.search.result.messages}}",
+  "as": "msg",
+  "params": { "accountId": "{{msg.accountId}}", "messageId": "{{msg.id}}" },
+  "max_items": 25,
+  "concurrency": 4,
+  "on_item_failure": "continue"
+}
+```
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `for_each` | — | One `{{steps.<id>.result[.path]}}` template naming an earlier step; must resolve to a JSON array |
+| `as` | — | Alias for the element: `{{msg}}` / `{{msg.id}}` alongside `{{item}}` / `{{item.id}}` |
+| `max_items` | `ForEachDefaultMaxItems` (25) | Most elements allowed, clamped to `ForEachMaxItemsCeiling` (100). A longer list fails the step (Data) before any element runs |
+| `concurrency` | 1 | Elements in flight at once, clamped to `ForEachMaxConcurrency` (4) |
+| `on_item_failure` | `abort` | `abort` stops launching elements at the first failure and fails the step; `continue` runs the rest and succeeds if at least one element succeeded |
+
+- Validation, MCP resolution, the schema check, pre-flight fills and auto-correction run
+  once, on the step as written; the `{{item...}}` placeholders don't change the params'
+  keys. The step is then routed, gated by the consequential-action gate, and invoked per
+  element.
+- `for_each` is Direct-only (Mcp, A2A, Script, Web). `ForEachStepValidator` rejects it on an
+  LLM step, rejects a source that isn't an earlier step, a bad `as`, and the iteration
+  fields or `{{item}}` on a step without `for_each`. All are Structural.
+- Exceeding `max_items` fails rather than truncates: running the first N would leave the rest
+  undone while the step read as complete.
+- An empty array succeeds with `[]` and makes no calls.
+- Under `abort`, elements already running finish (their writes happened and are reported);
+  elements not yet started are marked skipped.
+- The elements run inside the one wisp, which already holds a batch slot, so a batch has at
+  most `MaxConcurrentWisps × ForEachMaxConcurrency` element calls in flight.
+  `WispDispatchCircuitBreaker` counts wisp dispatches; elements don't add to it.
+- Only one call per element. A multi-step loop body, or a loop inside a loop, is iterated by
+  the parent agent across `spawn_wisps` batches.
+
 ### LLM mode
 
 A lightweight LLM receives a tightly-scoped prompt (wisp directives + step instruction
@@ -182,6 +230,20 @@ Every step's output is **always** written to working memory at
 `wisp/{wispId}/{stepId}/output` (60-min TTL), regardless of whether `output_to` is set.
 This ensures LLM steps can access prior step results via working memory tools.
 
+A `for_each` step's output is a JSON array with one entry per element, in input order:
+
+```json
+[
+  { "index": 0, "ok": true, "result": { "id": "m1", "subject": "..." } },
+  { "index": 1, "ok": false, "error": "Message not found", "category": "Data" },
+  { "index": 2, "ok": false, "skipped": true }
+]
+```
+
+`result` is the call's output, parsed when it is JSON and a string otherwise. That array is
+the step's output (and its `output_to` file). Each successful element's own output is also
+written to `wisp/{wispId}/{stepId}/{index}/output`.
+
 ### `output_to`
 
 When present on any step (direct or LLM), the harness **additionally** writes the
@@ -208,7 +270,18 @@ auto-injected (see LLM mode above).
 Step parameters and prompts support template references to prior step outputs:
 
 - `{{steps.<id>.result}}` — Replaced with the step's output content
+- `{{steps.<id>.result.a.b}}` — The value at that object path in the step's JSON output
 - `{{steps.<id>.output_to}}` — Replaced with the step's `output_to` file path
+
+In a `for_each` step, params (and an A2A `message`) also support:
+
+- `{{item}}` / `{{item.a.b}}` — The current element, or a field inside it (object paths only)
+- `{{<as>}}` / `{{<as>.a.b}}` — The same, under the step's `as` alias
+- `{{item_index}}` — The element's zero-based position
+
+Strings are inserted unwrapped; objects and arrays as their JSON text. A template that doesn't
+resolve is left literal, so the downstream call fails visibly. All templates are resolved in one
+pass, so text substituted from a step result or an element is never re-read as a template.
 
 ### Transition patterns
 
@@ -230,6 +303,11 @@ Direct steps support `on_failure` with two actions:
 - `{ "action": "abort" }` — Stop the pipeline and return the error (default)
 - `{ "action": "skip_to", "skip_to": "step_id" }` — Skip intermediate steps and
   resume at the named step
+
+A `for_each` step that fails (an element failed under `on_item_failure: abort`, every element
+failed under `continue`, a source that isn't an array, or too many elements) is a failed step
+like any other, so `on_failure` applies to it. Its error names the first failed element:
+`Item 3 of 10 failed (on_item_failure: abort; 3 succeeded, 6 not run): …`.
 
 ### Failure classification
 
@@ -288,7 +366,12 @@ If any wisp failed, the result opens with `PARTIAL FAILURE: N of M wisps failed�
 before the failure (#686). A wisp that `on_failure: skip_to` carried past a failed step still
 counts as `[ok]`. The failed step is now listed under it (`Step create FAILED (handled by
 on_failure…)`). When any such step's write failed, the result opens with `WRITES FAILED: N of M
-state-changing calls failed…` and the call counts as failed. The response stays a non-error, so the model doesn't re-run the wisps
+state-changing calls failed…` and the call counts as failed. A `for_each` step that succeeded
+under `on_item_failure: continue` with failed elements counts the same way: its line reads
+`Step fetch: 2 of 10 items FAILED (on_item_failure: continue), indices 3, 7…`, and its failed
+state-changing element calls count toward `WRITES FAILED`. A `for_each` step's output is
+capped at 4,000 characters in the result, with the working-memory key for the full array.
+The response stays a non-error, so the model doesn't re-run the wisps
 that worked. The `spawn_wisps` call is still recorded as failed in the ledger and the tool-call
 log, with the counts and every call the wisps' steps made: the one call of a direct step (an MCP
 step named `{server}__{tool}`), and every substantive call of an LLM step. An LLM step whose
@@ -306,6 +389,15 @@ Direct fetch → LLM summarize).
 
 Each wisp in a batch produces its own `WispExecutionRecord` with the shared `BatchId`
 field for correlation. Retry detection works per-wisp via definition hashes.
+
+A wisp with `for_each` steps also records `IteratedSteps`: per step, the element count,
+how many succeeded, failed and were skipped, and the first 10 failed indices. The field is
+omitted for wisps without `for_each`, so their JSONL lines are unchanged.
+
+The `for_each` fields are part of both hashes. The definition hash serializes them, and the
+shape hash includes the source template, `as`, `max_items`, `concurrency` and
+`on_item_failure`. Both leave them out when unset, so wisps that don't iterate keep the
+hashes they had before the fields existed.
 
 ---
 
@@ -383,6 +475,7 @@ src/RockBot.Wisp/
 ├── WispStepResult.cs          # Single step result
 ├── WispStepError.cs           # Error with classification
 ├── GatewayRouter.cs           # Maps steps to tool invocations + template resolution
+├── ForEachStepValidator.cs    # Structural checks for for_each steps
 ├── WispRegistryToolFunction.cs # AIFunction wrapper for scoped LLM step tools
 ├── SpawnWispsExecutor.cs      # IToolExecutor for spawn_wisps tool
 ├── WispBatchResult.cs         # Batch result with per-wisp outcomes
@@ -407,5 +500,8 @@ tests/RockBot.Wisp.Tests/      # 71 unit tests
 |--------|---------|-------------|
 | `WispOptions.SharedVolumePath` | `/rockbot/shared` | Root directory for shared volume file I/O |
 | `WispOptions.MaxConcurrentWisps` | `10` | Max wisps executing concurrently in a batch |
+| `WispOptions.ForEachDefaultMaxItems` | `25` | Elements a `for_each` step may iterate when it sets no `max_items` |
+| `WispOptions.ForEachMaxItemsCeiling` | `100` | Hard ceiling on `max_items` |
+| `WispOptions.ForEachMaxConcurrency` | `4` | Hard ceiling on a `for_each` step's `concurrency` (default 1) |
 | `DreamOptions.WispFailureAnalysisEnabled` | `true` | Enable wisp failure analysis dream pass |
 | `DreamOptions.WispFailureDirectivePath` | `wisp-failure-dream.md` | Custom directive for the dream pass |

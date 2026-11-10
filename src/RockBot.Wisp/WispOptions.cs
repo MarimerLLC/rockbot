@@ -81,4 +81,22 @@ public sealed class WispOptions
     /// immediately).
     /// </summary>
     public TimeSpan McpReadinessWait { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How many elements a <c>for_each</c> step may iterate when it sets no <c>max_items</c>.
+    /// A longer source list fails the step before any element runs (#779).
+    /// </summary>
+    public int ForEachDefaultMaxItems { get; set; } = 25;
+
+    /// <summary>
+    /// Hard ceiling on <c>max_items</c>. A larger value in a wisp definition is clamped to this.
+    /// </summary>
+    public int ForEachMaxItemsCeiling { get; set; } = 100;
+
+    /// <summary>
+    /// Hard ceiling on a <c>for_each</c> step's <c>concurrency</c> (which defaults to 1). The
+    /// elements run inside one wisp, so a batch has at most
+    /// <see cref="MaxConcurrentWisps"/> × this many element calls in flight.
+    /// </summary>
+    public int ForEachMaxConcurrency { get; set; } = 4;
 }
