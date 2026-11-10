@@ -114,6 +114,31 @@ public class SpawnWispsExecutorTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_DefinitionsAsDoubleEncodedArray_ReturnsSuccess()
+    {
+        var executor = CreateSpawnExecutor(out var registry, out _);
+
+        registry.Register(
+            new ToolRegistration { Name = "web_search", Description = "Search", Source = "web" },
+            new FakeToolExecutor("search results"));
+
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "tc-782d",
+            ToolName = "spawn_wisps",
+            Arguments = JsonSerializer.Serialize(new
+            {
+                definitions = JsonSerializer.Serialize($"[{StringifiedWispDefinition}]")
+            })
+        };
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError, response.Content);
+        StringAssert.Contains(response.Content, "1 wisp(s) completed (1 succeeded, 0 failed");
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_DefinitionsAsStringifiedObject_ReturnsSuccess()
     {
         var executor = CreateSpawnExecutor(out var registry, out _);

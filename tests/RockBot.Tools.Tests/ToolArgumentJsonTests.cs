@@ -42,6 +42,54 @@ public class ToolArgumentJsonTests
     }
 
     [TestMethod]
+    public void UnwrapStringified_DoubleEncodedArray_ReturnsArray()
+    {
+        // Seen live: a JSON string holding a JSON string holding the array.
+        var once = """[{"description":"a"}]""";
+        var twice = JsonSerializer.Serialize(once);
+
+        var result = ToolArgumentJson.UnwrapStringified(StringOf(twice));
+
+        Assert.AreEqual(JsonValueKind.Array, result.ValueKind);
+        Assert.AreEqual("a", result[0].GetProperty("description").GetString());
+    }
+
+    [TestMethod]
+    public void UnwrapStringified_TripleEncodedObject_ReturnsObject()
+    {
+        var thrice = JsonSerializer.Serialize(JsonSerializer.Serialize("""{"id":"x"}"""));
+
+        var result = ToolArgumentJson.UnwrapStringified(StringOf(thrice));
+
+        Assert.AreEqual(JsonValueKind.Object, result.ValueKind);
+        Assert.AreEqual("x", result.GetProperty("id").GetString());
+    }
+
+    [TestMethod]
+    public void UnwrapStringified_EncodedDeeperThanTheLimit_Unchanged()
+    {
+        var text = """[1]""";
+        for (var i = 0; i < 3; i++)
+            text = JsonSerializer.Serialize(text);
+
+        var original = StringOf(text);
+        var result = ToolArgumentJson.UnwrapStringified(original);
+
+        Assert.AreEqual(JsonValueKind.String, result.ValueKind);
+        Assert.AreEqual(text, result.GetString());
+    }
+
+    [TestMethod]
+    public void UnwrapStringified_QuotedPlainText_Unchanged()
+    {
+        // A string that is itself a JSON string literal, but holds no array or object.
+        var result = ToolArgumentJson.UnwrapStringified(StringOf("\"hello\""));
+
+        Assert.AreEqual(JsonValueKind.String, result.ValueKind);
+        Assert.AreEqual("\"hello\"", result.GetString());
+    }
+
+    [TestMethod]
     public void UnwrapStringified_PlainString_Unchanged()
     {
         var result = ToolArgumentJson.UnwrapStringified(StringOf("just some text"));
