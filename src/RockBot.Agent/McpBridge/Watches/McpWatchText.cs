@@ -16,10 +16,11 @@ internal static class McpWatchText
     /// <summary>The working-memory category of a watch's content.</summary>
     public const string WorkingMemoryCategory = "mcp-watch";
 
-    public static string Watching(McpWatchEntry entry) =>
+    public static string Watching(McpWatchEntry entry, int maxLifetimeDays) =>
         $"[rockbot] Watching {Describe(entry)} (watch_id \"{entry.WatchId}\"). Its content now is the baseline: when it " +
         "changes, the new content arrives on its own as a later message in this conversation. Don't poll it or read it " +
-        $"again to check. The watch ends by itself after {(int)Math.Round((entry.ExpiresAt - entry.CreatedAt).TotalDays)} day(s); " +
+        "again to check. The watch renews itself while the resource exists, and ends by itself when the resource is " +
+        $"gone or after {maxLifetimeDays} day(s) at most; " +
         $"stop it sooner with {UnwatchToolName}(server_name: \"{Flatten(entry.Server)}\", uri: \"{Flatten(entry.Uri)}\") " +
         "once you no longer need it.";
 

@@ -386,7 +386,7 @@ public class McpWatchesEndToEndTests
 
     [TestMethod]
     [Timeout(30_000, CooperativeCancellation = true)]
-    public async Task AWatch_EndsWhenItsTimeToLivePasses()
+    public async Task AWatch_IsRenewed_WhileItsResourceExists()
     {
         var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
         var store = new WatchableResources();
@@ -394,15 +394,107 @@ public class McpWatchesEndToEndTests
         await using var harness = await StartAsync(store, timeProvider: clock, configureBridge: o =>
         {
             o.WatchTtlDays = 2;
+            o.WatchMaxLifetimeDays = 30;
+            o.WatchDebounceMs = 0;
+        });
+        var response = await harness.WatchAsync(Poll, Session);
+        Assert.IsNull(response.Error, response.Error);
+        StringAssert.Contains(response.Message, "renews itself while the resource exists");
+        StringAssert.Contains(response.Message, "after 30 day(s) at most");
+        var firstExpiry = Ledger(harness).Single().ExpiresAt;
+
+        // A poll whose deadline is weeks away outlives one renewal period (#778).
+        clock.Advance(TimeSpan.FromDays(3));
+        await WaitUntilAsync(() => Ledger(harness).Single().ExpiresAt > firstExpiry, "the renewal to be recorded");
+
+        var entry = Ledger(harness).Single();
+        Assert.AreEqual(McpWatchEntryStatus.Active, entry.Status);
+        Assert.IsTrue(entry.ExpiresAt > clock.GetUtcNow(), "renewed into the future");
+        Assert.AreEqual(1, harness.Bridge.ActiveWatchEntries.Count);
+        Assert.IsFalse(harness.TaskResults.Any(r => r.Kind == McpTaskResult.KindWatchEnded), "a renewal tells the session nothing");
+
+        store.Set("poll", "v2");
+        var update = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated);
+        Assert.AreEqual(response.WatchId, update.TaskId, "the renewed watch still delivers");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AWatch_EndsAtItsMaximumLifetime()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        await using var harness = await StartAsync(store, timeProvider: clock, configureBridge: o =>
+        {
+            o.WatchTtlDays = 2;
+            o.WatchMaxLifetimeDays = 3;
             o.WatchDebounceMs = 0;
         });
         var watchId = await WatchAsync(harness);
 
+        clock.Advance(TimeSpan.FromDays(4));
+        var ended = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindWatchEnded);
+        Assert.AreEqual(watchId, ended.TaskId);
+        StringAssert.Contains(ended.Content, "maximum lifetime of 3 day(s)");
+        await WaitUntilAsync(() => Ledger(harness).Single().ResolvedAt is not null, "the ending to settle");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AWatch_EndsAtItsMaximumLifetime_EvenBeforeItsRenewalDate()
+    {
+        // A watch whose renewal date lies past its maximum lifetime (the maximum was lowered, or the
+        // entry predates it) still ends at the maximum, without waiting on a read of its resource.
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        McpBridgeOptions? options = null;
+        await using var harness = await StartAsync(store, timeProvider: clock, configureBridge: o =>
+        {
+            o.WatchTtlDays = 14;
+            o.WatchMaxLifetimeDays = 30;
+            o.WatchDebounceMs = 0;
+            // No stream recycle, so no catch-up read can end the watch: only the expiry check.
+            o.SubscriptionStreamMaxMinutes = 100_000;
+            options = o;
+        });
+        var watchId = await WatchAsync(harness);
+        Assert.IsTrue(Ledger(harness).Single().ExpiresAt > clock.GetUtcNow().AddDays(13));
+
+        // The stream can't reopen, so no catch-up read reaches the watch (as with a server that stays down).
+        store.RefuseListen = true;
+        store.EndStreams();
+        options!.WatchMaxLifetimeDays = 2;
         clock.Advance(TimeSpan.FromDays(3));
         var ended = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindWatchEnded);
         Assert.AreEqual(watchId, ended.TaskId);
-        StringAssert.Contains(ended.Content, "expired after 2 day(s)");
-        await WaitUntilAsync(() => Ledger(harness).Single().ResolvedAt is not null, "the ending to settle");
+        StringAssert.Contains(ended.Content, "maximum lifetime of 2 day(s)");    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AWatchDueForRenewal_WhoseResourceIsGone_Ends()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        await using var harness = await StartAsync(store, timeProvider: clock, configureBridge: o =>
+        {
+            o.WatchTtlDays = 2;
+            o.WatchMaxLifetimeDays = 30;
+            o.WatchDebounceMs = 0;
+        });
+        var watchId = await WatchAsync(harness);
+
+        // Gone without a push, so only the renewal check finds out.
+        store.SuppressNotifications = true;
+        store.Delete("poll");
+
+        clock.Advance(TimeSpan.FromDays(3));
+        var ended = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindWatchEnded);
+        Assert.AreEqual(watchId, ended.TaskId);
+        StringAssert.Contains(ended.Content, "no longer");
+        await WaitUntilAsync(() => harness.Bridge.ActiveWatchEntries.Count == 0, "the watch to end");
     }
 
     [TestMethod]
