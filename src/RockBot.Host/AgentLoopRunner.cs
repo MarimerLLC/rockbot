@@ -1739,7 +1739,7 @@ public sealed partial class AgentLoopRunner(
                     ? string.Join(", ", fc.Arguments.Select(a => $"{a.Key}={a.Value}"))
                     : "(none)";
                 logger.LogInformation("Executing tool {Name}(callId={CallId}, args={Args})",
-                    fc.Name, fc.CallId, argsSummary);
+                    fc.Name, fc.CallId, FormatArgsForLog(fc.Arguments));
 
                 // Record args summary for the per-run stash registry so that if this
                 // tool result is later overflow-trimmed, the registry entry can include
@@ -2345,6 +2345,34 @@ public sealed partial class AgentLoopRunner(
     /// </summary>
     internal static string? TruncateLedgerArgs(string? args) =>
         args is { Length: > 300 } ? args[..300] : args;
+
+    private static readonly JsonSerializerOptions LogStringJsonOptions = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    /// <summary>
+    /// Tool-call arguments for the "Executing tool" log line: <c>key=value</c> pairs, with string
+    /// values JSON-quoted. Unquoted, an array sent as a JSON string looks exactly like a real
+    /// array, which hid the cause of #782. Log-only — the args summary the action gate, ledger
+    /// and stash registry read is built separately and stays unquoted.
+    /// </summary>
+    internal static string FormatArgsForLog(IEnumerable<KeyValuePair<string, object?>>? arguments)
+    {
+        if (arguments is null)
+            return "(none)";
+
+        var formatted = string.Join(", ", arguments.Select(a => $"{a.Key}={FormatValue(a.Value)}"));
+        return formatted.Length == 0 ? "(none)" : formatted;
+
+        static string? FormatValue(object? value) => value switch
+        {
+            string s => JsonSerializer.Serialize(s, LogStringJsonOptions),
+            JsonElement { ValueKind: JsonValueKind.String } je =>
+                JsonSerializer.Serialize(je.GetString(), LogStringJsonOptions),
+            _ => value?.ToString(),
+        };
+    }
 
     /// <summary>
     /// Truncates a long args summary so registry entries stay compact in the system

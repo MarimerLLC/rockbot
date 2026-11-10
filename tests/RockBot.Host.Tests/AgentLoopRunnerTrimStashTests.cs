@@ -323,6 +323,38 @@ public class AgentLoopRunnerTrimStashTests
         Assert.IsTrue(truncated.EndsWith('…'));
     }
 
+    // ── FormatArgsForLog (issue #782) ────────────────────────────────────────
+
+    [TestMethod]
+    public void FormatArgsForLog_QuotesStrings_LeavesArraysBare()
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(
+            """{"real":[{"description":"a"}],"stringified":"[{\"description\":\"a\"}]","count":3}""");
+        var args = doc.RootElement.EnumerateObject()
+            .ToDictionary(p => p.Name, p => (object?)p.Value.Clone());
+
+        var formatted = AgentLoopRunner.FormatArgsForLog(args);
+
+        StringAssert.Contains(formatted, """real=[{"description":"a"}]""");
+        StringAssert.Contains(formatted, """stringified="[{\"description\":\"a\"}]" """.TrimEnd());
+        StringAssert.Contains(formatted, "count=3");
+    }
+
+    [TestMethod]
+    public void FormatArgsForLog_QuotesClrStrings_AndHandlesNullValues()
+    {
+        var args = new Dictionary<string, object?> { ["query"] = "hello", ["limit"] = 5, ["cursor"] = null };
+
+        Assert.AreEqual("query=\"hello\", limit=5, cursor=", AgentLoopRunner.FormatArgsForLog(args));
+    }
+
+    [TestMethod]
+    public void FormatArgsForLog_NullOrEmpty_ReturnsNone()
+    {
+        Assert.AreEqual("(none)", AgentLoopRunner.FormatArgsForLog(null));
+        Assert.AreEqual("(none)", AgentLoopRunner.FormatArgsForLog(new Dictionary<string, object?>()));
+    }
+
     [TestMethod]
     public void TruncateArgsSummary_WithinLimit_ReturnsAsIs()
     {

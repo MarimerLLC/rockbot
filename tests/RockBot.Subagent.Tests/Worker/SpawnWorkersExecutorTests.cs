@@ -133,6 +133,72 @@ public class SpawnWorkersExecutorTests
         StringAssert.Contains(response.Content!, "Invalid arguments JSON");
     }
 
+    // ── Stringified definitions (issue #782) ──────────────────────────────
+
+    [TestMethod]
+    public async Task SpawnWorkersExecutor_DefinitionsAsStringifiedArray_Dispatches()
+    {
+        var manager = new FakeWorkerManager();
+        var executor = new SpawnWorkersExecutor(manager);
+        var args = JsonSerializer.Serialize(new
+        {
+            definitions = """[{"description":"scan email"},{"description":"scan calendar"}]""",
+        });
+
+        var response = await executor.ExecuteAsync(new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_workers",
+            Arguments = args,
+        }, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError, response.Content);
+        Assert.AreEqual(2, manager.LastBatch?.Count);
+        Assert.AreEqual("scan calendar", manager.LastBatch![1].Description);
+    }
+
+    [TestMethod]
+    public async Task SpawnWorkersExecutor_DefinitionsAsStringifiedObject_Dispatches()
+    {
+        var manager = new FakeWorkerManager();
+        var executor = new SpawnWorkersExecutor(manager);
+        var args = JsonSerializer.Serialize(new
+        {
+            definitions = """{"description":"scan email"}""",
+        });
+
+        var response = await executor.ExecuteAsync(new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_workers",
+            Arguments = args,
+        }, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError, response.Content);
+        Assert.AreEqual(1, manager.LastBatch?.Count);
+        Assert.AreEqual("scan email", manager.LastBatch![0].Description);
+    }
+
+    [TestMethod]
+    public async Task SpawnWorkersExecutor_DefinitionsAsUnparseableString_ReturnsClearError()
+    {
+        var manager = new FakeWorkerManager();
+        var executor = new SpawnWorkersExecutor(manager);
+        var args = JsonSerializer.Serialize(new { definitions = "[oops" });
+
+        var response = await executor.ExecuteAsync(new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_workers",
+            Arguments = args,
+        }, CancellationToken.None);
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content!, "a string that is not valid JSON was sent");
+        StringAssert.Contains(response.Content!, "not a quoted string");
+        Assert.IsNull(manager.LastBatch);
+    }
+
     // ── Inlined findings (issue #493) ─────────────────────────────────────
 
     [TestMethod]

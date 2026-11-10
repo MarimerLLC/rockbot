@@ -197,6 +197,91 @@ public class A2ACallerTests
         Assert.AreEqual(2, parsed.RootElement.GetProperty("fields").GetArrayLength());
     }
 
+    // ─── Stringified object/array arguments (issue #782) ───────────────────────
+
+    [TestMethod]
+    public async Task InvokeAgentExecutor_AddsDataPart_WhenDataIsStringifiedObject()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        var request = BuildToolRequest("""
+            {
+              "agent_name": "TargetAgent",
+              "skill": "summarize",
+              "message": "Summarize this record.",
+              "data": "{ \"recordId\": \"abc-123\", \"fields\": [\"title\", \"body\"] }"
+            }
+            """);
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError, response.Content);
+        var taskReq = publisher.Published[0].Envelope.GetPayload<AgentTaskRequest>()!;
+        Assert.AreEqual(2, taskReq.Message.Parts.Count);
+
+        using var parsed = System.Text.Json.JsonDocument.Parse(taskReq.Message.Parts[1].Data!);
+        Assert.AreEqual(System.Text.Json.JsonValueKind.Object, parsed.RootElement.ValueKind);
+        Assert.AreEqual("abc-123", parsed.RootElement.GetProperty("recordId").GetString());
+        Assert.AreEqual(2, parsed.RootElement.GetProperty("fields").GetArrayLength());
+    }
+
+    [TestMethod]
+    public async Task InvokeAgentExecutor_AttachesMetadata_WhenMetadataIsStringifiedObject()
+    {
+        var publisher = new TrackingPublisher();
+        var tracker = new A2ATaskTracker();
+        var executor = BuildExecutor(publisher, tracker);
+
+        var request = BuildToolRequest("""
+            {
+              "agent_name": "SocialAgent",
+              "skill": "recent-mentions",
+              "message": "Recent mentions only.",
+              "metadata": "{ \"providerId\": \"bluesky\", \"count\": 10 }"
+            }
+            """);
+
+        var response = await executor.ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError, response.Content);
+        var taskReq = publisher.Published[0].Envelope.GetPayload<AgentTaskRequest>()!;
+        Assert.IsNotNull(taskReq.Message.Metadata);
+        Assert.AreEqual("bluesky", taskReq.Message.Metadata["providerId"]);
+        Assert.AreEqual("10", taskReq.Message.Metadata["count"]);
+    }
+
+    [TestMethod]
+    public async Task RegisterAgentExecutor_KeepsSkills_WhenSkillsIsStringifiedArray()
+    {
+        var directory = EmptyDirectory;
+        var executor = new RegisterAgentExecutor(
+            directory, NullHttpClientFactory.Instance, NullLogger<RegisterAgentExecutor>.Instance);
+
+        // protocol_version is given so the executor does not probe the URL.
+        var response = await executor.ExecuteAsync(new ToolInvokeRequest
+        {
+            ToolCallId = "tc-1",
+            ToolName = "register_agent",
+            Arguments = """
+                {
+                  "agent_name": "RemoteAgent",
+                  "url": "http://remote.invalid",
+                  "protocol_version": "1.0",
+                  "skills": "[{ \"id\": \"summarize\", \"name\": \"Summarize\", \"description\": \"Summarizes text\" }]"
+                }
+                """
+        }, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError, response.Content);
+        StringAssert.Contains(response.Content, "1 skill(s) registered");
+        var card = directory.GetAgent("RemoteAgent");
+        Assert.IsNotNull(card);
+        Assert.AreEqual(1, card.Skills?.Count);
+        Assert.AreEqual("summarize", card.Skills![0].Id);
+    }
+
     [TestMethod]
     public async Task InvokeAgentExecutor_ReturnsError_WhenDataIsNotObject()
     {

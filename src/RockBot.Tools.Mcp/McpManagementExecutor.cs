@@ -896,7 +896,8 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
 
     /// <summary>
     /// Prompt arguments as the bridge takes them: every value a string. A JSON string is passed
-    /// as-is, anything else as its raw JSON text. Malformed JSON yields no arguments.
+    /// as-is, anything else as its raw JSON text. Malformed JSON yields no arguments. An object
+    /// sent as a JSON string (#782) is read through the quoting.
     /// </summary>
     internal static Dictionary<string, string> ToPromptArguments(string? argsJson)
     {
@@ -905,14 +906,15 @@ public sealed class McpManagementExecutor : IToolExecutor, IMcpQuestionAnswerer,
             return promptArgs;
         try
         {
-            var parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsJson, JsonOptions);
-            if (parsed is not null)
+            using var doc = JsonDocument.Parse(argsJson);
+            var parsed = ToolArgumentJson.UnwrapStringified(doc.RootElement);
+            if (parsed.ValueKind == JsonValueKind.Object)
             {
-                foreach (var (k, v) in parsed)
+                foreach (var prop in parsed.EnumerateObject())
                 {
-                    promptArgs[k] = v.ValueKind == JsonValueKind.String
-                        ? v.GetString() ?? string.Empty
-                        : v.GetRawText();
+                    promptArgs[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                        ? prop.Value.GetString() ?? string.Empty
+                        : prop.Value.GetRawText();
                 }
             }
         }

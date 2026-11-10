@@ -191,7 +191,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             : null;
 
         _logger.LogInformation("Executing tool {Name}(callId={CallId}, args={Args})",
-            callContent.Name, callContent.CallId, argsSummary ?? "(none)");
+            callContent.Name, callContent.CallId, AgentLoopRunner.FormatArgsForLog(callContent.Arguments));
 
         // #685: an external change the user did not ask for is refused, not run. The refusal is
         // the tool result, recorded as a failed call so the evaluator and relays don't count it.
