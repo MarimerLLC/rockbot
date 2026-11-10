@@ -642,14 +642,16 @@ internal sealed class WispExecutor(
         // {"error":"accountId is required"} instead of an MCP-transport error.
         // Without this check the wisp treats the error text as valid output and
         // propagates it to downstream steps.
-        var softErrorMessage = TryExtractSoftError(response.Content);
-        if (softErrorMessage is not null)
+        // #783: the same goes for an HTTP-style error body such as GitHub's
+        // {"message":"Not Found","status":"404"}.
+        var softError = TryExtractSoftError(response.Content);
+        if (softError is not null)
         {
             return DirectCallOutcome.Failed(
                 new WispStepError
                 {
-                    Category = ClassifyToolError(softErrorMessage),
-                    Message = softErrorMessage,
+                    Category = softError.Category ?? ClassifyToolError(softError.Message),
+                    Message = softError.Message,
                     ToolName = route.ToolName
                 },
                 content: response.Content,
@@ -1488,13 +1490,27 @@ internal sealed class WispExecutor(
     }
 
     /// <summary>
-    /// Inspects a (nominally successful) tool response body for a "soft error" —
-    /// a JSON object whose top-level <c>error</c> property is a string. Some MCP
-    /// servers return these instead of flagging a transport-level error. Returns
-    /// the error message when detected, or <c>null</c> when the content is not a
-    /// soft-error shape.
+    /// A soft error found in a nominally successful tool response. <see cref="Category"/> is set
+    /// when the body itself says what kind of failure it is (an HTTP status); when it is
+    /// <c>null</c> the caller classifies <see cref="Message"/> by its text.
     /// </summary>
-    private static string? TryExtractSoftError(string? content)
+    internal sealed record SoftError(string Message, FailureCategory? Category);
+
+    /// <summary>
+    /// Inspects a (nominally successful) tool response body for a "soft error": an error some MCP
+    /// servers return as ordinary content instead of flagging the result as an error. Two
+    /// top-level JSON object shapes are recognised:
+    /// <list type="bullet">
+    /// <item>a string <c>error</c> property, e.g. <c>{"error":"accountId is required"}</c>;</item>
+    /// <item>an HTTP-style error (#783): a <c>status</c> that is an integer from 400 to 599 (as a
+    /// number or a string) together with a non-empty string <c>message</c>, e.g. GitHub's
+    /// <c>{"message":"Not Found","status":"404"}</c>.</item>
+    /// </list>
+    /// The second shape is kept narrow on purpose, so a resource that merely has
+    /// <c>status</c> and <c>message</c> fields (<c>"status":"open"</c>, <c>"status":200</c>) still
+    /// reads as data. Returns <c>null</c> when the content is neither shape.
+    /// </summary>
+    internal static SoftError? TryExtractSoftError(string? content)
     {
         if (string.IsNullOrWhiteSpace(content))
             return null;
@@ -1506,19 +1522,66 @@ internal sealed class WispExecutor(
         try
         {
             using var doc = JsonDocument.Parse(content);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
                 return null;
-            if (!doc.RootElement.TryGetProperty("error", out var errorEl))
-                return null;
-            if (errorEl.ValueKind != JsonValueKind.String)
-                return null;
-            return errorEl.GetString();
+
+            if (root.TryGetProperty("error", out var errorEl) && errorEl.ValueKind == JsonValueKind.String)
+                return new SoftError(errorEl.GetString() ?? string.Empty, Category: null);
+
+            if (root.TryGetProperty("status", out var statusEl)
+                && TryReadHttpErrorStatus(statusEl, out var status)
+                && root.TryGetProperty("message", out var messageEl)
+                && messageEl.ValueKind == JsonValueKind.String
+                && messageEl.GetString() is { } message
+                && !string.IsNullOrWhiteSpace(message))
+            {
+                return new SoftError($"HTTP {status}: {message}", ClassifyHttpStatus(status));
+            }
+
+            return null;
         }
         catch (JsonException)
         {
             return null;
         }
     }
+
+    /// <summary>
+    /// True when <paramref name="statusEl"/> is an integer from 400 to 599, written either as a
+    /// JSON number or as a string of digits. Anything else (<c>"open"</c>, <c>404.5</c>,
+    /// <c>200</c>) is not an HTTP error status.
+    /// </summary>
+    private static bool TryReadHttpErrorStatus(JsonElement statusEl, out int status)
+    {
+        status = 0;
+        var parsed = statusEl.ValueKind switch
+        {
+            JsonValueKind.Number => statusEl.TryGetInt32(out status),
+            JsonValueKind.String => int.TryParse(
+                statusEl.GetString(),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out status),
+            _ => false,
+        };
+        return parsed && status is >= 400 and <= 599;
+    }
+
+    /// <summary>
+    /// Maps an HTTP error status to a failure category. Server-side and transient statuses (5xx,
+    /// timeout, rate limit) and auth failures are <see cref="FailureCategory.External"/>; a
+    /// rejected request (400, 422) is <see cref="FailureCategory.Structural"/>; the rest of 4xx
+    /// (404 and the like: the thing asked for isn't there or isn't in the expected state) is
+    /// <see cref="FailureCategory.Data"/>.
+    /// </summary>
+    private static FailureCategory ClassifyHttpStatus(int status) => status switch
+    {
+        >= 500 => FailureCategory.External,
+        401 or 403 or 408 or 429 => FailureCategory.External,
+        400 or 422 => FailureCategory.Structural,
+        _ => FailureCategory.Data,
+    };
 
     /// <summary>
     /// Resolves the executor for <paramref name="toolName"/> from the registry,
