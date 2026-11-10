@@ -347,6 +347,131 @@ public class WispExecutorTests
             "'is required' classifies as Structural via ClassifyToolError");
     }
 
+    // ── HTTP-style soft errors (issue #783) ──────────────────────────────────
+
+    [TestMethod]
+    public async Task ExecuteAsync_HttpStyleNotFoundInOkResponse_TreatedAsDataFailure()
+    {
+        // GitHub's REST error body, forwarded by an MCP server as a successful result.
+        var (executor, registry) = CreateExecutor();
+
+        registry.Register(
+            new ToolRegistration { Name = "web_search", Description = "", Source = "web" },
+            new FakeToolExecutor(content:
+                """{"message":"Not Found","documentation_url":"https://docs.github.com/rest/issues/issues#get-an-issue","status":"404"}"""));
+
+        var definition = new WispDefinition
+        {
+            Description = "Http-soft-error",
+            Steps =
+            [
+                new WispStep
+                {
+                    Id = "s",
+                    Mode = StepMode.Direct,
+                    Gateway = GatewayType.Web,
+                    Tool = "web_search",
+                    Params = JsonDocument.Parse("""{"query":"x"}""").RootElement
+                }
+            ]
+        };
+
+        var result = await executor.ExecuteAsync(definition, "wisp-http-soft", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.IsNotNull(result.FailedStep?.Error);
+        Assert.AreEqual("HTTP 404: Not Found", result.FailedStep!.Error!.Message);
+        Assert.AreEqual(FailureCategory.Data, result.FailedStep.Error.Category);
+    }
+
+    [TestMethod]
+    [DataRow("""{"message":"Not Found","status":"404"}""", "HTTP 404: Not Found", FailureCategory.Data)]
+    [DataRow("""{"message":"Not Found","status":404}""", "HTTP 404: Not Found", FailureCategory.Data)]
+    [DataRow("""{"message":"Gone","status":410}""", "HTTP 410: Gone", FailureCategory.Data)]
+    [DataRow("""{"message":"Validation Failed","status":"422"}""", "HTTP 422: Validation Failed", FailureCategory.Structural)]
+    [DataRow("""{"message":"Bad Request","status":400}""", "HTTP 400: Bad Request", FailureCategory.Structural)]
+    [DataRow("""{"message":"Bad credentials","status":"401"}""", "HTTP 401: Bad credentials", FailureCategory.External)]
+    [DataRow("""{"message":"API rate limit exceeded","status":"403"}""", "HTTP 403: API rate limit exceeded", FailureCategory.External)]
+    [DataRow("""{"message":"Too Many Requests","status":429}""", "HTTP 429: Too Many Requests", FailureCategory.External)]
+    [DataRow("""{"message":"Server Error","status":"500"}""", "HTTP 500: Server Error", FailureCategory.External)]
+    [DataRow("""{"message":"Service Unavailable","status":503}""", "HTTP 503: Service Unavailable", FailureCategory.External)]
+    [DataRow("""{"message":"Last","status":599}""", "HTTP 599: Last", FailureCategory.External)]
+    public void TryExtractSoftError_HttpStyleErrorBody_IsASoftError(
+        string content, string expectedMessage, FailureCategory expectedCategory)
+    {
+        var softError = WispExecutor.TryExtractSoftError(content);
+
+        Assert.IsNotNull(softError);
+        Assert.AreEqual(expectedMessage, softError.Message);
+        Assert.AreEqual(expectedCategory, softError.Category);
+    }
+
+    [TestMethod]
+    // A resource that merely has status/message fields is data.
+    [DataRow("""{"message":"Fix the build","status":"open"}""")]
+    [DataRow("""{"message":"OK","status":200}""")]
+    [DataRow("""{"message":"Created","status":"201"}""")]
+    [DataRow("""{"message":"Moved","status":301}""")]
+    [DataRow("""{"message":"Almost","status":399}""")]
+    [DataRow("""{"message":"Past the range","status":600}""")]
+    // Not an integer status.
+    [DataRow("""{"message":"Not Found","status":404.5}""")]
+    [DataRow("""{"message":"Not Found","status":"404 Not Found"}""")]
+    [DataRow("""{"message":"Not Found","status":" 404"}""")]
+    [DataRow("""{"message":"Not Found","status":"-404"}""")]
+    [DataRow("""{"message":"Not Found","status":true}""")]
+    [DataRow("""{"message":"Not Found","status":null}""")]
+    [DataRow("""{"message":"Not Found","status":{"code":404}}""")]
+    // A status with no usable message.
+    [DataRow("""{"status":404}""")]
+    [DataRow("""{"message":"","status":404}""")]
+    [DataRow("""{"message":"   ","status":404}""")]
+    [DataRow("""{"message":{"text":"Not Found"},"status":404}""")]
+    [DataRow("""{"message":"Not Found"}""")]
+    // Only the top level counts.
+    [DataRow("""{"result":{"message":"Not Found","status":404}}""")]
+    [DataRow("""[{"message":"Not Found","status":404}]""")]
+    // Not JSON objects at all.
+    [DataRow("just plain text output")]
+    [DataRow("")]
+    [DataRow(null)]
+    [DataRow("{ not json")]
+    public void TryExtractSoftError_NotAnErrorShape_ReturnsNull(string? content)
+    {
+        Assert.IsNull(WispExecutor.TryExtractSoftError(content));
+    }
+
+    [TestMethod]
+    public void TryExtractSoftError_StringErrorProperty_LeavesCategoryToTheCaller()
+    {
+        var softError = WispExecutor.TryExtractSoftError("""{"error":"accountId is required"}""");
+
+        Assert.IsNotNull(softError);
+        Assert.AreEqual("accountId is required", softError.Message);
+        Assert.IsNull(softError.Category);
+    }
+
+    [TestMethod]
+    public void TryExtractSoftError_StringErrorProperty_WinsOverHttpStatus()
+    {
+        var softError = WispExecutor.TryExtractSoftError(
+            """{"error":"repository is required","message":"Bad Request","status":400}""");
+
+        Assert.IsNotNull(softError);
+        Assert.AreEqual("repository is required", softError.Message);
+        Assert.IsNull(softError.Category);
+    }
+
+    [TestMethod]
+    public void TryExtractSoftError_NonStringErrorProperty_StillChecksHttpStatus()
+    {
+        var softError = WispExecutor.TryExtractSoftError(
+            """{"error":{"code":"x"},"message":"Not Found","status":404}""");
+
+        Assert.IsNotNull(softError);
+        Assert.AreEqual("HTTP 404: Not Found", softError.Message);
+    }
+
     [TestMethod]
     public async Task ExecuteAsync_ResponseContainingErrorFieldThatIsNotTopLevel_RemainsSuccess()
     {
