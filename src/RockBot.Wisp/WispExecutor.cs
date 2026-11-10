@@ -581,7 +581,29 @@ internal sealed class WispExecutor(
             SessionId = parentSessionId ?? wispId
         };
 
-        var response = await executor.ExecuteAsync(request, ct);
+        ToolInvokeResponse response;
+        try
+        {
+            response = await executor.ExecuteAsync(request, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // The call was attempted, so it is reported as a failed call: a write that threw has
+            // to count toward the batch's failed state-changing calls like one that returned an error.
+            logger.LogWarning(ex, "Wisp {WispId} step {StepId}: {Tool} threw", wispId, step.Id, route.ToolName);
+            return DirectCallOutcome.Failed(
+                new WispStepError
+                {
+                    Category = FailureCategory.External,
+                    Message = ex.Message,
+                    ToolName = route.ToolName
+                },
+                call: NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false, itemIndex));
+        }
 
         // #665: a direct step runs outside any agent loop, so record its artifact here.
         try
@@ -687,6 +709,7 @@ internal sealed class WispExecutor(
         using var abort = new CancellationTokenSource(); // a flag only: in-flight elements are never cancelled
         using var slots = new SemaphoreSlim(concurrency);
         var running = new List<Task>(items.Count);
+        var cancelled = false; // set when cancellation stopped a launch or an item's call
 
         try
         {
@@ -701,11 +724,15 @@ internal sealed class WispExecutor(
                 running.Add(RunItemAsync(i));
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Stop launching; the items already done are reported below.
+            cancelled = true;
+        }
         finally
         {
-            // Even when cancellation interrupts the launch loop, wait for the items already
-            // running: they use the semaphore and flag disposed when this method returns.
-            // RunItemAsync catches everything, so this never throws.
+            // Wait for the items already running, cancelled or not: they use the semaphore and
+            // flag disposed when this method returns. RunItemAsync catches everything.
             await Task.WhenAll(running);
         }
         stepSw.Stop();
@@ -725,15 +752,11 @@ internal sealed class WispExecutor(
                     });
                 outcomes[i] = outcome;
 
-                if (outcome.Succeeded)
-                {
-                    await workingMemory.SetAsync($"{wispNamespace}/{step.Id}/{i}/output", outcome.Content ?? "",
-                        ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
-                }
-                else if (!continueOnFailure)
-                {
+                // Items are not written to working memory one by one: a wisp's namespace holds a
+                // limited number of entries, and a large fan-out would push out the aggregate and
+                // later steps' outputs. The aggregate below carries every item's result.
+                if (!outcome.Succeeded && !continueOnFailure)
                     abort.Cancel();
-                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -742,6 +765,7 @@ internal sealed class WispExecutor(
                     Category = FailureCategory.External,
                     Message = "Step was cancelled"
                 });
+                cancelled = true;
                 abort.Cancel();
             }
             catch (Exception ex)
@@ -760,8 +784,6 @@ internal sealed class WispExecutor(
                 slots.Release();
             }
         }
-
-        ct.ThrowIfCancellationRequested();
 
         var failedIndices = new List<int>();
         var succeeded = 0;
@@ -782,33 +804,50 @@ internal sealed class WispExecutor(
             "Wisp {WispId} step {StepId}: for_each finished, {Succeeded} of {Count} item(s) succeeded, {Failed} failed, {Skipped} not run",
             wispId, step.Id, succeeded, items.Count, failedIndices.Count, skipped);
 
-        var isSuccess = continueOnFailure
+        var isSuccess = !cancelled && (continueOnFailure
             ? items.Count == 0 || succeeded > 0
-            : failedIndices.Count == 0;
+            : failedIndices.Count == 0);
+
+        // The aggregate is the step's output, like a single call's response. It is kept on failure
+        // too, so the parent can see which items did their work before deciding what to redo.
+        await workingMemory.SetAsync($"{wispNamespace}/{step.Id}/output", content,
+            ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
 
         if (!isSuccess)
         {
-            var first = failedIndices[0];
-            var firstError = outcomes[first]!.Error!;
-            var summary = continueOnFailure
-                ? $"All {items.Count} items failed. Item {first}: "
-                : $"Item {first} of {items.Count} failed (on_item_failure: abort; {succeeded} succeeded, {skipped} not run): ";
+            WispStepError error;
+            if (cancelled)
+            {
+                error = new WispStepError
+                {
+                    Category = FailureCategory.External,
+                    Message = $"Step was cancelled after {succeeded} of {items.Count} items succeeded " +
+                              $"({failedIndices.Count} failed or were cancelled, {skipped} not run). " +
+                              "The step output lists which items completed."
+                };
+            }
+            else
+            {
+                var first = failedIndices[0];
+                var firstError = outcomes[first]!.Error!;
+                var summary = continueOnFailure
+                    ? $"All {items.Count} items failed. Item {first}: "
+                    : $"Item {first} of {items.Count} failed (on_item_failure: abort; {succeeded} succeeded, {skipped} not run): ";
+                error = firstError with { Message = summary + firstError.Message };
+            }
+
             return new WispStepResult
             {
                 StepId = step.Id,
                 StepIndex = index,
                 IsSuccess = false,
                 Content = content,
-                Error = firstError with { Message = summary + firstError.Message },
+                Error = error,
                 Duration = stepSw.Elapsed,
                 ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
                 ItemOutcome = itemOutcome
             };
         }
-
-        // The aggregate is the step's output, like a single call's response.
-        await workingMemory.SetAsync($"{wispNamespace}/{step.Id}/output", content,
-            ttl: TimeSpan.FromMinutes(60), category: "wisp-output");
 
         if (!string.IsNullOrEmpty(step.OutputTo))
         {
@@ -837,8 +876,8 @@ internal sealed class WispExecutor(
 
     /// <summary>
     /// A <c>for_each</c> step's result (#779): one entry per element, in input order.
-    /// <c>{"index":0,"ok":true,"result":...}</c> carries the call's output (as JSON when it is
-    /// JSON, otherwise as a string); a failed element has <c>"ok":false</c> with its
+    /// <c>{"index":0,"ok":true,"result":...}</c> carries the call's output (as its JSON value when
+    /// it parses as JSON, scalars included, otherwise as a string); a failed element has <c>"ok":false</c> with its
     /// <c>error</c> and <c>category</c>; one that never ran has <c>"skipped":true</c>.
     /// </summary>
     internal static string BuildForEachContent(IReadOnlyList<(bool Ran, bool Ok, string? Result, WispStepError? Error)> entries)
@@ -888,21 +927,17 @@ internal sealed class WispExecutor(
             return;
         }
 
-        var trimmed = result.TrimStart();
-        if (trimmed.Length > 0 && trimmed[0] is '{' or '[')
+        // Any JSON value keeps its type — an object, an array, 42, true, null, or a quoted string
+        // (which then appears unquoted). Plain text becomes a string.
+        try
         {
-            try
-            {
-                using var doc = JsonDocument.Parse(result);
-                doc.RootElement.WriteTo(writer);
-                return;
-            }
-            catch (JsonException)
-            {
-                // Not JSON after all — fall through to a string.
-            }
+            using var doc = JsonDocument.Parse(result);
+            doc.RootElement.WriteTo(writer);
         }
-        writer.WriteStringValue(result);
+        catch (JsonException)
+        {
+            writer.WriteStringValue(result);
+        }
     }
 
     /// <summary>

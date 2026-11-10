@@ -138,6 +138,31 @@ public class WispForEachReportingTests
         StringAssert.Contains(SpawnWispsExecutor.FormatBatchResult(Batch(step)), longContent);
     }
 
+    // ── A2A message templating ───────────────────────────────────────────────
+
+    [TestMethod]
+    public void A2AMessage_SubstitutedText_IsEscapedOnlyOnce()
+    {
+        var prior = new Dictionary<string, WispStepResult>
+        {
+            ["notes"] = new()
+            {
+                StepId = "notes", StepIndex = 0, IsSuccess = true, Duration = TimeSpan.Zero,
+                Content = "He said \"hi\"\nC:\\temp {\"k\":1}"
+            }
+        };
+        var step = new WispStep
+        {
+            Id = "ask", Mode = StepMode.Direct, Gateway = GatewayType.A2A,
+            Agent = "analyst", Skill = "summarize", Message = "Notes: {{steps.notes.result}} <end>"
+        };
+
+        var route = GatewayRouter.Route(step, "w", prior);
+
+        var message = JsonDocument.Parse(route.Arguments!).RootElement.GetProperty("message").GetString();
+        Assert.AreEqual("Notes: He said \"hi\"\nC:\\temp {\"k\":1} <end>", message);
+    }
+
     // ── Execution log ────────────────────────────────────────────────────────
 
     [TestMethod]

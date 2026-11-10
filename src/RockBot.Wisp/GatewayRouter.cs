@@ -100,7 +100,7 @@ internal static partial class GatewayRouter
         if (string.IsNullOrEmpty(step.Message))
             return ToolRouteResult.Failure("A2A gateway requires 'message' field", FailureCategory.Structural);
 
-        var message = ResolveTemplateString(step.Message, priorResults, definition: null, item);
+        var message = ResolvePlainTextTemplates(step.Message, priorResults, item);
 
         var args = new Dictionary<string, object?>
         {
@@ -260,6 +260,20 @@ internal static partial class GatewayRouter
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Resolves templates in plain text — not JSON — such as an A2A message. Substitution escapes
+    /// values for embedding in a JSON string, so the text is resolved as a JSON string literal and
+    /// decoded again: quotes, newlines and backslashes reach the tool as written, escaped only once
+    /// when the arguments are serialized.
+    /// </summary>
+    internal static string ResolvePlainTextTemplates(
+        string text, IReadOnlyDictionary<string, WispStepResult> priorResults, ForEachItem? item = null)
+    {
+        var literal = JsonSerializer.Serialize(text);
+        var resolved = ResolveTemplateString(literal, priorResults, definition: null, item);
+        return JsonSerializer.Deserialize<string>(resolved) ?? text;
     }
 
     /// <summary>The template name for a <c>for_each</c> element (#779).</summary>

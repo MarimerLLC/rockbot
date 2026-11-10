@@ -111,9 +111,16 @@ a subagent.
   once, on the step as written; the `{{item...}}` placeholders don't change the params'
   keys. The step is then routed, gated by the consequential-action gate, and invoked per
   element.
-- `for_each` is Direct-only (Mcp, A2A, Script, Web). `ForEachStepValidator` rejects it on an
-  LLM step, rejects a source that isn't an earlier step, a bad `as`, and the iteration
-  fields or `{{item}}` on a step without `for_each`. All are Structural.
+- `for_each` works on Mcp, Script and Web direct steps. `ForEachStepValidator` rejects it on
+  an LLM step, and on an A2A step: `invoke_agent` refuses a dispatch while the session has an
+  agent task pending, and a dispatch returns before the remote task finishes, so every item
+  after the first would be refused. It also rejects a source that isn't an earlier step, a bad
+  `as`, and the iteration fields or `{{item}}` (in params, message or prompt) on a step without
+  `for_each`. All are Structural.
+- A call that throws counts as a failed call of that item, so a failed write is still counted
+  toward `WRITES FAILED`.
+- Cancellation stops launching items, waits for the running ones, and fails the step with the
+  items' outcomes and calls kept, so completed writes are still reported.
 - Exceeding `max_items` fails rather than truncates: running the first N would leave the rest
   undone while the step read as complete.
 - An empty array succeeds with `[]` and makes no calls.
@@ -240,9 +247,12 @@ A `for_each` step's output is a JSON array with one entry per element, in input 
 ]
 ```
 
-`result` is the call's output, parsed when it is JSON and a string otherwise. That array is
-the step's output (and its `output_to` file). Each successful element's own output is also
-written to `wisp/{wispId}/{stepId}/{index}/output`.
+`result` is the call's output as its JSON value when it parses as JSON (objects, arrays,
+numbers, booleans, null, strings), and a string otherwise. That array is the step's output
+and its `output_to` file. It is written to `wisp/{wispId}/{stepId}/output` even when the step
+fails. Items are not written to working memory one by one: `HybridCacheWorkingMemory` caps each
+`wisp/{wispId}` namespace (`MaxEntriesPerNamespace`, default 50), and a large fan-out would
+push out the aggregate and later steps' outputs.
 
 ### `output_to`
 
@@ -273,7 +283,7 @@ Step parameters and prompts support template references to prior step outputs:
 - `{{steps.<id>.result.a.b}}` — The value at that object path in the step's JSON output
 - `{{steps.<id>.output_to}}` — Replaced with the step's `output_to` file path
 
-In a `for_each` step, params (and an A2A `message`) also support:
+In a `for_each` step, params also support:
 
 - `{{item}}` / `{{item.a.b}}` — The current element, or a field inside it (object paths only)
 - `{{<as>}}` / `{{<as>.a.b}}` — The same, under the step's `as` alias

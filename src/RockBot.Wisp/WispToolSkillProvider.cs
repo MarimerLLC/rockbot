@@ -166,7 +166,7 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
           template naming an **earlier** step. It must resolve to a JSON array (the output
           itself, or the field at the path). Anything else fails the step (Data) with a
           message naming what it found — point the path at the array field.
-        - **Item templates** — in `params` (and `message` for A2A): `{{item}}` is the current
+        - **Item templates** — in `params`: `{{item}}` is the current
           element, `{{item.a.b}}` a field inside it, `{{item_index}}` its zero-based position.
           `"as": "msg"` adds `{{msg}}` / `{{msg.id}}` as an alias. Values are inserted like
           step templates: strings unwrapped, objects/arrays as JSON. `{{steps.<id>.result...}}`
@@ -192,16 +192,17 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
         ]
         ```
 
-        `result` is the call's output — parsed JSON when it is JSON, otherwise a string.
-        `skipped` marks items that never ran because an earlier one failed under `abort`.
-        Later steps use `{{steps.fetch.result}}` as usual, and an `Llm` step gets it in its
-        prior-step input. Each item's own output is also in working memory at
-        `wisp/{wispId}/{stepId}/{index}/output`. The batch result shows at most ~4,000
-        characters of a `for_each` step's output; the full array stays in working memory.
+        `result` is the call's output as its JSON value when it is JSON (objects, arrays,
+        numbers, booleans), otherwise a string. `skipped` marks items that never ran because
+        an earlier one failed under `abort`. Later steps use `{{steps.fetch.result}}` as
+        usual, and an `Llm` step gets it in its prior-step input. The array is kept in working
+        memory at `wisp/{wispId}/{stepId}/output` even when the step fails, so you can see
+        which items did their work. The batch result shows at most ~4,000 characters of it.
 
-        **Limits.** `for_each` works on Direct steps only (Mcp, A2A, Script, Web). An `Llm`
-        step cannot iterate — make the per-item call a Direct step, or give one `Llm` step
-        the whole list. `{{item}}` in a step without `for_each` is an error, not a literal.
+        **Limits.** `for_each` works on Direct steps only (Mcp, Script, Web). An `Llm` step
+        cannot iterate — make the per-item call a Direct step, or give one `Llm` step the
+        whole list. A2A steps cannot iterate either: `invoke_agent` allows one pending agent
+        task per session. Send the agent the whole list in one message instead. `{{item}}` in a step without `for_each` is an error, not a literal.
         One `for_each` step is one tool call per item; a multi-step loop body, or a loop
         inside a loop, belongs in the parent agent (see above).
 

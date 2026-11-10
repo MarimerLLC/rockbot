@@ -70,7 +70,7 @@ internal sealed class WispToolRegistrar(
                             "skip_to": { "type": "string", "description": "Step ID to jump to on failure." }
                           }
                         },
-                        "for_each": { "type": "string", "description": "Direct steps only. Run this step once per element of a JSON array from an earlier step: a single {{steps.<id>.result}} or {{steps.<id>.result.<path>}} template that resolves to an array. Reference the element in params (or message) as {{item}} / {{item.<field>}}, its position as {{item_index}}. Zero LLM tokens. Result: a JSON array in input order of {index, ok, result} or {index, ok:false, error}." },
+                        "for_each": { "type": "string", "description": "Direct steps only, not A2A. Run this step once per element of a JSON array from an earlier step: a single {{steps.<id>.result}} or {{steps.<id>.result.<path>}} template that resolves to an array. Reference the element in params as {{item}} / {{item.<field>}}, its position as {{item_index}}. Zero LLM tokens. Result: a JSON array in input order of {index, ok, result} or {index, ok:false, error}." },
                         "as": { "type": "string", "description": "for_each only: an alias for {{item}}, e.g. \"msg\" for {{msg.id}}." },
                         "max_items": { "type": "integer", "minimum": 1, "description": "for_each only: most elements allowed (default 25, ceiling 100). A longer list fails the step before any element runs." },
                         "concurrency": { "type": "integer", "minimum": 1, "description": "for_each only: elements run at once (default 1, maximum 4)." },

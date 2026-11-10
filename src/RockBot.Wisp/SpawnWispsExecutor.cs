@@ -753,7 +753,7 @@ internal sealed class SpawnWispsExecutor(
             return content;
         return content[..MaxIteratedOutputChars] +
                $"\n  ... (truncated, {content.Length:N0} chars total; the full result is in working memory at " +
-               $"`wisp/{wispId}/{step.StepId}/output`, and each item's at `wisp/{wispId}/{step.StepId}/<index>/output`)";
+               $"`wisp/{wispId}/{step.StepId}/output`)";
     }
 
     private static string FormatIndices(IReadOnlyList<int> indices, int max = 10) =>

@@ -214,6 +214,95 @@ public class WispForEachTests
     }
 
     [TestMethod]
+    public async Task FailedStep_StillWritesTheAggregateToWorkingMemory()
+    {
+        var (executor, registry, memory) = Create();
+        Register(registry, "web_browse", r => Arg(r, "url") == "b" ? Fail("Page not found") : Ok("ok"));
+        RegisterSource(registry, ThreeItems);
+
+        var result = await executor.ExecuteAsync(Wisp(ForEachStep()), "wisp-fe", CancellationToken.None);
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.AreEqual(result.StepResults[1].Content, memory.Store["wisp/wisp-fe/fetch/output"]);
+    }
+
+    [TestMethod]
+    public async Task ACallThatThrows_IsAFailedCallOfThatItem()
+    {
+        var (executor, registry, _) = Create();
+        Register(registry, "web_browse", r => Arg(r, "url") == "b"
+            ? throw new InvalidOperationException("connection reset")
+            : Ok("ok"));
+        RegisterSource(registry, ThreeItems);
+
+        var result = await executor.ExecuteAsync(
+            Wisp(ForEachStep(onItemFailure: "continue")), "wisp-fe", CancellationToken.None);
+
+        var step = result.StepResults[1];
+        Assert.IsTrue(step.IsSuccess);
+        Assert.AreEqual(3, step.ToolCalls!.Count, "the call that threw is reported");
+        Assert.IsFalse(step.ToolCalls[1].Succeeded);
+        CollectionAssert.AreEqual(new[] { 1 }, step.ItemOutcome!.FailedIndices.ToArray());
+        var entries = JsonDocument.Parse(step.Content!).RootElement;
+        Assert.AreEqual("connection reset", entries[1].GetProperty("error").GetString());
+    }
+
+    [TestMethod]
+    public async Task Cancellation_KeepsTheCompletedItemsOutcomesAndCalls()
+    {
+        var (executor, registry, memory) = Create();
+        using var cts = new CancellationTokenSource();
+        Register(registry, "web_browse", r =>
+        {
+            if (Arg(r, "url") == "b")
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            }
+            return Ok("ok");
+        });
+        RegisterSource(registry, ThreeItems);
+
+        var result = await executor.ExecuteAsync(Wisp(ForEachStep()), "wisp-fe", cts.Token);
+
+        var step = result.StepResults[1];
+        Assert.IsFalse(step.IsSuccess);
+        Assert.AreEqual(FailureCategory.External, step.Error!.Category);
+        StringAssert.StartsWith(step.Error.Message, "Step was cancelled after 1 of 3 items succeeded");
+        Assert.AreEqual(1, step.ItemOutcome!.Succeeded);
+        Assert.AreEqual(1, step.ItemOutcome.Skipped);
+        Assert.IsTrue(step.ToolCalls![0].Succeeded, "the completed write is still reported");
+        var entries = JsonDocument.Parse(step.Content!).RootElement;
+        Assert.IsTrue(entries[0].GetProperty("ok").GetBoolean());
+        Assert.AreEqual(step.Content, memory.Store["wisp/wisp-fe/fetch/output"]);
+    }
+
+    [TestMethod]
+    public async Task ScalarJsonResults_KeepTheirTypes()
+    {
+        var (executor, registry, _) = Create();
+        Register(registry, "web_browse", r => Ok(Arg(r, "url") switch
+        {
+            "0" => "42",
+            "1" => "true",
+            "2" => "\"quoted\"",
+            "3" => "null",
+            _ => "plain text"
+        }));
+        RegisterSource(registry, """{"items":[0,1,2,3,4]}""");
+
+        var result = await executor.ExecuteAsync(Wisp(ForEachStep(paramsJson: """{"url":"{{item}}"}""")),
+            "wisp-fe", CancellationToken.None);
+
+        var entries = JsonDocument.Parse(result.StepResults[1].Content!).RootElement;
+        Assert.AreEqual(42, entries[0].GetProperty("result").GetInt32());
+        Assert.IsTrue(entries[1].GetProperty("result").GetBoolean());
+        Assert.AreEqual("quoted", entries[2].GetProperty("result").GetString());
+        Assert.AreEqual(JsonValueKind.Null, entries[3].GetProperty("result").ValueKind);
+        Assert.AreEqual("plain text", entries[4].GetProperty("result").GetString());
+    }
+
+    [TestMethod]
     public async Task Abort_WithOnFailureSkipTo_LetsTheWispContinue()
     {
         var (executor, registry, _) = Create();
@@ -360,15 +449,19 @@ public class WispForEachTests
     // ── Outputs ──────────────────────────────────────────────────────────────
 
     [TestMethod]
-    public async Task EachItem_WritesItsOwnWorkingMemoryOutput_AndTheAggregate()
+    public async Task OnlyTheAggregate_IsWrittenToWorkingMemory()
     {
+        // A wisp's working-memory namespace holds a limited number of entries (50 by default);
+        // one entry per item would push out the aggregate and later steps' outputs.
         var (executor, registry, memory) = Create();
         Register(registry, "web_browse", r => Ok("""{"title":"T-""" + Arg(r, "url") + "\"}"));
         RegisterSource(registry, ThreeItems);
 
         var result = await executor.ExecuteAsync(Wisp(ForEachStep()), "wisp-fe", CancellationToken.None);
 
-        Assert.AreEqual("""{"title":"T-b"}""", memory.Store["wisp/wisp-fe/fetch/1/output"]);
+        CollectionAssert.AreEquivalent(
+            new[] { "wisp/wisp-fe/search/output", "wisp/wisp-fe/fetch/output" },
+            memory.Store.Keys.ToArray());
         Assert.AreEqual(result.StepResults[1].Content, memory.Store["wisp/wisp-fe/fetch/output"]);
         // JSON results are embedded as JSON, not as strings.
         var entries = JsonDocument.Parse(result.StepResults[1].Content!).RootElement;
@@ -420,7 +513,7 @@ public class WispForEachTests
     }
 
     [TestMethod]
-    public async Task A2AGateway_TemplatesTheMessagePerItem()
+    public async Task A2AGateway_IsRejected_BecauseInvokeAgentAllowsOnePendingTaskPerSession()
     {
         var (executor, registry, _) = Create();
         var invoke = Register(registry, "invoke_agent", _ => Ok("dispatched"));
@@ -431,15 +524,15 @@ public class WispForEachTests
             Id = "ask", Mode = StepMode.Direct, Gateway = GatewayType.A2A,
             Agent = "analyst", Skill = "summarize",
             ForEach = "{{steps.search.result.items}}",
-            Message = "Summarize item {{item.id}} (#{{item_index}})"
+            Message = "Summarize item {{item.id}}"
         };
 
         var result = await executor.ExecuteAsync(Wisp(ask), "wisp-fe", CancellationToken.None);
 
-        Assert.IsTrue(result.IsSuccess);
-        CollectionAssert.AreEqual(
-            new[] { "Summarize item a (#0)", "Summarize item b (#1)", "Summarize item c (#2)" },
-            invoke.Calls.Select(c => Arg(c, "message")).ToArray());
+        var error = result.StepResults[1].Error!;
+        Assert.AreEqual(FailureCategory.Structural, error.Category);
+        StringAssert.Contains(error.Message, "isn't supported on A2A steps");
+        Assert.AreEqual(0, invoke.Calls.Count);
     }
 
     [TestMethod]
@@ -552,6 +645,15 @@ public class WispForEachTests
         Assert.AreEqual(FailureCategory.Structural, error.Category);
         StringAssert.Contains(error.Message, "has no 'for_each'");
         Assert.AreEqual(0, browse.Calls.Count);
+    }
+
+    [TestMethod]
+    public void ItemTemplateInAnLlmPrompt_WithoutForEach_IsStructural()
+    {
+        var step = new WispStep { Id = "think", Mode = StepMode.Llm, Prompt = "Summarize {{item.id}}" };
+        var error = ForEachStepValidator.Validate(step, 0, new WispDefinition { Description = "d", Steps = [step] });
+        Assert.AreEqual(FailureCategory.Structural, error!.Category);
+        StringAssert.Contains(error.Message, "has no 'for_each'");
     }
 
     [TestMethod]

@@ -28,6 +28,15 @@ internal static partial class ForEachStepValidator
             return Error("'for_each' is only supported on Direct steps. An LLM step can't be fanned out; " +
                          "make the per-item call a Direct step, or let one LLM step handle the whole list.");
 
+        // invoke_agent refuses a dispatch while the session already has an agent task pending, and
+        // a dispatch returns before the remote task finishes, so every item after the first would
+        // be refused. Each item can't take its own session: the result is routed back by it.
+        if (step.Gateway == GatewayType.A2A)
+            return Error("'for_each' isn't supported on A2A steps: invoke_agent allows one pending agent task " +
+                         "per session, so every item after the first would be refused while the first is still " +
+                         "running. Send the agent the whole list in one message, or have the parent agent " +
+                         "invoke it once per item, waiting for each result.");
+
         if (!GatewayRouter.TryParseForEachSource(step.ForEach, out var sourceId, out _))
             return Error($"'for_each' must be a single {{{{steps.<id>.result}}}} or {{{{steps.<id>.result.<path>}}}} " +
                          $"template naming the array to iterate; got '{step.ForEach}'.");
@@ -96,7 +105,7 @@ internal static partial class ForEachStepValidator
         if (step.Gateway == GatewayType.Script)
             return false;
 
-        foreach (var text in new[] { step.ResolvedParams?.GetRawText(), step.Message })
+        foreach (var text in new[] { step.ResolvedParams?.GetRawText(), step.Message, step.Prompt })
         {
             if (text is not null && ItemReferencePattern().IsMatch(text))
                 return true;
