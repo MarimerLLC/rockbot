@@ -79,6 +79,7 @@ internal sealed class InvokeAgentExecutor(
         if (args.TryGetValue("data", out var dataEl) && dataEl.ValueKind != JsonValueKind.Null &&
             dataEl.ValueKind != JsonValueKind.Undefined)
         {
+            dataEl = ToolArgumentJson.UnwrapStringified(dataEl);
             if (dataEl.ValueKind != JsonValueKind.Object)
                 return Error(request, "Argument 'data' must be a JSON object.");
             dataJson = dataEl.GetRawText();
@@ -93,6 +94,7 @@ internal sealed class InvokeAgentExecutor(
         if (args.TryGetValue("metadata", out var metaEl) && metaEl.ValueKind != JsonValueKind.Null &&
             metaEl.ValueKind != JsonValueKind.Undefined)
         {
+            metaEl = ToolArgumentJson.UnwrapStringified(metaEl);
             if (metaEl.ValueKind != JsonValueKind.Object)
                 return Error(request, "Argument 'metadata' must be a JSON object.");
 

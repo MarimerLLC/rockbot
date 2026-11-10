@@ -49,7 +49,8 @@ internal sealed class RegisterAgentExecutor(
 
         // Parse optional skills array
         List<AgentSkill>? skills = null;
-        if (args.TryGetValue("skills", out var skillsEl) && skillsEl.ValueKind == JsonValueKind.Array)
+        if (args.TryGetValue("skills", out var skillsEl) &&
+            (skillsEl = ToolArgumentJson.UnwrapStringified(skillsEl)).ValueKind == JsonValueKind.Array)
         {
             try
             {

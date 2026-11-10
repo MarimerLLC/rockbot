@@ -119,6 +119,10 @@ internal sealed class SpawnWorkersExecutor(
             return null;
         }
 
+        // #782: before a deferred tool's schema is loaded, a model tends to send the array as a
+        // JSON string. Read through the quoting rather than cost a round-trip.
+        defsEl = ToolArgumentJson.UnwrapStringified(defsEl);
+
         try
         {
             if (defsEl.ValueKind == JsonValueKind.Array)
@@ -164,7 +168,10 @@ internal sealed class SpawnWorkersExecutor(
                 return [def];
             }
 
-            error = "definitions must be an array of worker definitions";
+            error = defsEl.ValueKind == JsonValueKind.String
+                ? "definitions must be an array of worker definitions, but a string that is not valid JSON was sent. " +
+                  "Pass the array itself, not a quoted string."
+                : "definitions must be an array of worker definitions";
             return null;
         }
         catch (JsonException ex)
