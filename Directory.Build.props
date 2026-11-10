@@ -24,10 +24,12 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>rockbot;agent;ai;llm;messaging;framework</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>rockbot.png</PackageIcon>
   </PropertyGroup>
 
-  <!-- Include the NuGet-specific README in all packable projects -->
+  <!-- Include the NuGet-specific README and the RockBot logo in all packable projects -->
   <ItemGroup Condition="'$(IsPackable)' == 'true'">
     <None Include="$(MSBuildThisFileDirectory)NUGET_README.md" Pack="true" PackagePath="\README.md" />
+    <None Include="$(MSBuildThisFileDirectory)docs/assets/images/rockbot.png" Pack="true" PackagePath="\rockbot.png" Visible="false" />
   </ItemGroup>
 </Project>
