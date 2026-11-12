@@ -17,14 +17,11 @@ RockBot.UserProxy.Blazor/
 │   └── _Imports.razor               # Page-specific imports
 │
 ├── Services/
-│   ├── BlazorUserFrontend.cs        # IUserFrontend implementation
-│   │   - Bridges RockBot messaging to UI
-│   │   - Updates ChatStateService
-│   │
-│   └── ChatStateService.cs          # State management
-│       - Tracks messages, processing state
-│       - Event-driven UI notifications
-│       - Thread-safe message collection
+│   └── BlazorUserFrontend.cs        # IUserFrontend implementation
+│       - Bridges RockBot messaging to UI
+│       - Turns each callback into a chat event for ChatStateService
+│       (ChatStateService, the events and the reducer live in
+│        src/RockBot.UserProxy.ChatState — see docs/blazor-ui.md)
 │
 ├── wwwroot/
 │   └── css/

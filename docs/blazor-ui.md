@@ -18,8 +18,9 @@ Browser (SignalR)
     │
     ▼
 Blazor Server (RockBot.UserProxy.Blazor)
-    │   ChatStateService  ─── in-memory chat state, event-driven UI updates
-    │   BlazorUserFrontend ── IUserFrontend impl, routes replies into ChatStateService
+    │   ChatStateService  ─── chat state store: Apply(event) → reducer → snapshot
+    │                         (RockBot.UserProxy.ChatState, no Blazor dependency)
+    │   BlazorUserFrontend ── IUserFrontend impl, turns callbacks into chat events
     │
     ▼
 UserProxyService (RockBot.UserProxy)
@@ -59,28 +60,40 @@ messages) are routed to `IUserFrontend.DisplayReplyAsync`.
 
 **Default reply timeout:** configurable via `UserProxyOptions.DefaultReplyTimeout`.
 
-### `ChatStateService`
+### Chat state (`RockBot.UserProxy.ChatState`)
 
-Singleton in-process state store for the current browser session:
+The chat's state is built from events, the way AG-UI clients work. The library has no Blazor
+dependency, so another front end (a WASM client on the AG-UI proxy, say) can reuse it and swap
+only the transport.
 
-| Method | Purpose |
-|---|---|
-| `LoadHistory(turns, sessionId)` | Populate from agent's conversation history on first render |
-| `AddUserMessage(content, userId, sessionId)` | Echo the user's message immediately (optimistic) |
-| `AddAgentReply(reply)` | Add the agent's final reply |
-| `SetThinkingMessage(message)` | Update the "thinking" spinner text from intermediate replies |
-| `SetProcessing(bool)` | Show/hide the thinking indicator |
-| `RecordFeedback(messageId, isPositive)` | Mark a message with thumbs-up or thumbs-down |
-| `AddError(message)` | Add an error bubble |
+- **Events** (`ChatEvents.cs`). Each thing that can happen is a `ChatEvent` record: agent output
+  (`ReplyReceived`, `ActivityReported`, `McpQuestionReceived`, `McpQuestionStatusChanged`,
+  `ErrorReported`), the turn the user started (`UserMessageSent`, `TurnStarted`, `TurnProgress`,
+  `TurnEnded` with an outcome of completed, timed out, failed or cancelled), resyncs
+  (`HistoryLoaded`, `ActiveStatusReconciled`, `AgentInfoReceived`), and user actions
+  (`UserCancelled`, `ConversationCleared`, `McpAnswerSubmitted`, `FeedbackRecorded`,
+  `MessageExpandToggled`, saved references). Events carry their timestamp and the ids of any
+  messages they create.
+- **State** (`ChatViewState`). Immutable: the transcript (`Messages`, keyed by message id), open
+  activity logs keyed by source, the current turn, and form answers waiting for a follow-up
+  (keyed by question id). Helpers derive what the page shows: `IsBusy(now)`,
+  `ActiveStatusIndicators`, `ActiveSavedReference`.
+- **Reducer** (`ChatReducer`). A pure function from state and event to the next state, with one
+  method per event type. `Replay(events)` folds a recorded sequence, which is how the tests in
+  `RockBot.UserProxy.ChatState.Tests` exercise it.
+- **Store** (`ChatStateService`). A singleton holding the current state. `Apply(event)` is the
+  only way to change it; it returns false when the event is refused (an answer to a closed
+  form, say). `OnStateChanged` fires after each change; `Chat.razor` subscribes, re-renders,
+  and renders from one `State` snapshot per pass.
 
-`OnStateChanged` fires after every mutation — the `Chat.razor` component subscribes and calls
-`StateHasChanged` to trigger a re-render.
+Supporting a new kind of agent output means adding an event type and its reducer case.
 
 ### `BlazorUserFrontend`
 
-`IUserFrontend` implementation that bridges the `UserProxyService` callback into
-`ChatStateService`. Handles both normal replies (`DisplayReplyAsync`) and error messages
-(`DisplayErrorAsync`).
+`IUserFrontend` implementation that turns each `UserProxyService` callback into one chat event:
+replies (`DisplayReplyAsync`), progress (`DisplayStatusAsync`), errors, agent name changes and
+MCP question status. It also works out each reply's category (primary, subagent, A2A,
+scheduled) from its session id and agent name.
 
 ---
 
@@ -117,7 +130,7 @@ bottom — so long agent responses are read top-to-bottom rather than starting m
 ### Feedback
 
 Every agent reply shows a 👍 / 👎 bar. Clicking either:
-1. Marks the message in `ChatStateService` (disabling the buttons to prevent double-voting)
+1. Applies a `FeedbackRecorded` event, which marks the message (disabling the buttons to prevent double-voting)
 2. Publishes a `UserFeedback` message to RabbitMQ
 3. The agent receives it as a `FeedbackSignalType.Correction` (👎) or `ThumbsUp` signal
 

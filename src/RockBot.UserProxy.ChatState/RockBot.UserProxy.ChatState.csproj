@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RockBot.UserProxy.ChatState</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <Description>Event-driven chat state for RockBot user proxy front ends: chat events, a pure reducer and an observable store, with no UI framework dependency.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,9 +1,11 @@
 using RockBot.Host;
+using RockBot.UserProxy.ChatState;
 
 namespace RockBot.UserProxy.Blazor.Services;
 
 /// <summary>
-/// Blazor implementation of IUserFrontend that updates chat state for real-time UI updates.
+/// Blazor implementation of IUserFrontend. Turns each callback into a <see cref="ChatEvent"/>
+/// for the chat state; the UI renders from that state.
 /// </summary>
 public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStateService? signIns = null) : IUserFrontend
 {
@@ -20,7 +22,7 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
         // primary agent, so it must not teach us the agent's name; nor does it end the turn.
         if (string.Equals(reply.ContentType, McpQuestionForm.ContentType, StringComparison.OrdinalIgnoreCase))
         {
-            chatState.AddAgentReply(reply, MessageCategory.McpQuestion);
+            chatState.Apply(new McpQuestionReceived(reply, McpQuestionFormModel.TryParseForm(reply.StructuredData)));
             return Task.CompletedTask;
         }
 
@@ -43,9 +45,8 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
             displayReply = reply with { Content = quoted + "\n\n" + reply.Content };
         }
 
-        // Final result — add as a permanent chat bubble and clear the progress indicator
-        chatState.SetThinkingMessage(null);
-        chatState.AddAgentReply(displayReply, category);
+        // Final result — a permanent chat bubble; clears the progress indicator
+        chatState.Apply(new ReplyReceived(displayReply, category));
         return Task.CompletedTask;
     }
 
@@ -57,27 +58,26 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
         // instead of creating a separate bubble per message.
         // IsCompletion signals the source has finished (e.g. subagent result Phase 1) —
         // close the activity log so the spinner and header indicator disappear.
-        chatState.AppendActivityLogEntry(reply.Content, category, reply.AgentName,
-            close: reply.IsCompletion);
+        chatState.Apply(new ActivityReported(category, reply.AgentName, reply.Content, reply.IsCompletion));
         return Task.CompletedTask;
     }
 
     public Task DisplayErrorAsync(string message, CancellationToken cancellationToken = default)
     {
-        chatState.AddError(message);
+        chatState.Apply(new ErrorReported(message));
         return Task.CompletedTask;
     }
 
     public Task OnAgentNameChangedAsync(string agentName, CancellationToken cancellationToken = default)
     {
         _primaryAgentName = agentName;
-        chatState.SetAgentInfo(agentName, chatState.AgentVersion ?? "");
+        chatState.Apply(new AgentInfoReceived(agentName, chatState.State.AgentVersion ?? ""));
         return Task.CompletedTask;
     }
 
     public Task OnMcpQuestionStatusAsync(McpQuestionStatus status, CancellationToken cancellationToken = default)
     {
-        chatState.UpdateQuestionStatus(status);
+        chatState.Apply(new McpQuestionStatusChanged(status));
         return Task.CompletedTask;
     }
 

@@ -1,5 +1,6 @@
 using RockBot.UserProxy;
 using RockBot.UserProxy.Blazor.Services;
+using RockBot.UserProxy.ChatState;
 
 namespace RockBot.UserProxy.Blazor.Tests;
 
@@ -292,7 +293,7 @@ public class BlazorUserFrontendTests
     [TestMethod]
     public void LoadHistory_SubagentTurn_CategorizedAsSubagentActivity()
     {
-        _chatState.SetAgentInfo("RockBot", "1.0.0");
+        _chatState.Apply(new AgentInfoReceived("RockBot", "1.0.0"));
         var turn = new ConversationHistoryTurn
         {
             Role = "user",
@@ -301,7 +302,7 @@ public class BlazorUserFrontendTests
             AgentName = "subagent-abc123"
         };
 
-        _chatState.LoadHistory([turn], "blazor-session");
+        _chatState.Apply(new HistoryLoaded([turn], "blazor-session"));
 
         var msg = GetLastMessage();
         Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
@@ -313,7 +314,7 @@ public class BlazorUserFrontendTests
         // Worker tool-invocation history turns (when persisted) also carry a
         // worker-{taskId} AgentName. They must categorize the same as subagent
         // activity so they don't show up as inbound A2A in restored chats.
-        _chatState.SetAgentInfo("RockBot", "1.0.0");
+        _chatState.Apply(new AgentInfoReceived("RockBot", "1.0.0"));
         var turn = new ConversationHistoryTurn
         {
             Role = "user",
@@ -322,7 +323,7 @@ public class BlazorUserFrontendTests
             AgentName = "worker-abc123"
         };
 
-        _chatState.LoadHistory([turn], "blazor-session");
+        _chatState.Apply(new HistoryLoaded([turn], "blazor-session"));
 
         var msg = GetLastMessage();
         Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
@@ -332,7 +333,7 @@ public class BlazorUserFrontendTests
 
     private ChatMessage GetLastMessage()
     {
-        Assert.IsTrue(_chatState.Messages.Count > 0, "Expected at least one message in chat state");
-        return _chatState.Messages[^1];
+        Assert.IsTrue(_chatState.State.Messages.Count > 0, "Expected at least one message in chat state");
+        return _chatState.State.Messages[^1];
     }
 }

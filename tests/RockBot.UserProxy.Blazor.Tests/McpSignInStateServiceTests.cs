@@ -1,4 +1,5 @@
 using RockBot.UserProxy.Blazor.Services;
+using RockBot.UserProxy.ChatState;
 
 namespace RockBot.UserProxy.Blazor.Tests;
 

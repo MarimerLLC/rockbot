@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RockBot.UserProxy.Blazor.Services;
+using RockBot.UserProxy.ChatState;
 
 namespace RockBot.UserProxy.Tests;
 
@@ -45,16 +46,16 @@ public sealed class ChatStateServiceMcpQuestionTests
         Reason = reason,
     };
 
-    private ChatMessage Question => _sut.Messages.Single(m => m.Category == MessageCategory.McpQuestion);
+    private ChatMessage Question => _sut.State.Messages.Single(m => m.Category == MessageCategory.McpQuestion);
 
     [TestMethod]
     public async Task AFormArrivesMidTurn_WithoutEndingIt()
     {
-        _sut.SetProcessing(true);
+        _sut.Apply(new TurnStarted("turn"));
 
         await _frontend.DisplayReplyAsync(FormReply());
 
-        Assert.IsTrue(_sut.IsProcessing, "the agent is still writing its reply when the form arrives");
+        Assert.IsTrue(_sut.IsBusy, "the agent is still writing its reply when the form arrives");
         Assert.AreEqual(QuestionId, Question.Question!.QuestionId);
         Assert.IsTrue(Question.IsQuestionOpen(DateTimeOffset.UtcNow));
     }
@@ -69,7 +70,7 @@ public sealed class ChatStateServiceMcpQuestionTests
         });
 
         // Had "mcp-bridge" been learned as the primary agent, rockbot's progress would be A2A.
-        var log = _sut.Messages.Single(m => m.IsActivityLog);
+        var log = _sut.State.Messages.Single(m => m.IsActivityLog);
         Assert.AreEqual(MessageCategory.PrimaryProgress, log.Category);
     }
 
@@ -88,7 +89,7 @@ public sealed class ChatStateServiceMcpQuestionTests
         await _frontend.DisplayReplyAsync(FormReply());
         await _frontend.DisplayReplyAsync(FormReply());
 
-        Assert.AreEqual(1, _sut.Messages.Count(m => m.Category == MessageCategory.McpQuestion));
+        Assert.AreEqual(1, _sut.State.Messages.Count(m => m.Category == MessageCategory.McpQuestion));
     }
 
     [TestMethod]
@@ -102,7 +103,7 @@ public sealed class ChatStateServiceMcpQuestionTests
         Assert.AreEqual(McpQuestionState.Answered, Question.QuestionState);
         Assert.AreEqual("agent", Question.QuestionAnsweredBy);
         Assert.IsFalse(Question.IsQuestionOpen(DateTimeOffset.UtcNow));
-        Assert.IsFalse(_sut.TryBeginQuestionSubmit(QuestionId), "a closed form can't be sent");
+        Assert.IsFalse(_sut.Apply(new McpAnswerSubmitted(QuestionId)), "a closed form can't be sent");
     }
 
     [TestMethod]
@@ -120,82 +121,82 @@ public sealed class ChatStateServiceMcpQuestionTests
     {
         await _frontend.DisplayReplyAsync(FormReply());
 
-        Assert.IsTrue(_sut.TryBeginQuestionSubmit(QuestionId));
-        Assert.IsFalse(_sut.TryBeginQuestionSubmit(QuestionId), "a second tab can't send it again");
-        Assert.IsTrue(_sut.IsProcessing, "sending the form makes the chat wait for the agent");
+        Assert.IsTrue(_sut.Apply(new McpAnswerSubmitted(QuestionId)));
+        Assert.IsFalse(_sut.Apply(new McpAnswerSubmitted(QuestionId)), "a second tab can't send it again");
+        Assert.IsTrue(_sut.IsBusy, "sending the form makes the chat wait for the agent");
 
         // Accepted: the form closes, but the user still waits for the agent's reply.
         await _frontend.OnMcpQuestionStatusAsync(Status(McpQuestionState.Answered, answeredBy: "user"));
         Assert.IsFalse(Question.IsSubmitting);
-        Assert.IsTrue(_sut.IsProcessing);
+        Assert.IsTrue(_sut.IsBusy);
 
         await _frontend.DisplayReplyAsync(new AgentReply
         {
             Content = "Found 3 invoices.", SessionId = "blazor-session", AgentName = "rockbot", IsFinal = true,
             FollowsQuestionId = QuestionId,
         });
-        Assert.IsFalse(_sut.IsProcessing);
+        Assert.IsFalse(_sut.IsBusy);
     }
 
     [TestMethod]
     public async Task TheReplyOfTheTurnThatShowedTheForm_DoesNotEndTheFormsWait()
     {
         // The form arrives while its turn is still running, and the user answers at once.
-        _sut.SetProcessing(true);
+        _sut.Apply(new TurnStarted("turn"));
         await _frontend.DisplayReplyAsync(FormReply());
-        _sut.TryBeginQuestionSubmit(QuestionId);
+        _sut.Apply(new McpAnswerSubmitted(QuestionId));
 
         // That turn finishes: its reply, and its send loop's own SetProcessing(false).
         await _frontend.DisplayReplyAsync(new AgentReply
         {
             Content = "There's a form waiting for you.", SessionId = "blazor-session", AgentName = "rockbot", IsFinal = true,
         });
-        _sut.SetProcessing(false);
-        Assert.IsTrue(_sut.IsProcessing, "the form's follow-up is still to come");
+        _sut.Apply(new TurnEnded("turn", TurnOutcome.Completed));
+        Assert.IsTrue(_sut.IsBusy, "the form's follow-up is still to come");
 
         await _frontend.DisplayReplyAsync(new AgentReply
         {
             Content = "Found 3 invoices.", SessionId = "blazor-session", AgentName = "rockbot", IsFinal = true,
             FollowsQuestionId = QuestionId,
         });
-        Assert.IsFalse(_sut.IsProcessing);
+        Assert.IsFalse(_sut.IsBusy);
     }
 
     [TestMethod]
     public async Task Cancelling_StopsWaitingOnAFormAnswerToo()
     {
         await _frontend.DisplayReplyAsync(FormReply());
-        _sut.TryBeginQuestionSubmit(QuestionId);
+        _sut.Apply(new McpAnswerSubmitted(QuestionId));
 
-        _sut.CancelProcessing();
+        _sut.Apply(new UserCancelled());
 
-        Assert.IsFalse(_sut.IsProcessing);
+        Assert.IsFalse(_sut.IsBusy);
     }
 
     [TestMethod]
     public async Task ARejectedSubmission_ReopensTheForm_AndEndsTheWait()
     {
         await _frontend.DisplayReplyAsync(FormReply());
-        _sut.TryBeginQuestionSubmit(QuestionId);
+        _sut.Apply(new McpAnswerSubmitted(QuestionId));
 
         await _frontend.OnMcpQuestionStatusAsync(Status(McpQuestionState.Rejected, reason: "mailbox is too short"));
 
-        Assert.IsFalse(_sut.IsProcessing, "no agent turn follows a refusal");
+        Assert.IsFalse(_sut.IsBusy, "no agent turn follows a refusal");
         Assert.IsFalse(Question.IsSubmitting);
         Assert.AreEqual("mailbox is too short", Question.QuestionReason);
         Assert.IsTrue(Question.IsQuestionOpen(DateTimeOffset.UtcNow));
-        Assert.IsTrue(_sut.TryBeginQuestionSubmit(QuestionId), "the user can correct it and send again");
+        Assert.IsTrue(_sut.Apply(new McpAnswerSubmitted(QuestionId)), "the user can correct it and send again");
     }
 
     [TestMethod]
     public async Task ASendFailure_ReopensTheForm()
     {
         await _frontend.DisplayReplyAsync(FormReply());
-        _sut.TryBeginQuestionSubmit(QuestionId);
+        _sut.Apply(new McpAnswerSubmitted(QuestionId));
 
-        _sut.FailQuestionSubmit(QuestionId, "the answer couldn't be sent (bus down)");
+        _sut.Apply(new McpAnswerFailed(QuestionId, "the answer couldn't be sent (bus down)"));
 
-        Assert.IsFalse(_sut.IsProcessing);
+        Assert.IsFalse(_sut.IsBusy);
         Assert.AreEqual(McpQuestionState.Rejected, Question.QuestionState);
         Assert.IsTrue(Question.IsQuestionOpen(DateTimeOffset.UtcNow));
     }
@@ -206,7 +207,7 @@ public sealed class ChatStateServiceMcpQuestionTests
         await _frontend.DisplayReplyAsync(FormReply(expiresAt: DateTimeOffset.UtcNow.AddSeconds(-1)));
 
         Assert.IsFalse(Question.IsQuestionOpen(DateTimeOffset.UtcNow));
-        Assert.IsFalse(_sut.TryBeginQuestionSubmit(QuestionId));
+        Assert.IsFalse(_sut.Apply(new McpAnswerSubmitted(QuestionId)));
     }
 
     [TestMethod]
@@ -217,13 +218,13 @@ public sealed class ChatStateServiceMcpQuestionTests
         await _frontend.DisplayReplyAsync(FormReply("q_closed"));
         await _frontend.OnMcpQuestionStatusAsync(Status(McpQuestionState.Declined) with { QuestionId = "q_closed" });
 
-        _sut.LoadHistory(
+        _sut.Apply(new HistoryLoaded(
         [
             new ConversationHistoryTurn { Role = "user", Content = "search my mail", Timestamp = before },
             new ConversationHistoryTurn { Role = "assistant", Content = "Fill in the form, please.", Timestamp = DateTimeOffset.UtcNow.AddMinutes(1) },
-        ], "blazor-session");
+        ], "blazor-session"));
 
-        var messages = _sut.Messages;
+        var messages = _sut.State.Messages;
         Assert.AreEqual(3, messages.Count);
         Assert.AreEqual("search my mail", messages[0].Content);
         Assert.AreEqual(QuestionId, messages[1].Question?.QuestionId, "the open form keeps its place in time");

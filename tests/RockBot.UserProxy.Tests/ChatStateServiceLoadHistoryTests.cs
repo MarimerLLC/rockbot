@@ -1,4 +1,5 @@
 using RockBot.UserProxy.Blazor.Services;
+using RockBot.UserProxy.ChatState;
 
 namespace RockBot.UserProxy.Tests;
 
@@ -11,7 +12,7 @@ public sealed class ChatStateServiceLoadHistoryTests
     public void Setup()
     {
         // Mirrors real startup: agent info is loaded before history
-        _sut.SetAgentInfo("rockbot", "1.0.0");
+        _sut.Apply(new AgentInfoReceived("rockbot", "1.0.0"));
     }
 
     [TestMethod]
@@ -22,9 +23,9 @@ public sealed class ChatStateServiceLoadHistoryTests
             new() { Role = "user", Content = "Hello", Timestamp = DateTimeOffset.UtcNow }
         };
 
-        _sut.LoadHistory(turns, "test-session");
+        _sut.Apply(new HistoryLoaded(turns, "test-session"));
 
-        var msg = _sut.Messages.Single();
+        var msg = _sut.State.Messages.Single();
         Assert.IsTrue(msg.IsFromUser);
         Assert.AreEqual(MessageCategory.UserInput, msg.Category);
         Assert.IsTrue(msg.IsExpanded);
@@ -38,9 +39,9 @@ public sealed class ChatStateServiceLoadHistoryTests
             new() { Role = "assistant", Content = "Hi there!", Timestamp = DateTimeOffset.UtcNow, AgentName = "rockbot" }
         };
 
-        _sut.LoadHistory(turns, "test-session");
+        _sut.Apply(new HistoryLoaded(turns, "test-session"));
 
-        var msg = _sut.Messages.Single();
+        var msg = _sut.State.Messages.Single();
         Assert.IsFalse(msg.IsFromUser);
         Assert.AreEqual(MessageCategory.PrimaryFinal, msg.Category);
         Assert.IsTrue(msg.IsExpanded);
@@ -54,9 +55,9 @@ public sealed class ChatStateServiceLoadHistoryTests
             new() { Role = "user", Content = "[Subagent task abc completed]: results here", Timestamp = DateTimeOffset.UtcNow, AgentName = "subagent-abc" }
         };
 
-        _sut.LoadHistory(turns, "test-session");
+        _sut.Apply(new HistoryLoaded(turns, "test-session"));
 
-        var msg = _sut.Messages.Single();
+        var msg = _sut.State.Messages.Single();
         Assert.IsFalse(msg.IsFromUser);
         Assert.AreEqual(MessageCategory.SubagentActivity, msg.Category);
         Assert.IsFalse(msg.IsExpanded, "Subagent bubbles should be collapsed by default");
@@ -71,9 +72,9 @@ public sealed class ChatStateServiceLoadHistoryTests
             new() { Role = "user", Content = "[Agent 'weather-bot' completed task 1]", Timestamp = DateTimeOffset.UtcNow, AgentName = "weather-bot" }
         };
 
-        _sut.LoadHistory(turns, "test-session");
+        _sut.Apply(new HistoryLoaded(turns, "test-session"));
 
-        var a2aMsg = _sut.Messages[1];
+        var a2aMsg = _sut.State.Messages[1];
         Assert.IsFalse(a2aMsg.IsFromUser);
         Assert.AreEqual(MessageCategory.A2AActivity, a2aMsg.Category);
         Assert.IsFalse(a2aMsg.IsExpanded, "A2A bubbles should be collapsed by default");
@@ -89,11 +90,11 @@ public sealed class ChatStateServiceLoadHistoryTests
             new() { Role = "assistant", Content = "Here are the results.", Timestamp = DateTimeOffset.UtcNow, AgentName = "rockbot" }
         };
 
-        _sut.LoadHistory(turns, "test-session");
+        _sut.Apply(new HistoryLoaded(turns, "test-session"));
 
-        Assert.AreEqual(2, _sut.Messages.Count, "System turn should be filtered out");
-        Assert.AreEqual("Hello", _sut.Messages[0].Content);
-        Assert.AreEqual("Here are the results.", _sut.Messages[1].Content);
+        Assert.AreEqual(2, _sut.State.Messages.Count, "System turn should be filtered out");
+        Assert.AreEqual("Hello", _sut.State.Messages[0].Content);
+        Assert.AreEqual("Here are the results.", _sut.State.Messages[1].Content);
     }
 
     [TestMethod]
@@ -106,13 +107,13 @@ public sealed class ChatStateServiceLoadHistoryTests
             new() { Role = "assistant", Content = "Hi!", Timestamp = DateTimeOffset.UtcNow }
         };
 
-        _sut.LoadHistory(turns, "test-session");
+        _sut.Apply(new HistoryLoaded(turns, "test-session"));
 
-        Assert.AreEqual(2, _sut.Messages.Count);
-        Assert.AreEqual(MessageCategory.UserInput, _sut.Messages[0].Category);
-        Assert.IsTrue(_sut.Messages[0].IsFromUser);
-        Assert.AreEqual(MessageCategory.PrimaryFinal, _sut.Messages[1].Category);
-        Assert.IsFalse(_sut.Messages[1].IsFromUser);
+        Assert.AreEqual(2, _sut.State.Messages.Count);
+        Assert.AreEqual(MessageCategory.UserInput, _sut.State.Messages[0].Category);
+        Assert.IsTrue(_sut.State.Messages[0].IsFromUser);
+        Assert.AreEqual(MessageCategory.PrimaryFinal, _sut.State.Messages[1].Category);
+        Assert.IsFalse(_sut.State.Messages[1].IsFromUser);
     }
 
     [TestMethod]
@@ -124,32 +125,32 @@ public sealed class ChatStateServiceLoadHistoryTests
             new() { Role = "assistant", Content = "Summary", Timestamp = DateTimeOffset.UtcNow, AgentName = "rockbot" }
         };
 
-        _sut.LoadHistory(turns, "test-session");
+        _sut.Apply(new HistoryLoaded(turns, "test-session"));
 
-        Assert.AreEqual("subagent-x", _sut.Messages[0].AgentName);
-        Assert.AreEqual("rockbot", _sut.Messages[1].AgentName);
+        Assert.AreEqual("subagent-x", _sut.State.Messages[0].AgentName);
+        Assert.AreEqual("rockbot", _sut.State.Messages[1].AgentName);
     }
 
     [TestMethod]
     public void LoadHistory_ClearsExistingMessages()
     {
         // Load initial history
-        _sut.LoadHistory(new List<ConversationHistoryTurn>
+        _sut.Apply(new HistoryLoaded(new List<ConversationHistoryTurn>
         {
             new() { Role = "user", Content = "First", Timestamp = DateTimeOffset.UtcNow }
-        }, "session-1");
+        }, "session-1"));
 
-        Assert.AreEqual(1, _sut.Messages.Count);
+        Assert.AreEqual(1, _sut.State.Messages.Count);
 
         // Load new history — should replace, not append
-        _sut.LoadHistory(new List<ConversationHistoryTurn>
+        _sut.Apply(new HistoryLoaded(new List<ConversationHistoryTurn>
         {
             new() { Role = "user", Content = "Second", Timestamp = DateTimeOffset.UtcNow },
             new() { Role = "assistant", Content = "Reply", Timestamp = DateTimeOffset.UtcNow }
-        }, "session-2");
+        }, "session-2"));
 
-        Assert.AreEqual(2, _sut.Messages.Count);
-        Assert.AreEqual("Second", _sut.Messages[0].Content);
+        Assert.AreEqual(2, _sut.State.Messages.Count);
+        Assert.AreEqual("Second", _sut.State.Messages[0].Content);
     }
 
     [TestMethod]
@@ -166,16 +167,16 @@ public sealed class ChatStateServiceLoadHistoryTests
             new() { Role = "assistant", Content = "Weather-bot confirmed the findings.", Timestamp = DateTimeOffset.UtcNow, AgentName = "rockbot" },
         };
 
-        _sut.LoadHistory(turns, "test-session");
+        _sut.Apply(new HistoryLoaded(turns, "test-session"));
 
-        Assert.AreEqual(7, _sut.Messages.Count);
-        Assert.AreEqual(MessageCategory.UserInput, _sut.Messages[0].Category);
-        Assert.AreEqual(MessageCategory.SubagentActivity, _sut.Messages[1].Category);
-        Assert.AreEqual(MessageCategory.SubagentActivity, _sut.Messages[2].Category);
-        Assert.AreEqual(MessageCategory.PrimaryFinal, _sut.Messages[3].Category);
-        Assert.AreEqual(MessageCategory.UserInput, _sut.Messages[4].Category);
-        Assert.AreEqual(MessageCategory.A2AActivity, _sut.Messages[5].Category);
-        Assert.AreEqual(MessageCategory.PrimaryFinal, _sut.Messages[6].Category);
+        Assert.AreEqual(7, _sut.State.Messages.Count);
+        Assert.AreEqual(MessageCategory.UserInput, _sut.State.Messages[0].Category);
+        Assert.AreEqual(MessageCategory.SubagentActivity, _sut.State.Messages[1].Category);
+        Assert.AreEqual(MessageCategory.SubagentActivity, _sut.State.Messages[2].Category);
+        Assert.AreEqual(MessageCategory.PrimaryFinal, _sut.State.Messages[3].Category);
+        Assert.AreEqual(MessageCategory.UserInput, _sut.State.Messages[4].Category);
+        Assert.AreEqual(MessageCategory.A2AActivity, _sut.State.Messages[5].Category);
+        Assert.AreEqual(MessageCategory.PrimaryFinal, _sut.State.Messages[6].Category);
     }
 
     [TestMethod]
@@ -197,9 +198,9 @@ public sealed class ChatStateServiceLoadHistoryTests
             }
         };
 
-        _sut.LoadHistory(turns, "session-1");
+        _sut.Apply(new HistoryLoaded(turns, "session-1"));
 
-        var message = _sut.Messages.Single();
+        var message = _sut.State.Messages.Single();
         Assert.IsTrue(message.IsFromUser);
         Assert.IsNotNull(message.Attachments);
         Assert.AreEqual("shot.png", message.Attachments!.Single().Path);
@@ -213,18 +214,18 @@ public sealed class ChatStateServiceLoadHistoryTests
             new() { Role = "user", Content = "plain text", Timestamp = DateTimeOffset.UtcNow }
         };
 
-        _sut.LoadHistory(turns, "session-1");
+        _sut.Apply(new HistoryLoaded(turns, "session-1"));
 
-        Assert.IsNull(_sut.Messages.Single().Attachments);
+        Assert.IsNull(_sut.State.Messages.Single().Attachments);
     }
 
     [TestMethod]
     public void AddUserMessage_WithAttachments_ShowsThemImmediately()
     {
         // The bubble must show the attachment on send, not only after a reload.
-        _sut.AddUserMessage("look at this", "user-1", "session-1",
-            [new AgentAttachment { Mime = "image/png", Path = "shot.png" }]);
+        _sut.Apply(new UserMessageSent("look at this", "user-1", "session-1",
+            [new AgentAttachment { Mime = "image/png", Path = "shot.png" }]));
 
-        Assert.AreEqual("shot.png", _sut.Messages.Single().Attachments!.Single().Path);
+        Assert.AreEqual("shot.png", _sut.State.Messages.Single().Attachments!.Single().Path);
     }
 }

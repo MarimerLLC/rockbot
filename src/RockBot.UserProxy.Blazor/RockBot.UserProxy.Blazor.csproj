@@ -17,6 +17,7 @@
     <ProjectReference Include="..\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.UserProxy\RockBot.UserProxy.csproj" />
+    <ProjectReference Include="..\RockBot.UserProxy.ChatState\RockBot.UserProxy.ChatState.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
   </ItemGroup>
 
