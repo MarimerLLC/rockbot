@@ -18,6 +18,7 @@ A complete Blazor Server application with:
 
 #### 1. Services
 - **ChatStateService**: Manages chat state and notifies UI of changes
+  (since #796 it lives in `src/RockBot.UserProxy.ChatState` and is built from events; see `docs/blazor-ui.md`)
   - Tracks messages, thinking state, and processing status
   - Event-driven notifications for real-time UI updates
   - Supports user messages, agent replies, and errors
@@ -215,7 +216,7 @@ Potential improvements that could be added later:
   - `Components/_Imports.razor`
   - `Pages/Chat.razor`
   - `Pages/_Imports.razor`
-  - `Services/ChatStateService.cs`
+  - `Services/ChatStateService.cs` (moved to `src/RockBot.UserProxy.ChatState/` in #796)
   - `Services/BlazorUserFrontend.cs`
   - `wwwroot/css/app.css`
 
