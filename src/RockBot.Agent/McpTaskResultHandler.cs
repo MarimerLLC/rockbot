@@ -291,6 +291,7 @@ internal sealed class McpTaskResultHandler(
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}",
             new AgentReply
             {
+                Source = UserProxy.ReplySource.Primary,
                 Content = finalContent,
                 SessionId = conversationId,
                 AgentName = agent.Name,

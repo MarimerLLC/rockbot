@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using RockBot.UserProxy;
 
 namespace RockBot.Host;
 
@@ -18,11 +19,13 @@ internal sealed class AgentTaskListTools
 {
     private readonly AgentTaskList _taskList;
     private readonly ILogger _logger;
+    private readonly IAgentEventPublisher? _eventPublisher;
 
-    public AgentTaskListTools(AgentTaskList taskList, ILogger logger)
+    public AgentTaskListTools(AgentTaskList taskList, ILogger logger, IAgentEventPublisher? eventPublisher = null)
     {
         _taskList = taskList;
         _logger = logger;
+        _eventPublisher = eventPublisher;
 
         // Tool names are pinned to snake_case rather than inherited from the method
         // names: every prompt and directive in the repo refers to them that way, and
@@ -54,6 +57,19 @@ internal sealed class AgentTaskListTools
         _logger.LogInformation("Tool call: TaskCreate({Count} items)", items?.Length ?? 0);
 
         var created = _taskList.CreateOrReplace(items ?? []);
+
+        // #795: create replaces the whole list, so it goes out as a snapshot.
+        if (_eventPublisher is not null && ToolProgressNotifier.Current is { } ctx)
+        {
+            PublishEvent(new TaskListSnapshot
+            {
+                ThreadId = ctx.EffectiveThreadId,
+                RunId = ctx.CorrelationId,
+                Source = ctx.EffectiveSource,
+                Items = [.. created.Select(ToEventItem)],
+            });
+        }
+
         if (created.Count == 0)
             return "Task list cleared.";
 
@@ -98,6 +114,42 @@ internal sealed class AgentTaskListTools
             return $"Error: no task with id {id}. Known ids: {ids}.";
         }
 
+        if (_eventPublisher is not null && ToolProgressNotifier.Current is { } ctx)
+        {
+            PublishEvent(new TaskListDelta
+            {
+                ThreadId = ctx.EffectiveThreadId,
+                RunId = ctx.CorrelationId,
+                Source = ctx.EffectiveSource,
+                Item = ToEventItem(updated),
+            });
+        }
+
         return $"Task {updated.Id} → [{updated.Status}] {updated.Description}";
+    }
+
+    private static TaskListItem ToEventItem(AgentTaskList.TaskItem item) => new()
+    {
+        Id = item.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        Description = item.Description,
+        Status = item.Status,
+    };
+
+    private void PublishEvent<T>(T evt) where T : class
+    {
+        // The tools are synchronous; the publisher swallows its own failures.
+        _ = PublishSafelyAsync(evt);
+    }
+
+    private async Task PublishSafelyAsync<T>(T evt) where T : class
+    {
+        try
+        {
+            await _eventPublisher!.PublishForRunAsync(evt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to publish task list event {Type}", typeof(T).Name);
+        }
     }
 }

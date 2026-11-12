@@ -29,6 +29,7 @@ internal sealed class CancelSessionHandler(
 
         var reply = new AgentReply
         {
+            Source = UserProxy.ReplySource.Primary,
             Content = "Cancelled.",
             SessionId = message.SessionId,
             AgentName = agent.Name,

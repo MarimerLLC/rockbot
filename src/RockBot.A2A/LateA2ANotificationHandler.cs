@@ -90,6 +90,7 @@ internal sealed class LateA2ANotificationHandler(
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
+                Source = UserProxy.ReplySource.A2A,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
                 ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
@@ -108,6 +109,7 @@ internal sealed class LateA2ANotificationHandler(
 
             var reply = new AgentReply
             {
+                Source = UserProxy.ReplySource.A2A,
                 Content = finalContent,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,

@@ -130,6 +130,7 @@ internal sealed class ScheduledTaskHandler(
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
+                Source = UserProxy.ReplySource.Scheduled,
                 SessionId = replySessionId,
                 AgentName = agent.Name,
                 ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
@@ -184,6 +185,7 @@ internal sealed class ScheduledTaskHandler(
 
         var reply = new AgentReply
         {
+            Source = UserProxy.ReplySource.Scheduled,
             Content = finalText,
             SessionId = replySessionId,
             AgentName = agent.Name,

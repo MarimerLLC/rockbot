@@ -2366,6 +2366,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             await _publisher.PublishAsync($"{UserProxy.UserProxyTopics.UserResponse}.{_agentName}",
                 new UserProxy.AgentReply
                 {
+                    Source = UserProxy.ReplySource.Bridge,
                     Content = McpQuestionFormMapper.ToText(form),
                     SessionId = conversationId,
                     AgentName = RestartNoticeAgentName,
@@ -3700,6 +3701,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                     await _publisher.PublishAsync($"{UserProxy.UserProxyTopics.UserResponse}.{_agentName}",
                         new UserProxy.AgentReply
                         {
+                            Source = UserProxy.ReplySource.Bridge,
                             Content = notice,
                             SessionId = conversationId,
                             AgentName = RestartNoticeAgentName,

@@ -33,6 +33,6 @@ public sealed record TaskListItem
     public required string Id { get; init; }
     public required string Description { get; init; }
 
-    /// <summary><c>pending</c>, <c>in_progress</c>, <c>completed</c> or <c>skipped</c>.</summary>
+    /// <summary><c>pending</c>, <c>in_progress</c> or <c>completed</c>.</summary>
     public required string Status { get; init; }
 }

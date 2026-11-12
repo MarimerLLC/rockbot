@@ -59,7 +59,7 @@ internal sealed class SubagentRunner(
             CompletionEvalTrigger.ClaimedChange,
         };
 
-    public async Task RunAsync(
+    public async Task<SubagentRunOutcome> RunAsync(
         string taskId,
         string subagentSessionId,
         string description,
@@ -259,7 +259,9 @@ internal sealed class SubagentRunner(
             {
                 SessionId = primarySessionId,
                 AgentName = $"subagent-{taskId}",
-                ReplyTo = $"{UserProxy.UserProxyTopics.UserResponse}.{agent.Name}"
+                ReplyTo = $"{UserProxy.UserProxyTopics.UserResponse}.{agent.Name}",
+                Source = UserProxy.ReplySource.Subagent(taskId),
+                ThreadId = primaryRawSessionId,
             });
 
             // #686: the subagent checks its own claims of work before they are relayed. It is a
@@ -428,6 +430,7 @@ internal sealed class SubagentRunner(
         await publisher.PublishAsync($"{SubagentTopics.Result}.{agent.Name}", envelope, CancellationToken.None);
 
         logger.LogInformation("Subagent {TaskId} published result (success={Success})", taskId, isSuccess);
+        return new SubagentRunOutcome(isSuccess, failureReason, error);
     }
 
     /// <summary>

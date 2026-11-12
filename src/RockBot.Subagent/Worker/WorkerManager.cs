@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RockBot.Host;
+using RockBot.UserProxy;
 
 namespace RockBot.Subagent.Worker;
 
@@ -14,8 +16,14 @@ public sealed class WorkerManager(
     IServiceScopeFactory scopeFactory,
     IOptions<WorkerOptions> options,
     ILogger<WorkerManager> logger,
-    ISessionWorkRegistry? sessionWorkRegistry = null) : IWorkerManager
+    ISessionWorkRegistry? sessionWorkRegistry = null,
+    IAgentEventPublisher? eventPublisher = null) : IWorkerManager
 {
+    // #795: running workers, for the active-work snapshot.
+    private readonly ConcurrentDictionary<string, ActiveWorkerInfo> _active = new();
+
+    public IReadOnlyList<ActiveWorkerInfo> ListActive() => [.. _active.Values];
+
     public async Task<WorkerBatchResult> SpawnBatchAsync(
         IReadOnlyList<WorkerDefinition> definitions,
         string primarySessionId,
@@ -43,11 +51,12 @@ public sealed class WorkerManager(
 
         var batchId = $"worker-batch-{Guid.NewGuid():N}"[..20];
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        var parentToolCallId = CurrentToolCallContext.CallId;
 
         using var semaphore = new SemaphoreSlim(opts.MaxConcurrentWorkers);
 
         var tasks = definitions
-            .Select(def => RunOneAsync(def, batchId, primarySessionId, opts, semaphore, ct))
+            .Select(def => RunOneAsync(def, batchId, primarySessionId, parentToolCallId, opts, semaphore, ct))
             .ToList();
         var results = await Task.WhenAll(tasks);
 
@@ -70,6 +79,7 @@ public sealed class WorkerManager(
         WorkerDefinition definition,
         string batchId,
         string primarySessionId,
+        string? parentToolCallId,
         WorkerOptions opts,
         SemaphoreSlim semaphore,
         CancellationToken ct)
@@ -92,19 +102,34 @@ public sealed class WorkerManager(
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout);
 
+            var worker = new ActiveWorkerInfo(taskId, definition.Description, primarySessionId,
+                DateTimeOffset.UtcNow, parentToolCallId);
+            _active[taskId] = worker;
+            await PublishEventAsync(new SubagentStarted
+            {
+                SubagentRunId = taskId,
+                Kind = ReplySourceKind.Worker,
+                Description = definition.Description,
+                ThreadId = SessionIds.Raw(primarySessionId),
+                ParentToolCallId = parentToolCallId,
+                StartedAt = worker.StartedAt,
+            });
+
+            WorkerResult? result = null;
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
                 var runner = scope.ServiceProvider.GetRequiredService<IWorkerRunner>();
-                return await runner.RunAsync(
+                result = await runner.RunAsync(
                     taskId, definition, primarySessionId, batchId, timeout, cts.Token);
+                return result;
             }
             catch (Exception ex)
             {
                 logger.LogError(ex,
                     "Worker {TaskId} failed before runner could return a result", taskId);
                 var resultKey = definition.ResolveResultKey(taskId);
-                return new WorkerResult
+                return result = new WorkerResult
                 {
                     TaskId = taskId,
                     IsSuccess = false,
@@ -117,10 +142,47 @@ public sealed class WorkerManager(
                     FailureReason = $"manager exception: {ex.Message}",
                 };
             }
+            finally
+            {
+                _active.TryRemove(taskId, out _);
+                await PublishEventAsync(new SubagentFinished
+                {
+                    SubagentRunId = taskId,
+                    Kind = ReplySourceKind.Worker,
+                    ThreadId = SessionIds.Raw(primarySessionId),
+                    Outcome = ToEventOutcome(result),
+                    Error = result is { IsSuccess: true } ? null : result?.FailureReason,
+                    FinishedAt = DateTimeOffset.UtcNow,
+                });
+            }
         }
         finally
         {
             semaphore.Release();
+        }
+    }
+
+    /// <summary>Maps a worker's result onto a <see cref="SubagentOutcome"/>.</summary>
+    internal static string ToEventOutcome(WorkerResult? result) => result switch
+    {
+        { IsSuccess: true } => SubagentOutcome.Success,
+        { FailureReason: "timeout" } => SubagentOutcome.Timeout,
+        { FailureReason: "cancelled" } => SubagentOutcome.Cancelled,
+        _ => SubagentOutcome.Failed,
+    };
+
+    private async Task PublishEventAsync<T>(T evt) where T : class
+    {
+        if (eventPublisher is null)
+            return;
+
+        try
+        {
+            await eventPublisher.BroadcastAsync(evt, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to publish {Type}", typeof(T).Name);
         }
     }
 }

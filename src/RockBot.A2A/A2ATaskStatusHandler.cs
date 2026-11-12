@@ -64,6 +64,7 @@ internal sealed class A2ATaskStatusHandler(
             {
                 var progressReply = new AgentReply
                 {
+                    Source = UserProxy.ReplySource.A2A,
                     Content = statusText,
                     SessionId = pending.PrimarySessionId,
                     AgentName = pending.TargetAgent,
@@ -117,6 +118,7 @@ internal sealed class A2ATaskStatusHandler(
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
+                Source = UserProxy.ReplySource.A2A,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
                 ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
@@ -134,6 +136,7 @@ internal sealed class A2ATaskStatusHandler(
 
             var reply = new AgentReply
             {
+                Source = UserProxy.ReplySource.A2A,
                 Content = finalContent,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,

@@ -348,7 +348,8 @@ public class ConsequentialActionGateTests
 
     // Shared with ToolCallOutcomeTests (#686).
     internal static AgentLoopRunner CreateRunner(IChatClient model, bool textBased, AgentHostOptions host,
-        IToolCallLog? toolCallLog = null, IDecisionService? decisions = null)
+        IToolCallLog? toolCallLog = null, IDecisionService? decisions = null,
+        IToolProgressNotifier? progressNotifier = null)
     {
         var profileOpts = Options.Create(new AgentProfileOptions
         {
@@ -362,7 +363,7 @@ public class ConsequentialActionGateTests
 
         IChatClient client = textBased
             ? model
-            : new RockBotFunctionInvokingChatClient(model, null, toolCallLog, behavior,
+            : new RockBotFunctionInvokingChatClient(model, progressNotifier, toolCallLog, behavior,
                 new LlmCostEstimator(
                     Options.Create(new LlmPricingOptions
                     {
@@ -382,7 +383,8 @@ public class ConsequentialActionGateTests
             Array.Empty<IServiceSearchIndex>(),
             new StubConversationMemory(),
             NullLogger<AgentLoopRunner>.Instance,
-            consequentialActionGate: new ConsequentialActionGate(hostOptions, decisions: decisions));
+            consequentialActionGate: new ConsequentialActionGate(hostOptions, decisions: decisions),
+            toolProgressNotifier: progressNotifier);
     }
 
     /// <summary>First call returns a tool call; later calls record the tool result and return text.</summary>

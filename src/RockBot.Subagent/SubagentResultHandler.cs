@@ -84,6 +84,7 @@ internal sealed class SubagentResultHandler(
                 : $"Task failed: {message.Error}\n\n{message.Output}";
             var completionReply = new AgentReply
             {
+                Source = UserProxy.ReplySource.Subagent(message.TaskId),
                 Content = completionContent,
                 SessionId = rawSessionId,
                 AgentName = $"subagent-{message.TaskId}",
@@ -304,6 +305,7 @@ internal sealed class SubagentResultHandler(
             // answer once all subagents complete.
             var reply = new AgentReply
             {
+                Source = UserProxy.ReplySource.Primary,
                 Content = finalContent,
                 SessionId = rawSessionId,
                 AgentName = agent.Name,
@@ -354,6 +356,7 @@ internal sealed class SubagentResultHandler(
 
             var reply = new AgentReply
             {
+                Source = UserProxy.ReplySource.Primary,
                 Content = content,
                 SessionId = rawSessionId,
                 AgentName = agent.Name,

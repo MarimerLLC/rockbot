@@ -107,6 +107,7 @@ internal sealed class InputRequiredHandler(
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
+                Source = UserProxy.ReplySource.A2A,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
                 ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"

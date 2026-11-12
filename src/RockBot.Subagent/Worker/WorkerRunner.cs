@@ -138,6 +138,7 @@ internal sealed class WorkerRunner(
         const int RecentProgressCapacity = 5;
         var reportProgressFunctions = new ReportProgressFunctions(
             taskId, primarySessionId, publisher, subagentId, agent.Name, logger,
+            kind: UserProxy.ReplySourceKind.Worker,
             onReport: msg =>
             {
                 lock (recentProgress)
@@ -180,6 +181,8 @@ internal sealed class WorkerRunner(
                 SessionId = primarySessionId,
                 AgentName = subagentId,
                 ReplyTo = $"{UserProxy.UserProxyTopics.UserResponse}.{agent.Name}",
+                Source = UserProxy.ReplySource.Worker(taskId),
+                ThreadId = SessionIds.Raw(primarySessionId),
             });
 
             finalOutput = await agentLoopRunner.RunAsync(

@@ -650,6 +650,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
         {
             var reply = new AgentReply
             {
+                Source = UserProxy.ReplySource.Scheduled,
                 Content = content,
                 SessionId = WellKnownSessions.ScheduledSystem,
                 AgentName = _agent.Name,

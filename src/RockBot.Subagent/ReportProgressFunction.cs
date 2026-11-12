@@ -20,6 +20,7 @@ internal sealed class ReportProgressFunctions
     private readonly string _subagentId;
     private readonly ILogger _logger;
     private readonly Action<string>? _onReport;
+    private readonly string? _kind;
 
     private readonly string _agentName;
 
@@ -30,8 +31,10 @@ internal sealed class ReportProgressFunctions
         string subagentId,
         string agentName,
         ILogger logger,
-        Action<string>? onReport = null)
+        Action<string>? onReport = null,
+        string? kind = null)
     {
+        _kind = kind;
         _taskId = taskId;
         _primarySessionId = primarySessionId;
         _publisher = publisher;
@@ -58,10 +61,11 @@ internal sealed class ReportProgressFunctions
         var progress = new SubagentProgressMessage
         {
             TaskId = _taskId,
-            SubagentSessionId = $"subagent-{_taskId}",
+            SubagentSessionId = _subagentId,
             PrimarySessionId = _primarySessionId,
             Message = message,
-            Timestamp = DateTimeOffset.UtcNow
+            Timestamp = DateTimeOffset.UtcNow,
+            Kind = _kind,
         };
 
         var envelope = progress.ToEnvelope<SubagentProgressMessage>(source: _subagentId);

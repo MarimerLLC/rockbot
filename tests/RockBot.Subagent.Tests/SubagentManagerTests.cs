@@ -83,11 +83,11 @@ public class SubagentManagerTests
             NullLoggerFactory.Instance.CreateLogger<TierRoutingLogger>()));
     }
 
-    private static SubagentManager CreateManager(int maxConcurrent = 3)
+    private static SubagentManager CreateManager(int maxConcurrent = 3, IAgentEventPublisher? events = null, ILlmClient? llm = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        AddSubagentRunnerStubs(services, new NoopLlmClient());
+        AddSubagentRunnerStubs(services, llm ?? new NoopLlmClient());
 
         var provider = services.BuildServiceProvider();
 
@@ -97,7 +97,8 @@ public class SubagentManagerTests
             opts,
             provider.GetRequiredService<IMessagePublisher>(),
             new AgentIdentity("TestBot"),
-            NullLogger<SubagentManager>.Instance);
+            NullLogger<SubagentManager>.Instance,
+            eventPublisher: events);
     }
 
     /// <summary>
@@ -105,7 +106,7 @@ public class SubagentManagerTests
     /// <paramref name="blockUntil"/> TCS is signalled or the token is cancelled.
     /// Useful for testing in-flight task tracking and cancellation.
     /// </summary>
-    private static (SubagentManager manager, TaskCompletionSource<bool> release) CreateBlockingManager()
+    private static (SubagentManager manager, TaskCompletionSource<bool> release) CreateBlockingManager(IAgentEventPublisher? events = null)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -121,12 +122,66 @@ public class SubagentManagerTests
             opts,
             provider.GetRequiredService<IMessagePublisher>(),
             new AgentIdentity("TestBot"),
-            NullLogger<SubagentManager>.Instance);
+            NullLogger<SubagentManager>.Instance,
+            eventPublisher: events);
 
         return (manager, tcs);
     }
 
     // ── Tests ──────────────────────────────────────────────────────────────────
+
+    // #795: subagent lifecycle events.
+
+    [TestMethod]
+    public async Task SpawnAsync_PublishesStartedThenFinished_OnSuccess()
+    {
+        var events = new RecordingEventPublisher();
+        var manager = CreateManager(events: events);
+
+        string taskId;
+        using (CurrentToolCallContext.Set("call-42"))
+            taskId = await manager.SpawnAsync("summarize the thread", null, null, "session/s1", CancellationToken.None);
+        await events.WaitForAsync<UserProxy.SubagentFinished>();
+
+        var started = events.Of<UserProxy.SubagentStarted>().Single();
+        Assert.AreEqual(taskId, started.SubagentRunId);
+        Assert.AreEqual(UserProxy.ReplySourceKind.Subagent, started.Kind);
+        Assert.AreEqual("s1", started.ThreadId, "the raw session id");
+        Assert.AreEqual("call-42", started.ParentToolCallId);
+        var finished = events.Of<UserProxy.SubagentFinished>().Single();
+        Assert.AreEqual(taskId, finished.SubagentRunId);
+        Assert.AreEqual(UserProxy.SubagentOutcome.Success, finished.Outcome);
+        Assert.IsTrue(events.Events.IndexOf(started) < events.Events.IndexOf(finished));
+    }
+
+    [TestMethod]
+    public async Task SpawnAsync_RunThatFails_PublishesFailed()
+    {
+        var events = new RecordingEventPublisher();
+        var manager = CreateManager(events: events, llm: new ThrowingLlmClient());
+
+        await manager.SpawnAsync("do it", null, null, "session/s1", CancellationToken.None);
+        await events.WaitForAsync<UserProxy.SubagentFinished>();
+
+        var finished = events.Of<UserProxy.SubagentFinished>().Single();
+        Assert.AreEqual(UserProxy.SubagentOutcome.Failed, finished.Outcome);
+        StringAssert.Contains(finished.Error, "model unavailable");
+    }
+
+    [TestMethod]
+    public async Task CancelAsync_PublishesCancelled_Once()
+    {
+        var events = new RecordingEventPublisher();
+        var (manager, _) = CreateBlockingManager(events);
+
+        var taskId = await manager.SpawnAsync("long job", null, null, "session/s1", CancellationToken.None);
+        await manager.CancelAsync(taskId);
+        await Task.Delay(100);
+
+        var finished = events.Of<UserProxy.SubagentFinished>().Single();
+        Assert.AreEqual(taskId, finished.SubagentRunId);
+        Assert.AreEqual(UserProxy.SubagentOutcome.Cancelled, finished.Outcome);
+    }
 
     [TestMethod]
     public async Task SpawnAsync_ReturnsValidTaskId()
@@ -711,6 +766,41 @@ public class SubagentManagerTests
     }
 
     /// <summary>LLM client that blocks until the TCS is completed or the token is cancelled.</summary>
+    private sealed class ThrowingLlmClient : ILlmClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("model unavailable");
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ModelTier tier, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            GetResponseAsync(messages, options, cancellationToken);
+    }
+
+    internal sealed class RecordingEventPublisher : IAgentEventPublisher
+    {
+        private readonly List<object> _events = [];
+
+        public List<object> Events { get { lock (_events) return [.. _events]; } }
+
+        public List<T> Of<T>() => Events.OfType<T>().ToList();
+
+        public Task PublishForRunAsync<T>(T evt, CancellationToken ct = default) where T : class => BroadcastAsync(evt, ct);
+
+        public Task BroadcastAsync<T>(T evt, CancellationToken ct = default) where T : class
+        {
+            lock (_events) _events.Add(evt);
+            return Task.CompletedTask;
+        }
+
+        public async Task WaitForAsync<T>()
+        {
+            for (var i = 0; i < 400 && Of<T>().Count == 0; i++)
+                await Task.Delay(10);
+            Assert.AreNotEqual(0, Of<T>().Count, $"no {typeof(T).Name} published");
+        }
+    }
+
     private sealed class BlockingLlmClient(TaskCompletionSource<bool> tcs) : ILlmClient
     {
         public async Task<ChatResponse> GetResponseAsync(
