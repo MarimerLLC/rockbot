@@ -4840,8 +4840,10 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         await RunPassAsync("wisp failure analysis", async () =>
         {
+            // Uncapped: QueryRecentAsync keeps the oldest records when capped, which would
+            // drop the newest failures. The prompt is bounded per group below (#791).
             var records = await _wispExecutionLog.QueryRecentAsync(
-                DateTimeOffset.UtcNow.AddDays(-14), maxResults: 500);
+                DateTimeOffset.UtcNow.AddDays(-14), maxResults: int.MaxValue);
 
             if (records.Count < 5)
             {
@@ -5163,8 +5165,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         await RunPassAsync("wisp success analysis", async () =>
         {
             var threshold = Math.Max(1, _options.WispSuccessFrequencyThreshold);
+            // Uncapped: QueryRecentAsync keeps the oldest records when capped, which could
+            // drop a group's recent failure and promote it anyway (#791).
             var records = await _wispExecutionLog.QueryRecentAsync(
-                DateTimeOffset.UtcNow.AddDays(-7), maxResults: 1000);
+                DateTimeOffset.UtcNow.AddDays(-7), maxResults: int.MaxValue);
 
             if (records.Count < threshold)
             {
@@ -5579,11 +5583,10 @@ internal sealed class DreamService : IHostedService, IDisposable
                 if (!string.IsNullOrEmpty(resource.DefinitionHash))
                 {
                     // Match new shape-hashed resources against either ShapeHash (preferred)
-                    // or DefinitionHash (legacy resources written with a body hash).
-                    var allRecords = await _wispExecutionLog.QueryRecentAsync(since, maxResults: 1000, ct);
-                    wispRecords = allRecords.Where(r =>
-                        r.ShapeHash == resource.DefinitionHash
-                        || r.DefinitionHash == resource.DefinitionHash).ToList();
+                    // or DefinitionHash (legacy resources written with a body hash). Uncapped:
+                    // a capped QueryRecentAsync keeps the oldest records and would hide the
+                    // recent runs the removal check looks at (#791).
+                    wispRecords = await _wispExecutionLog.QueryByHashAsync(resource.DefinitionHash, since, ct);
                 }
 
                 IReadOnlyList<SkillResourceCheckoutEvent> checkouts = [];

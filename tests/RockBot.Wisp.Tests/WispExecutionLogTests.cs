@@ -825,6 +825,117 @@ public class WispExecutionLogTests
         }
     }
 
+    [TestMethod]
+    public async Task QueryByHashAsync_MoreThanCapOfOtherRecordsInWindow_ReturnsEveryMatchIncludingNewest()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            // 1,200 unrelated records older than the matches: a capped, oldest-first
+            // QueryRecentAsync(maxResults: 1000) would return none of the matches (#791).
+            var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+            var seed = Enumerable.Range(0, 1200)
+                .Select(i => Serialize(MakeRecord($"other-{i}", "other", succeeded: true, t0.AddSeconds(i))));
+            await File.WriteAllLinesAsync(LogPath(tempDir), seed);
+
+            var log = CreateLog(tempDir);
+            var t1 = DateTimeOffset.UtcNow.AddMinutes(-5);
+            await log.AppendAsync(MakeRecord("match-0", "target", succeeded: true, t1) with { ShapeHash = "shape-a" });
+            await log.AppendAsync(MakeRecord("match-1", "target-2", succeeded: true, t1.AddSeconds(1)) with { ShapeHash = "shape-a" });
+
+            Assert.IsFalse(
+                (await log.QueryRecentAsync(DateTimeOffset.UtcNow.AddDays(-30), 1000)).Any(r => r.ShapeHash == "shape-a"),
+                "Precondition: the capped query loses the newest records");
+
+            var byShape = await log.QueryByHashAsync("shape-a", DateTimeOffset.UtcNow.AddDays(-30));
+            CollectionAssert.AreEqual(new[] { "match-0", "match-1" }, byShape.Select(r => r.WispId).ToArray());
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task QueryByHashAsync_MatchesShapeOrDefinitionHash_OnceEach_AscendingAndSince()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            var now = DateTimeOffset.UtcNow;
+            await log.AppendAsync(MakeRecord("too-old", "h", succeeded: true, now.AddDays(-40)));
+            await log.AppendAsync(MakeRecord("by-def-later", "h", succeeded: true, now.AddMinutes(-1)));
+            await log.AppendAsync(MakeRecord("by-shape", "other", succeeded: false, now.AddMinutes(-3)) with { ShapeHash = "h" });
+            // Shape and definition hash both equal the query: returned once, not twice.
+            await log.AppendAsync(MakeRecord("both", "h", succeeded: true, now.AddMinutes(-2)) with { ShapeHash = "h" });
+            await log.AppendAsync(MakeRecord("unrelated", "x", succeeded: true, now) with { ShapeHash = "y" });
+
+            var result = await log.QueryByHashAsync("H", now.AddDays(-30));
+            CollectionAssert.AreEqual(
+                new[] { "by-shape", "both", "by-def-later" },
+                result.Select(r => r.WispId).ToArray());
+
+            Assert.AreEqual(0, (await log.QueryByHashAsync("", DateTimeOffset.MinValue)).Count);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task QueryByHashAsync_AfterPrune_ReflectsTrimmedFile()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            var t0 = DateTimeOffset.UtcNow.AddMinutes(-10);
+            for (var i = 0; i < 5; i++)
+                await log.AppendAsync(MakeRecord($"w{i}", "d", succeeded: true, t0.AddSeconds(i)) with { ShapeHash = "s" });
+            Assert.AreEqual(5, (await log.QueryByHashAsync("s", DateTimeOffset.MinValue)).Count);
+
+            await log.PruneAsync(new LogRetentionPolicy(TimeSpan.Zero, 0, MaxLinesPerFile: 2));
+
+            CollectionAssert.AreEqual(
+                new[] { "w3", "w4" },
+                (await log.QueryByHashAsync("s", DateTimeOffset.MinValue)).Select(r => r.WispId).ToArray());
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task QueryByHashAsync_DefaultInterfaceImplementation_IsUncapped()
+    {
+        IWispExecutionLog log = new ListBackedWispLog(
+            Enumerable.Range(0, 1200)
+                .Select(i => MakeRecord($"other-{i}", "other", succeeded: true, DateTimeOffset.UtcNow.AddDays(-5).AddSeconds(i)))
+                .Append(MakeRecord("match", "d", succeeded: true, DateTimeOffset.UtcNow) with { ShapeHash = "S" })
+                .ToList());
+
+        var result = await log.QueryByHashAsync("s", DateTimeOffset.UtcNow.AddDays(-30));
+        Assert.AreEqual("match", result.Single().WispId);
+    }
+
+    /// <summary>Implements only the required members, so the default QueryByHashAsync runs.</summary>
+    private sealed class ListBackedWispLog(List<WispExecutionRecord> records) : IWispExecutionLog
+    {
+        public Task AppendAsync(WispExecutionRecord record, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<WispExecutionRecord>> QueryRecentAsync(
+            DateTimeOffset since, int maxResults, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<WispExecutionRecord>>(
+                records.Where(r => r.Timestamp >= since).OrderBy(r => r.Timestamp).Take(maxResults).ToList());
+
+        public Task<WispExecutionRecord?> FindRecentFailureAsync(
+            string definitionHash, string? sessionId, CancellationToken ct = default) =>
+            Task.FromResult<WispExecutionRecord?>(null);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static WispExecutionRecord MakeRecord(string wispId, string hash, bool succeeded, DateTimeOffset timestamp) =>

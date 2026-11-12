@@ -19,6 +19,30 @@ public interface IWispExecutionLog
         DateTimeOffset since, int maxResults, CancellationToken ct = default);
 
     /// <summary>
+    /// Returns every wisp execution record on or after <paramref name="since"/> whose
+    /// <see cref="WispExecutionRecord.ShapeHash"/> or <see cref="WispExecutionRecord.DefinitionHash"/>
+    /// equals <paramref name="hash"/> (ordinal, case-insensitive), ordered by timestamp ascending.
+    /// Not capped, so other wisps' runs in the window cannot push matching records out of the
+    /// result the way a capped <see cref="QueryRecentAsync"/> can.
+    /// </summary>
+    /// <remarks>
+    /// The default implementation filters an uncapped <see cref="QueryRecentAsync"/>;
+    /// implementations with an index should override it.
+    /// </remarks>
+    async Task<IReadOnlyList<WispExecutionRecord>> QueryByHashAsync(
+        string hash, DateTimeOffset since, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(hash))
+            return [];
+
+        var records = await QueryRecentAsync(since, int.MaxValue, ct);
+        return records
+            .Where(r => string.Equals(r.ShapeHash, hash, StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(r.DefinitionHash, hash, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    /// <summary>
     /// Returns recent failed records matching the given definition hash,
     /// for detecting retries. Most recent first.
     /// </summary>

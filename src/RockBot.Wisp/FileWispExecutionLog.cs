@@ -42,7 +42,10 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
 
     // ── Cache of the on-disk records (guarded by _lock) ──────────────────────
     private readonly List<WispExecutionRecord> _records = [];
-    private readonly Dictionary<string, List<WispExecutionRecord>> _byHash = new(StringComparer.Ordinal);
+    // Hashes are lowercase hex, so case-insensitive keys change nothing in practice; they
+    // keep the indexed lookups consistent with the OrdinalIgnoreCase comparisons callers use.
+    private readonly Dictionary<string, List<WispExecutionRecord>> _byHash = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<WispExecutionRecord>> _byShape = new(StringComparer.OrdinalIgnoreCase);
     private long _offset;
     private byte[] _headFingerprint = [];
     private byte[] _tailFingerprint = [];
@@ -117,6 +120,36 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
                 .Where(r => r.Timestamp >= since)
                 .OrderBy(r => r.Timestamp)
                 .Take(maxResults)
+                .ToList();
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<WispExecutionRecord>> QueryByHashAsync(
+        string hash, DateTimeOffset since, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(hash))
+            return [];
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            await RefreshAsync(ct);
+
+            // A record lands in both indexes when its shape and definition hashes are
+            // equal (or when a caller passes a value that matches both), so de-duplicate.
+            var matches = new HashSet<WispExecutionRecord>(ReferenceEqualityComparer.Instance);
+            if (_byShape.TryGetValue(hash, out var sameShape))
+                matches.UnionWith(sameShape);
+            if (_byHash.TryGetValue(hash, out var sameHash))
+                matches.UnionWith(sameHash);
+
+            return matches
+                .Where(r => r.Timestamp >= since)
+                .OrderBy(r => r.Timestamp)
                 .ToList();
         }
         finally
@@ -260,12 +293,19 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
     private void AddToCache(WispExecutionRecord record)
     {
         _records.Add(record);
-        if (record.DefinitionHash is null)
+        AddToIndex(_byHash, record.DefinitionHash, record);
+        AddToIndex(_byShape, record.ShapeHash, record);
+    }
+
+    private static void AddToIndex(
+        Dictionary<string, List<WispExecutionRecord>> index, string? key, WispExecutionRecord record)
+    {
+        if (string.IsNullOrEmpty(key))
             return;
-        if (!_byHash.TryGetValue(record.DefinitionHash, out var list))
+        if (!index.TryGetValue(key, out var list))
         {
             list = [];
-            _byHash[record.DefinitionHash] = list;
+            index[key] = list;
         }
         list.Add(record);
     }
@@ -274,6 +314,7 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
     {
         _records.Clear();
         _byHash.Clear();
+        _byShape.Clear();
         _offset = 0;
         _headFingerprint = [];
         _tailFingerprint = [];
