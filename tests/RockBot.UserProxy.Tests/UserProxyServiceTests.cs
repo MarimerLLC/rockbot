@@ -365,8 +365,8 @@ public sealed class UserProxyServiceTests
             $"{UserProxyTopics.UserResponse}.{retryOptions.AgentName}");
         CollectionAssert.Contains(failingSubscriber.SubscribedTopics.ToArray(),
             $"{UserProxyTopics.UserResponse}.{retryOptions.AgentName}.{retryOptions.ProxyId}");
-        // 2 broadcast-attempt failures + 1 broadcast success + 1 p2p success = 4 total calls
-        Assert.AreEqual(4, failingSubscriber.CallCount);
+        // 2 broadcast-attempt failures + 1 broadcast success + 1 p2p success + 1 events success = 5 total calls
+        Assert.AreEqual(5, failingSubscriber.CallCount);
 
         await svc.StopAsync(CancellationToken.None);
     }

@@ -45,4 +45,41 @@ public interface IUserFrontend
     /// </summary>
     Task OnMcpSignInStatusAsync(McpSignInStatus status, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
+
+    // ── Structured agent events (#795) ──────────────────────────────────────────
+    // A run event or task list for a turn whose SendTurnAsync is still waiting goes to that
+    // turn's observer; these methods get the ones that arrive after it gave up, or for a turn
+    // sent some other way.
+
+    /// <summary>A run started that no pending turn is waiting for.</summary>
+    Task OnRunStartedAsync(RunStarted run, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    /// <summary>A heartbeat for a run no pending turn is waiting for.</summary>
+    Task OnRunHeartbeatAsync(RunHeartbeat heartbeat, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    /// <summary>A run finished that no pending turn is waiting for.</summary>
+    Task OnRunFinishedAsync(RunFinished run, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    /// <summary>A subagent or worker started.</summary>
+    Task OnSubagentStartedAsync(SubagentStarted started, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    /// <summary>A subagent or worker finished.</summary>
+    Task OnSubagentFinishedAsync(SubagentFinished finished, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    /// <summary>The agent broadcast a snapshot of its running background work (for example, after it restarted).</summary>
+    Task OnActiveWorkSnapshotAsync(ActiveStatusResponse snapshot, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    /// <summary>A task list was created or replaced.</summary>
+    Task OnTaskListSnapshotAsync(TaskListSnapshot snapshot, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    /// <summary>One item of a task list changed.</summary>
+    Task OnTaskListDeltaAsync(TaskListDelta delta, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
 }

@@ -32,6 +32,15 @@ public enum ClientCapabilities : ulong
     SlackBlockKit     = 1UL << 33,
     TeamsAdaptiveCard = 1UL << 34,
     InteractiveForms  = 1UL << 35,   // renders an McpQuestionForm and sends back an McpQuestionAnswer
+
+    /// <summary>
+    /// The proxy understands correlated agent events (<see cref="RunStarted"/>,
+    /// <see cref="RunHeartbeat"/>, <see cref="RunFinished"/>, <see cref="TaskListSnapshot"/>,
+    /// <see cref="TaskListDelta"/>) on the turn's reply topic. Describes the proxy service, not
+    /// the frontend, so <c>UserProxyService</c> sets it on every message it sends. Older proxies
+    /// would mistake these events for replies, so the agent sends them only when this is set.
+    /// </summary>
+    AgentEvents       = 1UL << 36,
 }
 
 /// <summary>
