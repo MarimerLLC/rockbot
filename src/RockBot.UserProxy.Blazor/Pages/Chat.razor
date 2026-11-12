@@ -11,28 +11,35 @@
 @inject IJSRuntime JSRuntime
 @implements IDisposable
 
-<PageTitle>@(ChatState.AgentName ?? "RockBot") Chat</PageTitle>
+@{
+    // One snapshot per render: every part of the page shows the same state, even while events
+    // are being applied on other threads.
+    var state = ChatState.State;
+    var isBusy = state.IsBusy(ChatState.UtcNow);
+}
+
+<PageTitle>@(state.AgentName ?? "RockBot") Chat</PageTitle>
 
 <div class="chat-container d-flex flex-column">
     <div class="chat-header bg-primary text-white p-3 d-flex justify-content-between align-items-center">
         <div class="d-flex align-items-baseline gap-2">
-            <h1 class="h4 mb-0">@(ChatState.AgentName ?? "RockBot") Chat</h1>
+            <h1 class="h4 mb-0">@(state.AgentName ?? "RockBot") Chat</h1>
             <span class="small opacity-75">v@(UiVersion)</span>
-            @if (ChatState.AgentVersion is not null)
+            @if (state.AgentVersion is not null)
             {
-                <span class="small opacity-75">| Agent v@(ChatState.AgentVersion)</span>
+                <span class="small opacity-75">| Agent v@(state.AgentVersion)</span>
             }
         </div>
         <div class="d-flex align-items-center gap-2">
-            @if (ChatState.IsProcessing)
+            @if (isBusy)
             {
                 <span class="status-indicator agent-busy"
-                      title="@(ChatState.CurrentThinkingMessage ?? "Agent is processing...")">
+                      title="@(state.ThinkingMessage ?? "Agent is processing...")">
                     <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
                 </span>
             }
             @{
-                var statusIndicators = ChatState.GetActiveStatusIndicators();
+                var statusIndicators = state.ActiveStatusIndicators;
             }
             @foreach (var sub in statusIndicators.Where(i => i.Category == MessageCategory.SubagentActivity))
             {
@@ -91,17 +98,17 @@
     <McpSignInBanner />
 
     <div class="chat-messages flex-grow-1 overflow-auto p-3" @ref="messagesContainer">
-        @foreach (var message in ChatState.Messages)
+        @foreach (var message in state.Messages)
         {
             @if (message.IsActivityLog)
             {
                 <!-- Activity log bubble: collapsed one-liner with spinner, expandable to full log -->
                 <div class="message-wrapper mb-3 agent-message">
                     <div class="message-bubble activity-log-bubble p-2 rounded category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")"
-                         @onclick="() => ChatState.ToggleExpanded(message.MessageId)">
+                         @onclick="() => ToggleExpanded(message.MessageId)">
                         <div class="activity-log-header">
                             <span class="chevron-indicator @(message.IsExpanded ? "open" : "")">&#9654;</span>
-                            @if (ChatState.IsActiveActivityLog(message.MessageId))
+                            @if (state.IsActivityLogOpen(message.MessageId))
                             {
                                 <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
                             }
@@ -118,9 +125,8 @@
                         </div>
                         @if (message.IsExpanded)
                         {
-                            var entries = message.ActivityLogEntries.ToList();
                             <div class="activity-log-entries">
-                                @foreach (var entry in entries)
+                                @foreach (var entry in message.ActivityLogEntries)
                                 {
                                     <div class="activity-log-entry">
                                         <span class="entry-time">@TimeZoneInfo.ConvertTimeFromUtc(entry.Timestamp, _displayZone).ToString("HH:mm:ss")</span>
@@ -137,7 +143,7 @@
                 <!-- Collapsible bubble: compact header when collapsed, full content when expanded -->
                 <div class="message-wrapper mb-3 agent-message">
                     <div class="message-bubble collapsible-bubble p-3 rounded category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")">
-                        <div class="collapsible-header" @onclick="() => ChatState.ToggleExpanded(message.MessageId)" @onclick:stopPropagation="true">
+                        <div class="collapsible-header" @onclick="() => ToggleExpanded(message.MessageId)" @onclick:stopPropagation="true">
                             <span class="chevron-indicator @(message.IsExpanded ? "open" : "")">&#9654;</span>
                             <span class="category-badge">@GetCategoryLabel(message.Category)</span>
                             @if (!string.IsNullOrEmpty(message.AgentName))
@@ -254,17 +260,17 @@
             // Only a log that is still receiving entries carries its own spinner. Testing
             // for a collapsed bubble instead would match every finished turn's leftover
             // log and suppress this indicator for the rest of the conversation.
-            var hasActiveActivityLog = ChatState.Messages.Any(m => m.IsActivityLog && ChatState.IsActiveActivityLog(m.MessageId));
+            var hasActiveActivityLog = state.HasOpenActivityLog;
         }
-        @if ((ChatState.IsProcessing && !hasActiveActivityLog) || (!ChatState.IsProcessing && !string.IsNullOrEmpty(ChatState.CurrentThinkingMessage)))
+        @if ((isBusy && !hasActiveActivityLog) || (!isBusy && !string.IsNullOrEmpty(state.ThinkingMessage)))
         {
             <div class="message-wrapper mb-3 agent-message">
                 <div class="message-bubble p-3 rounded">
                     <div class="thinking-indicator">
                         <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-                        @if (!string.IsNullOrEmpty(ChatState.CurrentThinkingMessage))
+                        @if (!string.IsNullOrEmpty(state.ThinkingMessage))
                         {
-                            <span>@ChatState.CurrentThinkingMessage</span>
+                            <span>@state.ThinkingMessage</span>
                         }
                         else
                         {
@@ -354,7 +360,7 @@
             <label class="btn btn-outline-secondary d-flex align-items-center" title="Attach a file">
                 📎
                 <InputFile OnChange="StageAttachmentsAsync" multiple class="d-none"
-                           accept="@AcceptedFileTypes" disabled="@ChatState.IsProcessing" />
+                           accept="@AcceptedFileTypes" disabled="@isBusy" />
             </label>
             <textarea
                 class="form-control"
@@ -363,17 +369,17 @@
                 @bind:event="oninput"
                 @ref="messageInput"
                 @onkeydown="HandleKeyDown"
-                disabled="@ChatState.IsProcessing"
+                disabled="@isBusy"
                 rows="1"
                 aria-label="Message input"></textarea>
             <button
                 type="submit"
                 class="btn btn-primary"
-                disabled="@((string.IsNullOrWhiteSpace(currentMessage) && _stagedAttachments.Count == 0) || ChatState.IsProcessing || _isUploading || !ProxyService.IsConnected)"
+                disabled="@((string.IsNullOrWhiteSpace(currentMessage) && _stagedAttachments.Count == 0) || isBusy || _isUploading || !ProxyService.IsConnected)"
                 aria-label="Send message">
                 Send
             </button>
-            @if (ChatState.IsProcessing)
+            @if (isBusy)
             {
                 <button
                     type="button"
@@ -461,7 +467,7 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         // PageTitle doesn't reliably re-render on state changes, so sync via JS
-        var currentName = ChatState.AgentName ?? "RockBot";
+        var currentName = ChatState.State.AgentName ?? "RockBot";
         if (_lastRenderedAgentName != currentName)
         {
             _lastRenderedAgentName = currentName;
@@ -491,7 +497,7 @@
             {
                 var info = await ProxyService.GetAgentInfoAsync(timeout: TimeSpan.FromSeconds(5));
                 if (info is not null)
-                    ChatState.SetAgentInfo(info.AgentName, info.AgentVersion);
+                    ChatState.Apply(new AgentInfoReceived(info.AgentName, info.AgentVersion));
             }
             catch { /* non-fatal — header falls back to defaults */ }
 
@@ -499,11 +505,11 @@
             {
                 var history = await ProxyService.GetHistoryAsync(SessionId, timeout: TimeSpan.FromSeconds(10));
                 if (history is not null && history.Turns.Count > 0)
-                    ChatState.LoadHistory(history.Turns, SessionId);
+                    ChatState.Apply(new HistoryLoaded(history.Turns, SessionId));
             }
             catch (Exception ex)
             {
-                ChatState.AddError($"Could not load conversation history: {ex.Message}");
+                ChatState.Apply(new ErrorReported($"Could not load conversation history: {ex.Message}"));
             }
 
             // Reconcile active status indicators against the agent's ground truth.
@@ -514,7 +520,7 @@
             {
                 var status = await ProxyService.GetActiveStatusAsync(timeout: TimeSpan.FromSeconds(5));
                 if (status is not null)
-                    ChatState.ReconcileActiveStatus(status);
+                    ChatState.Apply(new ActiveStatusReconciled(status));
             }
             catch { /* non-fatal — stale indicators clear on next user message */ }
         }
@@ -522,7 +528,7 @@
         // Only scroll when a new message has been added — not on every re-render
         // (e.g. theme toggles should not move the scroll position).
         // Scroll to the TOP of the new message so long responses are read top-to-bottom.
-        var currentCount = ChatState.Messages.Count;
+        var currentCount = ChatState.State.Messages.Count;
         if (currentCount > _renderedMessageCount)
         {
             _renderedMessageCount = currentCount;
@@ -539,7 +545,7 @@
         // user is free to send again right away.
         var cts = _sendCts;
         _sendCts = null;
-        ChatState.CancelProcessing();
+        ChatState.Apply(new UserCancelled());
         cts?.Cancel();
 
         try
@@ -548,7 +554,7 @@
         }
         catch (Exception ex)
         {
-            ChatState.AddError($"Could not cancel: {ex.Message}");
+            ChatState.Apply(new ErrorReported($"Could not cancel: {ex.Message}"));
         }
 
         await messageInput.FocusAsync();
@@ -639,14 +645,14 @@
         // Handle /clear command — pure plumbing, no LLM involved
         if (messageContent.Equals("/clear", StringComparison.OrdinalIgnoreCase))
         {
-            ChatState.ClearMessages();
+            ChatState.Apply(new ConversationCleared());
             try
             {
                 await ProxyService.ClearContextAsync(SessionId);
             }
             catch (Exception ex)
             {
-                ChatState.AddError($"Could not clear agent context: {ex.Message}");
+                ChatState.Apply(new ErrorReported($"Could not clear agent context: {ex.Message}"));
             }
             return;
         }
@@ -655,11 +661,12 @@
         _stagedAttachments.Clear();
         _attachmentError = null;
 
-        ChatState.AddUserMessage(messageContent, UserId, SessionId, attachments);
-        ChatState.SetProcessing(true);
+        var turnId = ChatIds.New();
+        ChatState.Apply(new UserMessageSent(messageContent, UserId, SessionId, attachments));
+        ChatState.Apply(new TurnStarted(turnId));
 
         // If a saved reference is active, prepend it as context for the agent
-        var savedRef = ChatState.GetActiveSavedReference();
+        var savedRef = ChatState.State.ActiveSavedReference;
         string effectiveContent;
         if (savedRef is not null)
         {
@@ -685,56 +692,51 @@
 
         var progressTracker = new Progress<AgentReply>(reply =>
         {
-            ChatState.AppendActivityLogEntry(reply.Content);
+            ChatState.Apply(new TurnProgress(turnId, reply.Content));
         });
 
         var sendCts = new CancellationTokenSource();
         _sendCts?.Dispose();
         _sendCts = sendCts;
 
+        // The turn ends exactly once, however the send finishes. Ending it releases the busy
+        // state only while it is still the current turn: a cancel or a newer send owns it otherwise.
+        TurnEnded ended;
         try
         {
             var reply = await ProxyService.SendAsync(
                 message, progress: progressTracker, cancellationToken: sendCts.Token);
 
-            // Clear any background status from the thinking indicator before showing result
-            ChatState.SetThinkingMessage(null);
-
-            if (reply is null)
-            {
-                ChatState.AddError("No reply received (timeout)");
-            }
-            else
-            {
-                ChatState.AddAgentReply(reply);
-            }
+            ended = reply is null
+                ? new TurnEnded(turnId, TurnOutcome.TimedOut)
+                : new TurnEnded(turnId, TurnOutcome.Completed) { Reply = reply };
         }
         catch (OperationCanceledException)
         {
             // Cancel button — CancelSession already released the UI and the agent
             // publishes its own "Cancelled." bubble. Nothing to report here.
+            ended = new TurnEnded(turnId, TurnOutcome.Cancelled);
         }
         catch (Exception ex)
         {
-            ChatState.AddError($"Error: {ex.Message}");
+            ended = new TurnEnded(turnId, TurnOutcome.Failed) { Error = ex.Message };
         }
-        finally
+
+        ChatState.Apply(ended);
+
+        // Only this send's own end hands the input back. A cancel (which nulls _sendCts) or a
+        // newer send owns it otherwise.
+        if (ReferenceEquals(_sendCts, sendCts))
         {
-            // Only release the UI if this is still the current send. A cancel (which
-            // nulls _sendCts) or a newer send owns the processing state otherwise.
-            if (ReferenceEquals(_sendCts, sendCts))
-            {
-                _sendCts = null;
-                sendCts.Dispose();
-                ChatState.SetProcessing(false);
-                await messageInput.FocusAsync();
-            }
+            _sendCts = null;
+            sendCts.Dispose();
+            await messageInput.FocusAsync();
         }
     }
 
     private async Task SendFeedback(ChatMessage message, bool isPositive)
     {
-        ChatState.RecordFeedback(message.MessageId, isPositive);
+        ChatState.Apply(new FeedbackRecorded(message.MessageId, isPositive));
 
         var feedback = new UserFeedback
         {
@@ -750,9 +752,12 @@
         }
         catch (Exception ex)
         {
-            ChatState.AddError($"Could not send feedback: {ex.Message}");
+            ChatState.Apply(new ErrorReported($"Could not send feedback: {ex.Message}"));
         }
     }
+
+    private void ToggleExpanded(string messageId) =>
+        ChatState.Apply(new MessageExpandToggled(messageId));
 
     // The user answered (or declined) a handed-back MCP question in its form. The answer goes to
     // the agent, which hands it straight to the bridge; the agent replies once the call resumes.
@@ -760,7 +765,7 @@
     {
         // Starting the submit also marks the chat busy until the agent's follow-up arrives. That
         // wait is tracked apart from a turn still running, so the turn's reply can't end it.
-        if (!ChatState.TryBeginQuestionSubmit(submission.QuestionId))
+        if (!ChatState.Apply(new McpAnswerSubmitted(submission.QuestionId)))
             return;
 
         try
@@ -776,7 +781,7 @@
         }
         catch (Exception ex)
         {
-            ChatState.FailQuestionSubmit(submission.QuestionId, $"the answer couldn't be sent ({ex.Message})");
+            ChatState.Apply(new McpAnswerFailed(submission.QuestionId, $"the answer couldn't be sent ({ex.Message})"));
         }
     }
 
@@ -854,7 +859,7 @@
         }
         catch (Exception ex)
         {
-            ChatState.AddError($"Could not save response: {ex.Message}");
+            ChatState.Apply(new ErrorReported($"Could not save response: {ex.Message}"));
         }
 
         _savingMessageId = null;
@@ -894,11 +899,11 @@
         {
             var response = await ProxyService.GetSavedResponseAsync(id);
             if (response is not null && response.Found)
-                ChatState.AddSavedReference(response.Id, response.Label, response.Content, response.AgentName);
+                ChatState.Apply(new SavedReferenceAdded(response.Id, response.Label, response.Content, response.AgentName));
         }
         catch (Exception ex)
         {
-            ChatState.AddError($"Could not load saved response: {ex.Message}");
+            ChatState.Apply(new ErrorReported($"Could not load saved response: {ex.Message}"));
         }
     }
 
@@ -912,7 +917,7 @@
         }
         catch (Exception ex)
         {
-            ChatState.AddError($"Could not load saved response: {ex.Message}");
+            ChatState.Apply(new ErrorReported($"Could not load saved response: {ex.Message}"));
         }
     }
 
@@ -924,7 +929,7 @@
     private void InsertViewedItem()
     {
         if (_viewingItem is null) return;
-        ChatState.AddSavedReference(_viewingItem.Id, _viewingItem.Label, _viewingItem.Content, _viewingItem.AgentName);
+        ChatState.Apply(new SavedReferenceAdded(_viewingItem.Id, _viewingItem.Label, _viewingItem.Content, _viewingItem.AgentName));
         _viewingItem = null;
         _showSavedModal = false;
     }
@@ -938,14 +943,14 @@
         }
         catch (Exception ex)
         {
-            ChatState.AddError($"Could not delete saved response: {ex.Message}");
+            ChatState.Apply(new ErrorReported($"Could not delete saved response: {ex.Message}"));
         }
     }
 
     private void DismissSavedReference(ChatMessage message)
     {
         if (message.SavedResponseId is not null)
-            ChatState.RemoveSavedReference(message.SavedResponseId);
+            ChatState.Apply(new SavedReferenceRemoved(message.SavedResponseId));
     }
 
     public void Dispose()

@@ -21,6 +21,7 @@ COPY src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj src/RockBot.Us
 COPY src/RockBot.UserProxy/RockBot.UserProxy.csproj src/RockBot.UserProxy/
 COPY src/RockBot.Host.Abstractions/RockBot.Host.Abstractions.csproj src/RockBot.Host.Abstractions/
 COPY src/RockBot.UserProxy.Abstractions/RockBot.UserProxy.Abstractions.csproj src/RockBot.UserProxy.Abstractions/
+COPY src/RockBot.UserProxy.ChatState/RockBot.UserProxy.ChatState.csproj src/RockBot.UserProxy.ChatState/
 COPY src/RockBot.Messaging.RabbitMQ/RockBot.Messaging.RabbitMQ.csproj src/RockBot.Messaging.RabbitMQ/
 COPY src/RockBot.Messaging.Abstractions/RockBot.Messaging.Abstractions.csproj src/RockBot.Messaging.Abstractions/
 

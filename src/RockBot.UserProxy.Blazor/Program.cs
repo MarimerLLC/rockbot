@@ -4,6 +4,7 @@ using RockBot.UserProxy.Blazor.Auth;
 using RockBot.UserProxy;
 using RockBot.UserProxy.Blazor.Components;
 using RockBot.UserProxy.Blazor.Services;
+using RockBot.UserProxy.ChatState;
 
 var builder = WebApplication.CreateBuilder(args);
 

@@ -1,4 +1,5 @@
 using RockBot.UserProxy.Blazor.Services;
+using RockBot.UserProxy.ChatState;
 
 namespace RockBot.UserProxy.Tests;
 
@@ -27,38 +28,37 @@ public sealed class ChatStateServiceProcessingStateTests
     [TestMethod]
     public void AddAgentReply_PrimaryFinal_ClearsProcessing()
     {
-        _sut.SetProcessing(true);
+        _sut.Apply(new TurnStarted("turn"));
 
-        _sut.AddAgentReply(Reply("Here you go."));
+        _sut.Apply(new ReplyReceived(Reply("Here you go."), MessageCategory.PrimaryFinal));
 
-        Assert.IsFalse(_sut.IsProcessing,
+        Assert.IsFalse(_sut.IsBusy,
             "The primary turn is over — the busy flag must clear even if the sending circuit is gone");
     }
 
     [TestMethod]
     public void AddAgentReply_NonPrimaryCategory_LeavesProcessing()
     {
-        _sut.SetProcessing(true);
+        _sut.Apply(new TurnStarted("turn"));
 
-        _sut.AddAgentReply(Reply("Subagent finished.", agentName: "subagent-1"),
-            MessageCategory.SubagentActivity);
+        _sut.Apply(new ReplyReceived(Reply("Subagent finished.", agentName: "subagent-1"), MessageCategory.SubagentActivity));
 
-        Assert.IsTrue(_sut.IsProcessing,
+        Assert.IsTrue(_sut.IsBusy,
             "A subagent result does not end the primary turn");
     }
 
     [TestMethod]
     public void AddAgentReply_PrimaryFinal_ClosesProgressLog()
     {
-        _sut.SetProcessing(true);
-        _sut.AppendActivityLogEntry("I'm working on that — I'll follow up shortly.");
+        _sut.Apply(new TurnStarted("turn"));
+        _sut.Apply(new TurnProgress("turn", "I'm working on that — I'll follow up shortly."));
 
-        var logBubble = _sut.Messages.Single(m => m.IsActivityLog);
-        Assert.IsTrue(_sut.IsActiveActivityLog(logBubble.MessageId));
+        var logBubble = _sut.State.Messages.Single(m => m.IsActivityLog);
+        Assert.IsTrue(_sut.State.IsActivityLogOpen(logBubble.MessageId));
 
-        _sut.AddAgentReply(Reply("Done."));
+        _sut.Apply(new ReplyReceived(Reply("Done."), MessageCategory.PrimaryFinal));
 
-        Assert.IsFalse(_sut.IsActiveActivityLog(logBubble.MessageId),
+        Assert.IsFalse(_sut.State.IsActivityLogOpen(logBubble.MessageId),
             "The progress log stops spinning once the reply lands");
     }
 
@@ -66,54 +66,54 @@ public sealed class ChatStateServiceProcessingStateTests
     public void LoadHistory_ClearsStaleActivityLogState()
     {
         // A turn in flight when the page reloads: progress bubble open, busy flag set.
-        _sut.SetProcessing(true);
-        _sut.AppendActivityLogEntry("I'm working on that — I'll follow up shortly.");
-        var staleBubbleId = _sut.Messages.Single(m => m.IsActivityLog).MessageId;
+        _sut.Apply(new TurnStarted("turn"));
+        _sut.Apply(new TurnProgress("turn", "I'm working on that — I'll follow up shortly."));
+        var staleBubbleId = _sut.State.Messages.Single(m => m.IsActivityLog).MessageId;
 
-        _sut.LoadHistory(
+        _sut.Apply(new HistoryLoaded(
             [new ConversationHistoryTurn { Role = "user", Content = "Hello", Timestamp = DateTimeOffset.UtcNow }],
-            "test-session");
+            "test-session"));
 
-        Assert.IsFalse(_sut.IsActiveActivityLog(staleBubbleId),
+        Assert.IsFalse(_sut.State.IsActivityLogOpen(staleBubbleId),
             "The bubble was discarded with the transcript — its log entry must go too");
-        Assert.IsNull(_sut.CurrentThinkingMessage);
-        Assert.IsFalse(_sut.Messages.Any(m => m.IsActivityLog));
+        Assert.IsNull(_sut.State.ThinkingMessage);
+        Assert.IsFalse(_sut.State.Messages.Any(m => m.IsActivityLog));
     }
 
     [TestMethod]
     public void LoadHistory_ThenProgress_StartsAFreshLogBubble()
     {
-        _sut.SetProcessing(true);
-        _sut.AppendActivityLogEntry("first turn progress");
+        _sut.Apply(new TurnStarted("turn"));
+        _sut.Apply(new TurnProgress("turn", "first turn progress"));
 
-        _sut.LoadHistory(
+        _sut.Apply(new HistoryLoaded(
             [new ConversationHistoryTurn { Role = "user", Content = "Hello", Timestamp = DateTimeOffset.UtcNow }],
-            "test-session");
-        _sut.AppendActivityLogEntry("second turn progress");
+            "test-session"));
+        _sut.Apply(new TurnProgress("turn", "second turn progress"));
 
-        var bubble = _sut.Messages.Single(m => m.IsActivityLog);
+        var bubble = _sut.State.Messages.Single(m => m.IsActivityLog);
         Assert.AreEqual(1, bubble.ActivityLogEntries.Count,
             "Entries from the discarded turn must not accumulate on the new bubble");
         Assert.AreEqual("second turn progress", bubble.Content);
-        Assert.IsTrue(_sut.IsActiveActivityLog(bubble.MessageId));
+        Assert.IsTrue(_sut.State.IsActivityLogOpen(bubble.MessageId));
     }
 
     [TestMethod]
     public void ReconcileActiveStatus_AgentIdle_ClearsStaleProcessing()
     {
-        _sut.SetProcessing(true);
+        _sut.Apply(new TurnStarted("turn"));
 
-        _sut.ReconcileActiveStatus(Status(isProcessing: false));
+        _sut.Apply(new ActiveStatusReconciled(Status(isProcessing: false)));
 
-        Assert.IsFalse(_sut.IsProcessing);
+        Assert.IsFalse(_sut.IsBusy);
     }
 
     [TestMethod]
     public void ReconcileActiveStatus_AgentBusy_RestoresProcessing()
     {
-        _sut.ReconcileActiveStatus(Status(isProcessing: true));
+        _sut.Apply(new ActiveStatusReconciled(Status(isProcessing: true)));
 
-        Assert.IsTrue(_sut.IsProcessing,
+        Assert.IsTrue(_sut.IsBusy,
             "A reload mid-turn should show the agent as still working");
     }
 }
