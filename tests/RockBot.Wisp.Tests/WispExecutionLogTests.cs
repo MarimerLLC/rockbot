@@ -595,7 +595,218 @@ public class WispExecutionLogTests
         }
     }
 
+    // ── Incremental cache (#465) ─────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task Queries_AfterAppend_ParseOnlyNewLines_AsLogGrows()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            var t0 = DateTimeOffset.UtcNow.AddHours(-1);
+
+            for (var i = 0; i < 2000; i++)
+                await log.AppendAsync(MakeRecord($"seed-{i}", $"hash-{i % 50}", succeeded: i % 3 != 0, t0.AddSeconds(i)));
+
+            await log.FindRecentFailureAsync("hash-1", null);
+            Assert.AreEqual(2000, log.LinesParsed, "first query loads the whole file once");
+
+            // The hot path: one append then the retry-detection query, repeated. Each
+            // round must parse exactly the one new line regardless of file size.
+            for (var i = 0; i < 50; i++)
+            {
+                var before = log.LinesParsed;
+                await log.AppendAsync(MakeRecord($"new-{i}", "hash-1", succeeded: true, t0.AddSeconds(3000 + i)));
+                await log.FindRecentFailureAsync("hash-1", null);
+                await log.QueryRecentAsync(t0, 1000);
+                await log.GetCanonicalBodyAsync("hash-1");
+                Assert.AreEqual(before + 1, log.LinesParsed, $"round {i} re-parsed old lines");
+            }
+
+            var all = await log.QueryRecentAsync(t0.AddSeconds(-1), int.MaxValue);
+            Assert.AreEqual(2050, all.Count);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task Query_SeesLinesAppendedByAnotherWriter()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            await log.AppendAsync(MakeRecord("w1", "h", succeeded: true, DateTimeOffset.UtcNow));
+            Assert.AreEqual(1, (await log.QueryRecentAsync(DateTimeOffset.MinValue, 10)).Count);
+
+            await File.AppendAllTextAsync(LogPath(tempDir),
+                Serialize(MakeRecord("w2", "h", succeeded: false, DateTimeOffset.UtcNow)) + "\n");
+
+            var failure = await log.FindRecentFailureAsync("h", null);
+            Assert.AreEqual("w2", failure?.WispId);
+            Assert.AreEqual(2, (await log.QueryRecentAsync(DateTimeOffset.MinValue, 10)).Count);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task Query_FileReplacedWithLongerContent_Reloads()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            await log.AppendAsync(MakeRecord("old-1", "h", succeeded: false, DateTimeOffset.UtcNow));
+            Assert.AreEqual("old-1", (await log.FindRecentFailureAsync("h", null))?.WispId);
+
+            // Replace the file (as a trim by another instance would) with different,
+            // longer content, so the length alone cannot reveal the swap.
+            var lines = Enumerable.Range(0, 3)
+                .Select(i => Serialize(MakeRecord($"replacement-{i}", "h2", succeeded: true, DateTimeOffset.UtcNow)));
+            var tmp = LogPath(tempDir) + ".tmp";
+            await File.WriteAllLinesAsync(tmp, lines);
+            File.Move(tmp, LogPath(tempDir), overwrite: true);
+
+            var all = await log.QueryRecentAsync(DateTimeOffset.MinValue, 10);
+            CollectionAssert.AreEqual(
+                new[] { "replacement-0", "replacement-1", "replacement-2" },
+                all.Select(r => r.WispId).ToArray());
+            Assert.IsNull(await log.FindRecentFailureAsync("h", null));
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task PruneAsync_TrimsFile_QueriesReflectTrimAndLaterAppends()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            var t0 = DateTimeOffset.UtcNow.AddMinutes(-10);
+            for (var i = 0; i < 10; i++)
+                await log.AppendAsync(MakeRecord($"w{i}", "h", succeeded: false, t0.AddSeconds(i)));
+            Assert.AreEqual(10, (await log.QueryRecentAsync(DateTimeOffset.MinValue, 100)).Count);
+
+            var removed = await log.PruneAsync(new LogRetentionPolicy(TimeSpan.Zero, 0, MaxLinesPerFile: 3));
+            Assert.AreEqual(7, removed);
+
+            CollectionAssert.AreEqual(
+                new[] { "w7", "w8", "w9" },
+                (await log.QueryRecentAsync(DateTimeOffset.MinValue, 100)).Select(r => r.WispId).ToArray());
+
+            await log.AppendAsync(MakeRecord("w10", "h", succeeded: false, t0.AddSeconds(10)));
+            CollectionAssert.AreEqual(
+                new[] { "w7", "w8", "w9", "w10" },
+                (await log.QueryRecentAsync(DateTimeOffset.MinValue, 100)).Select(r => r.WispId).ToArray());
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task Query_PartialTrailingLine_IgnoredUntilComplete()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            await log.AppendAsync(MakeRecord("w1", "h", succeeded: true, DateTimeOffset.UtcNow));
+
+            var json = Serialize(MakeRecord("w2", "h", succeeded: true, DateTimeOffset.UtcNow));
+            var half = json.Length / 2;
+            await File.AppendAllTextAsync(LogPath(tempDir), json[..half]);
+            Assert.AreEqual(1, (await log.QueryRecentAsync(DateTimeOffset.MinValue, 10)).Count);
+
+            await File.AppendAllTextAsync(LogPath(tempDir), json[half..] + "\n");
+            var all = await log.QueryRecentAsync(DateTimeOffset.MinValue, 10);
+            CollectionAssert.AreEqual(new[] { "w1", "w2" }, all.Select(r => r.WispId).ToArray());
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task Query_MalformedLine_SkippedAndNotReparsed()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            await log.AppendAsync(MakeRecord("w1", "h", succeeded: true, DateTimeOffset.UtcNow));
+            await File.AppendAllTextAsync(LogPath(tempDir), "{ this is not json\n");
+            await log.AppendAsync(MakeRecord("w2", "h", succeeded: true, DateTimeOffset.UtcNow));
+
+            var all = await log.QueryRecentAsync(DateTimeOffset.MinValue, 10);
+            CollectionAssert.AreEqual(new[] { "w1", "w2" }, all.Select(r => r.WispId).ToArray());
+
+            var parsed = log.LinesParsed;
+            await log.QueryRecentAsync(DateTimeOffset.MinValue, 10);
+            Assert.AreEqual(parsed, log.LinesParsed);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
+    public async Task Query_FileDeleted_ReturnsEmpty_ThenAppendWorks()
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            await log.AppendAsync(MakeRecord("w1", "h", succeeded: false, DateTimeOffset.UtcNow));
+            Assert.AreEqual(1, (await log.QueryRecentAsync(DateTimeOffset.MinValue, 10)).Count);
+
+            File.Delete(LogPath(tempDir));
+            Assert.AreEqual(0, (await log.QueryRecentAsync(DateTimeOffset.MinValue, 10)).Count);
+            Assert.IsNull(await log.FindRecentFailureAsync("h", null));
+
+            await log.AppendAsync(MakeRecord("w2", "h", succeeded: false, DateTimeOffset.UtcNow));
+            Assert.AreEqual("w2", (await log.FindRecentFailureAsync("h", null))?.WispId);
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private static WispExecutionRecord MakeRecord(string wispId, string hash, bool succeeded, DateTimeOffset timestamp) =>
+        new()
+        {
+            WispId = wispId,
+            Description = "test",
+            DefinitionHash = hash,
+            Succeeded = succeeded,
+            StepCount = 1,
+            StepsCompleted = succeeded ? 1 : 0,
+            DurationMs = 10,
+            Timestamp = timestamp,
+            DefinitionBody = succeeded ? "{\"steps\":[]}" : null
+        };
+
+    private static string Serialize(WispExecutionRecord record) =>
+        JsonSerializer.Serialize(record, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+    private static string LogPath(string basePath) => Path.Combine(basePath, "wisp-executions.jsonl");
 
     private static FileWispExecutionLog CreateLog(string basePath)
     {
