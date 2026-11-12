@@ -13,6 +13,53 @@ namespace RockBot.Host.Tests;
 public class DreamServiceWispSuccessTests
 {
     [TestMethod]
+    public void SelectCandidatesForPrompt_CapsToMostFrequent()
+    {
+        var candidates = Enumerable.Range(0, 50)
+            .Select(i => new DreamService.WispSuccessCandidate($"h{i}", Frequency: 3 + i, DistinctSessions: 1, "d", "calendar/scan", "{}"))
+            .ToList();
+
+        var selected = DreamService.SelectWispSuccessCandidatesForPrompt(
+            candidates, [new Skill("calendar/scan", "Scan", "# Scan", DateTimeOffset.UtcNow)],
+            DreamService.MaxWispSuccessCandidatesPerPass);
+
+        Assert.AreEqual(DreamService.MaxWispSuccessCandidatesPerPass, selected.Count);
+        Assert.AreEqual("h49", selected[0].DefinitionHash, "Most frequent first");
+        Assert.IsFalse(selected.Any(c => c.Frequency < 3 + 50 - DreamService.MaxWispSuccessCandidatesPerPass),
+            "The least frequent candidates are the ones dropped");
+    }
+
+    [TestMethod]
+    public void SelectCandidatesForPrompt_DropsShapesAlreadyAttachedToTheirInvokingSkill()
+    {
+        var skill = new Skill("calendar/scan", "Scan", "# Scan", DateTimeOffset.UtcNow)
+        {
+            Manifest =
+            [
+                new SkillResource("eager-abc.json", SkillResourceType.Wisp, "x",
+                    Provisional: true, CreatedAt: DateTimeOffset.UtcNow, VerifyHint: null, DefinitionHash: "H-ATTACHED")
+            ]
+        };
+        var other = new Skill("mail/triage", "Triage", "# Triage", DateTimeOffset.UtcNow);
+        var candidates = new List<DreamService.WispSuccessCandidate>
+        {
+            new("h-attached", 9, 3, "d", "calendar/scan", "{}"),
+            // Same shape, different invoking skill: not attached there, so it stays.
+            new("h-attached", 8, 2, "d", "mail/triage", "{}"),
+            new("h-new", 4, 2, "d", "calendar/scan", "{}"),
+        };
+
+        var selected = DreamService.SelectWispSuccessCandidatesForPrompt(candidates, [skill, other], max: 30);
+
+        CollectionAssert.AreEqual(
+            new[] { "mail/triage", "calendar/scan" },
+            selected.Select(c => c.InvokingSkill).ToArray());
+        CollectionAssert.AreEqual(
+            new[] { "h-attached", "h-new" },
+            selected.Select(c => c.DefinitionHash).ToArray());
+    }
+
+    [TestMethod]
     public async Task ApplyPromotions_AttachesNonProvisionalResourceToTargetSkill()
     {
         var store = new InMemorySkillStoreForSuccessTests();

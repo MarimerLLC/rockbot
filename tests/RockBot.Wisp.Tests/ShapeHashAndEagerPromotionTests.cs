@@ -239,6 +239,48 @@ public class EagerPromotionTests
             "Shape-hash grouping should collapse cosmetically distinct runs into one promotion");
     }
 
+    [TestMethod]
+    public async Task PatrolSession_MoreThan1000OtherRecordsInWindow_StillAttaches()
+    {
+        var (executor, registry, log, skills, usage) = Build();
+
+        registry.Register(
+            new ToolRegistration { Name = "web_search", Description = "x", Source = "web" },
+            new FakeToolExecutor("ok"));
+
+        await skills.SaveAsync(new Skill("calendar/scan", "scan", "# scan", DateTimeOffset.UtcNow));
+        usage.Append("patrol/heartbeat-patrol", "calendar/scan", DateTimeOffset.UtcNow.AddMinutes(-1));
+
+        // A busy log: 1,200 successful runs of an unrelated shape, older than this
+        // shape's runs but inside the 30-day window. An oldest-first 1,000-record cap
+        // would return only these and miss the runs being counted (#791).
+        var t0 = DateTimeOffset.UtcNow.AddDays(-10);
+        for (var i = 0; i < 1200; i++)
+        {
+            await log.AppendAsync(new WispExecutionRecord
+            {
+                WispId = $"other-{i}",
+                Description = "unrelated",
+                DefinitionHash = "unrelated-def",
+                ShapeHash = "unrelated-shape",
+                Succeeded = true,
+                StepCount = 1,
+                StepsCompleted = 1,
+                DurationMs = 10,
+                Timestamp = t0.AddSeconds(i),
+                SessionId = "patrol/other"
+            }, CancellationToken.None);
+        }
+
+        await Spawn(executor, "patrol/heartbeat-patrol", paramsJson: """{"q":"v"}""");
+        await Spawn(executor, "patrol/heartbeat-patrol", paramsJson: """{"q":"v"}""");
+        await WaitForBackground();
+
+        var saved = await skills.GetAsync("calendar/scan");
+        Assert.AreEqual(1, saved!.Manifest?.Count ?? 0,
+            "The shape's two successes should count even when over 1,000 other runs share the window");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static (SpawnWispsExecutor executor, FakeToolRegistry registry,

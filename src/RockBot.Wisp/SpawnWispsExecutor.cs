@@ -281,9 +281,11 @@ internal sealed class SpawnWispsExecutor(
         try
         {
             // Count prior successful runs of this shape (including the one just
-            // appended). The 30-day window matches the dream-pass horizon.
-            var recent = await executionLog.QueryRecentAsync(
-                DateTimeOffset.UtcNow.AddDays(-30), maxResults: 1000, ct);
+            // appended). The 30-day window matches the dream-pass horizon. A by-hash
+            // query, not a capped QueryRecentAsync: that returns the oldest N records,
+            // so a busy log would drop this shape's newest runs (#791).
+            var recent = await executionLog.QueryByHashAsync(
+                record.ShapeHash, DateTimeOffset.UtcNow.AddDays(-30), ct);
             var sameShape = recent
                 .Where(r => r.Succeeded && string.Equals(r.ShapeHash, record.ShapeHash, StringComparison.OrdinalIgnoreCase))
                 .ToList();

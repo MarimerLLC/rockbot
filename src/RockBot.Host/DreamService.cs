@@ -4840,8 +4840,10 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         await RunPassAsync("wisp failure analysis", async () =>
         {
+            // Uncapped: QueryRecentAsync keeps the oldest records when capped, which would
+            // drop the newest failures. The prompt is bounded per group below (#791).
             var records = await _wispExecutionLog.QueryRecentAsync(
-                DateTimeOffset.UtcNow.AddDays(-14), maxResults: 500);
+                DateTimeOffset.UtcNow.AddDays(-14), maxResults: int.MaxValue);
 
             if (records.Count < 5)
             {
@@ -5163,8 +5165,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         await RunPassAsync("wisp success analysis", async () =>
         {
             var threshold = Math.Max(1, _options.WispSuccessFrequencyThreshold);
+            // Uncapped: QueryRecentAsync keeps the oldest records when capped, which could
+            // drop a group's recent failure and promote it anyway (#791).
             var records = await _wispExecutionLog.QueryRecentAsync(
-                DateTimeOffset.UtcNow.AddDays(-7), maxResults: 1000);
+                DateTimeOffset.UtcNow.AddDays(-7), maxResults: int.MaxValue);
 
             if (records.Count < threshold)
             {
@@ -5246,6 +5250,11 @@ internal sealed class DreamService : IHostedService, IDisposable
                     Body: body));
             }
 
+            // The record window is uncapped, so bound the prompt here instead (#791).
+            var resolvedCount = candidates.Count;
+            candidates = SelectWispSuccessCandidatesForPrompt(
+                candidates, existingSkills, MaxWispSuccessCandidatesPerPass);
+
             if (candidates.Count == 0)
             {
                 _logger.LogDebug("DreamService: wisp success analysis — no resolvable candidates; skipping");
@@ -5253,8 +5262,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             }
 
             _logger.LogInformation(
-                "DreamService: wisp success analysis pass — {Count} candidates",
-                candidates.Count);
+                "DreamService: wisp success analysis pass — {Count} candidates ({Resolved} resolved before dropping already-attached shapes and capping)",
+                candidates.Count, resolvedCount);
 
             // Build the prompt
             var userMessage = new StringBuilder();
@@ -5299,6 +5308,47 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// Apply loop extracted as a static helper so unit tests can drive the attach
     /// logic without standing up the full DreamService + LLM stack.
     /// </summary>
+    /// <summary>
+    /// Most candidates rendered into one wisp success-analysis prompt. Each candidate
+    /// carries a body preview of up to 1 KB, so this bounds the request size now that the
+    /// pass reads its whole record window.
+    /// </summary>
+    internal const int MaxWispSuccessCandidatesPerPass = 30;
+
+    /// <summary>
+    /// Chooses which success candidates go into the prompt. Drops candidates whose shape
+    /// is already attached to their invoking skill (re-presenting them every cycle would
+    /// crowd out new patterns once the cap applies), then keeps the
+    /// <paramref name="max"/> most frequent, breaking ties by distinct sessions.
+    /// </summary>
+    internal static List<WispSuccessCandidate> SelectWispSuccessCandidatesForPrompt(
+        IReadOnlyList<WispSuccessCandidate> candidates,
+        IReadOnlyList<Skill> existingSkills,
+        int max)
+    {
+        var attachedBySkill = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var skill in existingSkills)
+        {
+            if (skill.Manifest is null)
+                continue;
+            var hashes = skill.Manifest
+                .Select(r => r.DefinitionHash)
+                .Where(h => !string.IsNullOrEmpty(h))
+                .Select(h => h!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (hashes.Count > 0)
+                attachedBySkill.TryAdd(skill.Name, hashes);
+        }
+
+        return candidates
+            .Where(c => !(attachedBySkill.TryGetValue(c.InvokingSkill, out var attached)
+                          && attached.Contains(c.DefinitionHash)))
+            .OrderByDescending(c => c.Frequency)
+            .ThenByDescending(c => c.DistinctSessions)
+            .Take(Math.Max(0, max))
+            .ToList();
+    }
+
     internal static async Task<int> ApplyWispSuccessPromotionsAsync(
         ISkillStore skillStore,
         IReadOnlyList<WispSuccessCandidate> candidates,
@@ -5579,11 +5629,10 @@ internal sealed class DreamService : IHostedService, IDisposable
                 if (!string.IsNullOrEmpty(resource.DefinitionHash))
                 {
                     // Match new shape-hashed resources against either ShapeHash (preferred)
-                    // or DefinitionHash (legacy resources written with a body hash).
-                    var allRecords = await _wispExecutionLog.QueryRecentAsync(since, maxResults: 1000, ct);
-                    wispRecords = allRecords.Where(r =>
-                        r.ShapeHash == resource.DefinitionHash
-                        || r.DefinitionHash == resource.DefinitionHash).ToList();
+                    // or DefinitionHash (legacy resources written with a body hash). Uncapped:
+                    // a capped QueryRecentAsync keeps the oldest records and would hide the
+                    // recent runs the removal check looks at (#791).
+                    wispRecords = await _wispExecutionLog.QueryByHashAsync(resource.DefinitionHash, since, ct);
                 }
 
                 IReadOnlyList<SkillResourceCheckoutEvent> checkouts = [];
