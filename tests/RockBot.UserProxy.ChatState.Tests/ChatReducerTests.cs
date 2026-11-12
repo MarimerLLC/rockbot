@@ -376,6 +376,46 @@ public class ChatReducerTests
     }
 
     [TestMethod]
+    public void StaleCompletedReply_IsShown_ButLeavesTheNewerTurnAndItsLogAlone()
+    {
+        // Turn 1's reply was already on its way when the user cancelled and sent again.
+        var running = ChatReducer.Replay(
+        [
+            new TurnStarted("turn-1") { Timestamp = At(0) },
+            new UserCancelled { Timestamp = At(1) },
+            new TurnStarted("turn-2") { Timestamp = At(2) },
+            new TurnProgress("turn-2", "Calling search…") { Timestamp = At(3), MessageId = "log-2" },
+        ]);
+
+        var state = ChatReducer.Reduce(running,
+            new TurnEnded("turn-1", TurnOutcome.Completed) { Reply = Reply("Answer to turn 1."), Timestamp = At(4) });
+
+        Assert.AreEqual("Answer to turn 1.", state.Messages[^1].Content);
+        Assert.AreEqual(MessageCategory.PrimaryFinal, state.Messages[^1].Category);
+        Assert.AreEqual("turn-2", state.CurrentTurn?.TurnId);
+        Assert.IsTrue(state.IsBusy(At(5)));
+        Assert.IsTrue(state.IsActivityLogOpen("log-2"), "turn 2 is still working");
+    }
+
+    [TestMethod]
+    public void CompletedReply_EndsATurnAdoptedAfterAReload()
+    {
+        // A reload mid-turn: the new view adopts the agent's busy flag, and the old view's send
+        // loop, still awaiting, receives the reply. That reply must end the adopted turn, or the
+        // spinner would stick (#538).
+        var state = ChatReducer.Replay(
+        [
+            new TurnStarted("turn-from-old-view") { Timestamp = At(0) },
+            new ActiveStatusReconciled(new ActiveStatusResponse { IsProcessing = false, Subagents = [] }) { Timestamp = At(1) },
+            new ActiveStatusReconciled(new ActiveStatusResponse { IsProcessing = true, Subagents = [] }) { Timestamp = At(2) },
+            new TurnEnded("turn-from-old-view", TurnOutcome.Completed) { Reply = Reply("Done."), Timestamp = At(3) },
+        ]);
+
+        Assert.IsNull(state.CurrentTurn);
+        Assert.IsFalse(state.IsBusy(At(4)));
+    }
+
+    [TestMethod]
     public void UnsolicitedPrimaryReply_EndsATurnWhoseViewWentAway()
     {
         // The view that started the turn was lost (reload, SignalR reconnect), so its TurnEnded

@@ -197,8 +197,19 @@ public static class ChatReducer
 
     private static ChatViewState OnTurnEnded(ChatViewState state, TurnEnded e)
     {
+        // A late reply from a turn the user already moved on from (cancelled, then sent again)
+        // is still shown, but the newer turn, its progress log and its thinking text are left
+        // alone. A turn adopted from the agent's active status is not "newer": it is most likely
+        // this very turn, seen from a reloaded view, and its reply has to end it (#538).
+        var newerTurnRunning = state.CurrentTurn is { } current
+            && current.TurnId != e.TurnId
+            && current.TurnId != ChatViewState.ReconciledTurnId;
+
         state = e.Outcome switch
         {
+            TurnOutcome.Completed when e.Reply is not null && newerTurnRunning =>
+                AddReply(state, e.Reply, MessageCategory.PrimaryFinal, e.MessageId, e.Timestamp,
+                    closesSource: false),
             TurnOutcome.Completed when e.Reply is not null =>
                 AddReply(state with { ThinkingMessage = null }, e.Reply, MessageCategory.PrimaryFinal,
                     e.MessageId, e.Timestamp),
@@ -221,8 +232,13 @@ public static class ChatReducer
 
     // ── Agent output ────────────────────────────────────────────────────────
 
+    /// <param name="closesSource">
+    /// False for a reply whose source has already moved on (a stale turn's reply): it is shown,
+    /// but the source's current activity log and turn belong to newer work and stay open.
+    /// </param>
     private static ChatViewState AddReply(
-        ChatViewState state, AgentReply reply, MessageCategory category, string messageId, DateTime at)
+        ChatViewState state, AgentReply reply, MessageCategory category, string messageId, DateTime at,
+        bool closesSource = true)
     {
         var formWaits = state.FormWaits;
         var logs = state.OpenActivityLogs;
@@ -235,7 +251,7 @@ public static class ChatReducer
         // Close the activity log for the source that just finished. PrimaryFinal closes the
         // PrimaryProgress log (different category names); subagent / A2A / scheduled final
         // replies close their own category's log.
-        if (category == MessageCategory.PrimaryFinal)
+        if (closesSource && category == MessageCategory.PrimaryFinal)
         {
             logs = logs.Remove(ActivityLogKey(MessageCategory.PrimaryProgress, null));
 
@@ -245,7 +261,7 @@ public static class ChatReducer
             // disabled input box.
             turn = null;
         }
-        else
+        else if (closesSource)
             logs = logs.Remove(ActivityLogKey(category, reply.AgentName));
 
         return state with
