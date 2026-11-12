@@ -48,6 +48,15 @@ public static class ChatReducer
             x.MessageId, x.Timestamp)),
         ErrorReported x => Accept(AddError(state, x.Message, x.MessageId, x.Timestamp)),
         ActiveStatusReconciled x => Accept(OnActiveStatusReconciled(state, x)),
+        TurnHeartbeat x => OnTurnHeartbeat(state, x),
+        LateRunFinished x => state.CurrentTurn is null && state.ThinkingMessage is not null
+            ? Accept(state with { ThinkingMessage = null })
+            : Reject(state),
+        ToolCallReported x => Accept(OnToolCallReported(state, x)),
+        SubagentRunStarted x => Accept(OnSubagentRunStarted(state, x)),
+        SubagentRunFinished x => Accept(OnSubagentRunFinished(state, x)),
+        TaskListSnapshotReceived x => Accept(OnTaskListSnapshot(state, x)),
+        TaskListDeltaReceived x => Accept(OnTaskListDelta(state, x)),
         McpQuestionReceived x => OnMcpQuestionReceived(state, x),
         McpQuestionStatusChanged x => OnMcpQuestionStatusChanged(state, x.Status),
         McpAnswerSubmitted x => OnMcpAnswerSubmitted(state, x),
@@ -185,15 +194,32 @@ public static class ChatReducer
             }),
         };
 
-    // A new turn starts with a clean slate: no thinking text, and no activity log left open by
-    // the last one.
+    // A new turn starts with a clean slate for the primary agent: no thinking text, no progress
+    // log left open by the last turn, and no plan from it. Subagent, worker and background logs
+    // stay open: that work is still running, and its own lifecycle events close them.
     private static ChatViewState OnTurnStarted(ChatViewState state, TurnStarted e) =>
         state with
         {
             CurrentTurn = new TurnState(e.TurnId, e.Timestamp),
             ThinkingMessage = null,
-            OpenActivityLogs = state.OpenActivityLogs.Clear(),
+            OpenActivityLogs = state.OpenActivityLogs.Remove(ActivityLogKey(MessageCategory.PrimaryProgress, null)),
+            TaskLists = state.TaskLists.Remove(ReplySourceKind.Primary),
         };
+
+    private static ChatReduction OnTurnHeartbeat(ChatViewState state, TurnHeartbeat e)
+    {
+        // A heartbeat for the running turn, or (after a timeout) for a run this view gave up on
+        // while nothing else is running: either way the agent is still at work.
+        var forCurrent = state.CurrentTurn is { } turn
+            && (turn.TurnId == e.TurnId || turn.TurnId == ChatViewState.ReconciledTurnId);
+        if (!forCurrent && state.CurrentTurn is not null)
+            return Reject(state);
+
+        var thinking = string.IsNullOrWhiteSpace(e.Status)
+            ? state.ThinkingMessage ?? (forCurrent ? null : "Still working…")
+            : e.Status;
+        return thinking == state.ThinkingMessage ? Accept(state) : Accept(state with { ThinkingMessage = thinking });
+    }
 
     private static ChatViewState OnTurnEnded(ChatViewState state, TurnEnded e)
     {
@@ -218,7 +244,32 @@ public static class ChatReducer
                     e.MessageId, e.Timestamp),
             TurnOutcome.Failed =>
                 AddError(state, $"Error: {e.Error}", e.MessageId, e.Timestamp),
-            // Cancelled: the user already stopped waiting, and the agent posts its own
+            // The agent reported the run failed: show its error reply if it sent one (that
+            // reply ends the turn like any final reply), else its error text.
+            TurnOutcome.AgentError when e.Reply is not null =>
+                AddReply(state with { ThinkingMessage = newerTurnRunning ? state.ThinkingMessage : null },
+                    e.Reply, MessageCategory.PrimaryFinal, e.MessageId, e.Timestamp, closesSource: !newerTurnRunning),
+            TurnOutcome.AgentError =>
+                CloseThisTurnsProgress(
+                    AddError(state, $"Error: {e.Error ?? "the agent reported an error"}", e.MessageId, e.Timestamp),
+                    newerTurnRunning),
+            // The agent went silent mid-run. Unlike a timeout there is nothing left to wait for,
+            // so the progress log's spinner stops too.
+            TurnOutcome.AgentLost =>
+                CloseThisTurnsProgress(
+                    AddError(state, "Lost contact with the agent" + (e.Error is null ? "" : $": {e.Error}"),
+                        e.MessageId, e.Timestamp),
+                    newerTurnRunning),
+            // Cancelled by the agent (another client, or the agent itself) while this view was
+            // still waiting: say so. A reply the agent sent with it is shown instead.
+            TurnOutcome.Cancelled when state.CurrentTurn?.TurnId == e.TurnId && e.Reply is not null =>
+                AddReply(state with { ThinkingMessage = null }, e.Reply, MessageCategory.PrimaryFinal,
+                    e.MessageId, e.Timestamp),
+            TurnOutcome.Cancelled when state.CurrentTurn?.TurnId == e.TurnId =>
+                CloseThisTurnsProgress(
+                    AddError(state, "Turn cancelled", e.MessageId, e.Timestamp),
+                    newerTurnRunning: false),
+            // Cancelled by the user: they already stopped waiting, and the agent posts its own
             // "Cancelled." reply.
             _ => state,
         };
@@ -364,8 +415,13 @@ public static class ChatReducer
             ? state.CurrentTurn ?? new TurnState(ChatViewState.ReconciledTurnId, e.Timestamp)
             : null;
 
-        var activeAgentNames = status.Subagents
-            .Select(s => $"subagent-{s.TaskId}")
+        // Newer agents list subagents and workers in Work; older ones only subagents.
+        var running = status.Work is { } work
+            ? work.Select(w => (w.TaskId, w.Kind, w.Description, w.StartedAt)).ToList()
+            : status.Subagents.Select(s => (s.TaskId, Kind: ReplySourceKind.Subagent, s.Description, s.StartedAt)).ToList();
+
+        var activeAgentNames = running
+            .Select(w => SubagentAgentName(w.Kind, w.TaskId))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var subagentPrefix = $"{MessageCategory.SubagentActivity}:";
@@ -375,9 +431,9 @@ public static class ChatReducer
             .ToList());
 
         var messages = state.Messages;
-        foreach (var sub in status.Subagents)
+        foreach (var sub in running)
         {
-            var agentName = $"subagent-{sub.TaskId}";
+            var agentName = SubagentAgentName(sub.Kind, sub.TaskId);
             var key = ActivityLogKey(MessageCategory.SubagentActivity, agentName);
             if (logs.ContainsKey(key))
                 continue;
@@ -399,8 +455,145 @@ public static class ChatReducer
             logs = logs.SetItem(key, log.MessageId);
         }
 
-        return state with { CurrentTurn = turn, OpenActivityLogs = logs, Messages = messages };
+        // Plans of subagents that are no longer running go with them. Only an agent that lists
+        // its workers too can say which ones those are.
+        var taskLists = state.TaskLists;
+        if (status.Work is not null)
+        {
+            var runningIds = running.Select(w => w.TaskId).ToHashSet(StringComparer.Ordinal);
+            taskLists = taskLists.RemoveRange(taskLists.Keys
+                .Where(k => k != ReplySourceKind.Primary && !runningIds.Contains(k))
+                .ToList());
+        }
+
+        return state with { CurrentTurn = turn, OpenActivityLogs = logs, Messages = messages, TaskLists = taskLists };
     }
+
+    /// <summary>
+    /// The agent name a subagent's or worker's activity log is tracked under:
+    /// <c>subagent-{taskId}</c> or <c>worker-{taskId}</c>, as their own replies are named.
+    /// </summary>
+    public static string SubagentAgentName(string? kind, string taskId) =>
+        string.Equals(kind, ReplySourceKind.Worker, StringComparison.OrdinalIgnoreCase)
+            ? $"worker-{taskId}"
+            : $"subagent-{taskId}";
+
+    // ── Structured agent events (#795) ──────────────────────────────────────
+
+    /// <summary>
+    /// Adds a tool call to its source's activity log, or updates the entry for the same call id
+    /// in place (started, then finished or failed).
+    /// </summary>
+    private static ChatViewState OnToolCallReported(ChatViewState state, ToolCallReported e)
+    {
+        var key = ActivityLogKey(e.Category, e.AgentName);
+        if (state.OpenActivityLogs.TryGetValue(key, out var logId)
+            && state.Messages.FindIndex(m => m.MessageId == logId) is var index and >= 0)
+        {
+            var log = state.Messages[index];
+            var entryIndex = log.ActivityLogEntries.FindIndex(x => x.ToolCall?.ToolCallId == e.ToolCall.ToolCallId);
+            if (entryIndex >= 0)
+            {
+                var entry = log.ActivityLogEntries[entryIndex];
+                return state with
+                {
+                    Messages = state.Messages.SetItem(index, log with
+                    {
+                        Content = e.Content,
+                        ActivityLogEntries = log.ActivityLogEntries.SetItem(entryIndex,
+                            entry with { Content = e.Content, ToolCall = e.ToolCall }),
+                    }),
+                };
+            }
+        }
+
+        state = AppendActivity(state, e.Category, e.AgentName, e.Content, close: false, e.MessageId, e.Timestamp);
+
+        // The entry just added is the log's last one; tag it with the call.
+        var openId = state.OpenActivityLogs[key];
+        var at = state.Messages.FindIndex(m => m.MessageId == openId);
+        var updated = state.Messages[at];
+        var last = updated.ActivityLogEntries.Count - 1;
+        return state with
+        {
+            Messages = state.Messages.SetItem(at, updated with
+            {
+                ActivityLogEntries = updated.ActivityLogEntries.SetItem(last,
+                    updated.ActivityLogEntries[last] with { ToolCall = e.ToolCall }),
+            }),
+        };
+    }
+
+    private static ChatViewState OnSubagentRunStarted(ChatViewState state, SubagentRunStarted e)
+    {
+        var s = e.Started;
+        var agentName = SubagentAgentName(s.Kind, s.SubagentRunId);
+        if (state.OpenActivityLogs.ContainsKey(ActivityLogKey(MessageCategory.SubagentActivity, agentName)))
+            return state;
+
+        var label = s.Kind == ReplySourceKind.Worker ? "Worker" : "Subagent";
+        return AppendActivity(state, MessageCategory.SubagentActivity, agentName,
+            $"{label} started: {s.Description}", close: false, e.MessageId, e.Timestamp);
+    }
+
+    private static ChatViewState OnSubagentRunFinished(ChatViewState state, SubagentRunFinished e)
+    {
+        var f = e.Finished;
+        var agentName = SubagentAgentName(f.Kind, f.SubagentRunId);
+        var key = ActivityLogKey(MessageCategory.SubagentActivity, agentName);
+        var taskLists = state.TaskLists.Remove(f.SubagentRunId);
+
+        // Its log already closed (its result arrived first): nothing more to show.
+        if (!state.OpenActivityLogs.ContainsKey(key))
+            return state with { TaskLists = taskLists };
+
+        var content = f.Outcome switch
+        {
+            SubagentOutcome.Success => "Finished",
+            SubagentOutcome.Cancelled => "Cancelled",
+            SubagentOutcome.Timeout => "Timed out",
+            _ => string.IsNullOrWhiteSpace(f.Error) ? "Failed" : $"Failed: {f.Error}",
+        };
+        return AppendActivity(state with { TaskLists = taskLists }, MessageCategory.SubagentActivity, agentName,
+            content, close: true, e.MessageId, e.Timestamp);
+    }
+
+    private static ChatViewState OnTaskListSnapshot(ChatViewState state, TaskListSnapshotReceived e)
+    {
+        var s = e.Snapshot;
+        var key = TaskListStatus.KeyFor(s.Source);
+        return state with
+        {
+            TaskLists = state.TaskLists.SetItem(key,
+                new TaskListView(key, s.Source, s.RunId, [.. s.Items], e.Timestamp)),
+        };
+    }
+
+    private static ChatViewState OnTaskListDelta(ChatViewState state, TaskListDeltaReceived e)
+    {
+        var d = e.Delta;
+        var key = TaskListStatus.KeyFor(d.Source);
+        var list = state.TaskLists.TryGetValue(key, out var existing)
+            ? existing
+            : new TaskListView(key, d.Source, d.RunId, [], e.Timestamp);
+
+        var index = list.Items.FindIndex(i => i.Id == d.Item.Id);
+        var items = index >= 0 ? list.Items.SetItem(index, d.Item) : list.Items.Add(d.Item);
+        return state with
+        {
+            TaskLists = state.TaskLists.SetItem(key, list with { Items = items, UpdatedAt = e.Timestamp }),
+        };
+    }
+
+    /// <summary>Stops the primary progress log's spinner and clears the thinking text, unless a newer turn owns them.</summary>
+    private static ChatViewState CloseThisTurnsProgress(ChatViewState state, bool newerTurnRunning) =>
+        newerTurnRunning
+            ? state
+            : state with
+            {
+                ThinkingMessage = null,
+                OpenActivityLogs = state.OpenActivityLogs.Remove(ActivityLogKey(MessageCategory.PrimaryProgress, null)),
+            };
 
     // ── MCP questions ───────────────────────────────────────────────────────
 

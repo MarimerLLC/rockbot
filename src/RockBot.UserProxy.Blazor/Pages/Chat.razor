@@ -43,11 +43,14 @@
             }
             @foreach (var sub in statusIndicators.Where(i => i.Category == MessageCategory.SubagentActivity))
             {
+                var isWorker = sub.AgentName?.StartsWith("worker-") == true;
                 var name = sub.AgentName?.StartsWith("subagent-") == true
                     ? sub.AgentName["subagent-".Length..]
-                    : sub.AgentName ?? "subagent";
+                    : isWorker
+                        ? sub.AgentName!["worker-".Length..]
+                        : sub.AgentName ?? "subagent";
                 <span class="status-indicator subagent-indicator"
-                      title="@($"{name}: {sub.LatestContent}")">
+                      title="@($"{(isWorker ? "Worker" : "Subagent")} {name}: {sub.LatestContent}")">
                     🤖
                 </span>
             }
@@ -128,10 +131,42 @@
                             <div class="activity-log-entries">
                                 @foreach (var entry in message.ActivityLogEntries)
                                 {
-                                    <div class="activity-log-entry">
-                                        <span class="entry-time">@TimeZoneInfo.ConvertTimeFromUtc(entry.Timestamp, _displayZone).ToString("HH:mm:ss")</span>
-                                        <span class="entry-content">@entry.Content</span>
-                                    </div>
+                                    @if (entry.ToolCall is { } call)
+                                    {
+                                        <!-- A tool call: one card, updated in place as the call finishes -->
+                                        <div class="activity-log-entry" @onclick:stopPropagation="true">
+                                            <span class="entry-time">@TimeZoneInfo.ConvertTimeFromUtc(entry.Timestamp, _displayZone).ToString("HH:mm:ss")</span>
+                                            <details class="tool-call-card tool-call-@call.Phase">
+                                                <summary>
+                                                    <span class="tool-call-status">@ToolCallMarker(call.Phase)</span>
+                                                    <span class="tool-call-name">@call.ToolCallName</span>
+                                                    @if (call.DurationMs is { } ms)
+                                                    {
+                                                        <span class="tool-call-duration">@FormatDuration(ms)</span>
+                                                    }
+                                                </summary>
+                                                @if (!string.IsNullOrEmpty(call.ArgsSummary))
+                                                {
+                                                    <div class="tool-call-field"><span class="tool-call-label">Arguments</span> @call.ArgsSummary</div>
+                                                }
+                                                @if (!string.IsNullOrEmpty(call.Result))
+                                                {
+                                                    <div class="tool-call-field"><span class="tool-call-label">Result</span> @call.Result</div>
+                                                }
+                                                @if (!string.IsNullOrEmpty(call.Error))
+                                                {
+                                                    <div class="tool-call-field tool-call-error"><span class="tool-call-label">Error</span> @call.Error</div>
+                                                }
+                                            </details>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="activity-log-entry">
+                                            <span class="entry-time">@TimeZoneInfo.ConvertTimeFromUtc(entry.Timestamp, _displayZone).ToString("HH:mm:ss")</span>
+                                            <span class="entry-content">@entry.Content</span>
+                                        </div>
+                                    }
                                 }
                             </div>
                         }
@@ -281,6 +316,29 @@
             </div>
         }
     </div>
+
+    @if (state.TaskLists.Count > 0)
+    {
+        <!-- The agent's plans: the primary turn's task list, and any running subagent's -->
+        <div class="plan-panel border-top px-3 py-2">
+            @foreach (var list in state.TaskLists.Values.OrderBy(l => l.Key == ReplySourceKind.Primary ? 0 : 1).ThenBy(l => l.UpdatedAt))
+            {
+                <div class="plan-list">
+                    <div class="plan-title">
+                        @(list.Key == ReplySourceKind.Primary ? "Plan" : $"Subagent {list.Key} plan")
+                        <span class="plan-progress">@list.CompletedCount/@list.Items.Count</span>
+                    </div>
+                    @foreach (var item in list.Items)
+                    {
+                        <label class="plan-item plan-item-@item.Status.Replace('_', '-')">
+                            <input type="checkbox" disabled checked="@(item.Status == TaskListStatus.Completed)" />
+                            <span>@item.Description</span>
+                        </label>
+                    }
+                </div>
+            }
+        </div>
+    }
 
     @if (_showSavedModal)
     {
@@ -518,7 +576,7 @@
             // for subagents that started before this UI connected.
             try
             {
-                var status = await ProxyService.GetActiveStatusAsync(timeout: TimeSpan.FromSeconds(5));
+                var status = await ProxyService.GetActiveStatusAsync(SessionId, timeout: TimeSpan.FromSeconds(5));
                 if (status is not null)
                     ChatState.Apply(new ActiveStatusReconciled(status));
             }
@@ -690,10 +748,8 @@
             Attachments = attachments
         };
 
-        var progressTracker = new Progress<AgentReply>(reply =>
-        {
-            ChatState.Apply(new TurnProgress(turnId, reply.Content));
-        });
+        // Progress, heartbeats and the task list go straight into the chat state as they arrive.
+        var observer = new ChatTurnObserver(ChatState, turnId);
 
         var sendCts = new CancellationTokenSource();
         _sendCts?.Dispose();
@@ -704,12 +760,15 @@
         TurnEnded ended;
         try
         {
-            var reply = await ProxyService.SendAsync(
-                message, progress: progressTracker, cancellationToken: sendCts.Token);
+            // The turn id doubles as the correlation id, so the agent's run id is this turn's id.
+            var result = await ProxyService.SendTurnAsync(message, new TurnOptions
+            {
+                CorrelationId = turnId,
+                Progress = observer,
+                Observer = observer,
+            }, sendCts.Token);
 
-            ended = reply is null
-                ? new TurnEnded(turnId, TurnOutcome.TimedOut)
-                : new TurnEnded(turnId, TurnOutcome.Completed) { Reply = reply };
+            ended = ChatTurnObserver.ToTurnEnded(turnId, result);
         }
         catch (OperationCanceledException)
         {
@@ -803,6 +862,16 @@
         MessageCategory.ScheduledSystem => "Background Task",
         _ => "Agent"
     };
+
+    private static string ToolCallMarker(string phase) => phase switch
+    {
+        ToolCallPhase.Finished => "✓",
+        ToolCallPhase.Failed => "✗",
+        _ => "…",
+    };
+
+    private static string FormatDuration(long ms) =>
+        ms < 1000 ? $"{ms} ms" : $"{ms / 1000.0:0.0} s";
 
     private static string TruncateText(string text, int maxLength)
     {

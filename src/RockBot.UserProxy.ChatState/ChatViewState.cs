@@ -20,8 +20,51 @@ public enum MessageCategory
 
 public enum FeedbackState { None, ThumbsUp, ThumbsDown }
 
-public sealed record ActivityLogEntry(string Content, DateTime Timestamp);
+public sealed record ActivityLogEntry(string Content, DateTime Timestamp)
+{
+    /// <summary>
+    /// The structured tool call this entry shows, when it is one. Its started, finished and
+    /// failed reports share the entry, which always holds the latest of them.
+    /// </summary>
+    public ToolCallInfo? ToolCall { get; init; }
+}
+
 public sealed record ActiveStatusIndicator(MessageCategory Category, string? AgentName, string LatestContent);
+
+/// <summary>
+/// A run's task list as the agent last reported it.
+/// </summary>
+/// <param name="Key">The key it is stored under in <see cref="ChatViewState.TaskLists"/>.</param>
+/// <param name="Source">Whose list it is: the primary turn, or a subagent (with its task id).</param>
+/// <param name="RunId">The primary turn it belongs to, when it belongs to one.</param>
+public sealed record TaskListView(
+    string Key,
+    ReplySource Source,
+    string? RunId,
+    ImmutableList<TaskListItem> Items,
+    DateTime UpdatedAt)
+{
+    public int CompletedCount => Items.Count(i => i.Status == TaskListStatus.Completed);
+
+    /// <summary>The item being worked on, else the first one not done yet.</summary>
+    public TaskListItem? CurrentItem =>
+        Items.FirstOrDefault(i => i.Status == TaskListStatus.InProgress)
+        ?? Items.FirstOrDefault(i => i.Status != TaskListStatus.Completed);
+}
+
+/// <summary>Statuses a <see cref="TaskListItem"/> reports.</summary>
+public static class TaskListStatus
+{
+    public const string Pending = "pending";
+    public const string InProgress = "in_progress";
+    public const string Completed = "completed";
+
+    /// <summary>The <see cref="ChatViewState.TaskLists"/> key for a source: <c>primary</c>, or the subagent's task id.</summary>
+    public static string KeyFor(ReplySource source) =>
+        source.Kind is ReplySourceKind.Subagent or ReplySourceKind.Worker && !string.IsNullOrEmpty(source.TaskId)
+            ? source.TaskId!
+            : ReplySourceKind.Primary;
+}
 
 /// <summary>A turn the agent is working on.</summary>
 /// <param name="TurnId">
@@ -64,6 +107,13 @@ public sealed record ChatViewState
     public TurnState? CurrentTurn { get; init; }
 
     public string? ThinkingMessage { get; init; }
+
+    /// <summary>
+    /// Task lists ("plans") the agent reported, keyed by source: <c>primary</c> for the user's
+    /// turn, or a subagent's task id (<see cref="TaskListStatus.KeyFor"/>).
+    /// </summary>
+    public ImmutableDictionary<string, TaskListView> TaskLists { get; init; } =
+        ImmutableDictionary.Create<string, TaskListView>(StringComparer.Ordinal);
 
     /// <summary>
     /// Form answers sent and still waiting for the agent's follow-up reply, by question id, with

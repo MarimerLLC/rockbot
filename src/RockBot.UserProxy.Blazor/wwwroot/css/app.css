@@ -992,3 +992,22 @@ body.dark-mode .login-badge {
     background-color: #495057;
     color: #dee2e6;
 }
+
+/* ── Tool-call cards and the plan panel (#795) ─────────────────────────── */
+.tool-call-card { display: inline-block; vertical-align: top; }
+.tool-call-card summary { cursor: pointer; }
+.tool-call-name { font-family: var(--bs-font-monospace, monospace); }
+.tool-call-duration { margin-left: 0.5em; color: var(--secondary-color); font-size: 0.85em; }
+.tool-call-failed .tool-call-status, .tool-call-error { color: #dc3545; }
+.tool-call-finished .tool-call-status { color: #198754; }
+.tool-call-field { margin: 0.15em 0 0 1.2em; white-space: pre-wrap; word-break: break-word; }
+.tool-call-label { font-weight: 600; margin-right: 0.3em; }
+
+.plan-panel { background-color: var(--light-bg); max-height: 30vh; overflow-y: auto; font-size: 0.9em; }
+.plan-list + .plan-list { margin-top: 0.5em; }
+.plan-title { font-weight: 600; }
+.plan-progress { margin-left: 0.5em; color: var(--secondary-color); font-weight: normal; }
+.plan-item { display: flex; gap: 0.5em; align-items: baseline; margin-left: 0.5em; }
+.plan-item-in-progress { font-weight: 600; }
+.plan-item-completed span { text-decoration: line-through; color: var(--secondary-color); }
+body.dark-mode .plan-panel { background-color: var(--dark-bg); color: #dee2e6; }

@@ -431,15 +431,19 @@ public class ChatReducerTests
     }
 
     [TestMethod]
-    public void TurnStarted_ClosesLogsLeftOpenAndClearsThinking()
+    public void TurnStarted_ClosesThePrimaryLogLeftOpen_KeepsSubagentLogs_ClearsThinking()
     {
         var state = ChatReducer.Replay(
         [
             new TurnProgress("turn-0", "orphaned progress") { Timestamp = At(0), MessageId = "orphan" },
+            new ActivityReported(MessageCategory.SubagentActivity, "subagent-abc", "researching")
+                { Timestamp = At(0), MessageId = "sub" },
             new TurnStarted("turn-1") { Timestamp = At(1) },
         ]);
 
         Assert.IsFalse(state.IsActivityLogOpen("orphan"));
+        Assert.IsTrue(state.IsActivityLogOpen("sub"), "the subagent is still running; its own events close its log");
+        Assert.AreEqual("subagent-abc", state.ActiveStatusIndicators.Single().AgentName);
         Assert.IsNull(state.ThinkingMessage);
     }
 

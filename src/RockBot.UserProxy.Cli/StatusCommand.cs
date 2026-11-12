@@ -16,7 +16,7 @@ internal sealed class StatusCommand : AsyncCommand<CommonSettings.Plain>
         try
         {
             var proxy = host.Services.GetRequiredService<UserProxyService>();
-            var status = await proxy.GetActiveStatusAsync();
+            var status = await proxy.GetActiveStatusAsync(settings.SessionId ?? "cli-session");
             if (status is null)
             {
                 Console.Error.WriteLine("error: agent did not respond before timeout");
@@ -24,6 +24,15 @@ internal sealed class StatusCommand : AsyncCommand<CommonSettings.Plain>
             }
 
             Console.Out.WriteLine($"processing: {status.IsProcessing}");
+            if (status.Work is { } work)
+            {
+                // Newer agents list workers alongside subagents.
+                Console.Out.WriteLine($"background work: {work.Count}");
+                foreach (var w in work)
+                    Console.Out.WriteLine($"  - {w.Kind} {w.TaskId} (started {w.StartedAt:O}): {w.Description}");
+                return 0;
+            }
+
             Console.Out.WriteLine($"subagents: {status.Subagents.Count}");
             foreach (var s in status.Subagents)
                 Console.Out.WriteLine($"  - {s.TaskId} (started {s.StartedAt:O}): {s.Description}");

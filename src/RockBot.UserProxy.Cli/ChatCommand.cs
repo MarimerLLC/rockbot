@@ -19,7 +19,7 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
     public sealed class Settings : CommonSettings
     {
         [CommandOption("-m|--message <TEXT>")]
-        [Description("Send a single message and exit (one-shot mode). Use '-' to read from stdin.")]
+        [Description("Send a single message and exit (one-shot mode). Use '-' to read from stdin. " + ChatExitCodes.HelpText)]
         public string? Message { get; init; }
 
         [CommandOption("--target <AGENT>")]
@@ -140,18 +140,22 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
             Attachments = attachments
         };
 
-        // Mirror intermediate progress to stderr so callers piping stdout get
-        // only the final reply text.
-        var progress = new Progress<AgentReply>(r =>
-            Console.Error.WriteLine($"[{r.AgentName}] {HtmlPlainTextRenderer.StripHtml(r.Content)}"));
+        // Mirror intermediate progress (and the task list) to stderr so callers piping stdout
+        // get only the final reply text. Written synchronously, in arrival order.
+        var reporter = new CliTurnReporter(Console.Error.WriteLine);
 
-        var reply = await proxy.SendAsync(message, progress: progress);
-
-        if (reply is null)
+        var result = await proxy.SendTurnAsync(message, new TurnOptions
         {
-            Console.Error.WriteLine("error: no reply received (timeout)");
-            return 2;
-        }
+            Progress = reporter,
+            Observer = reporter,
+        });
+
+        if (ChatExitCodes.Describe(result) is { } problem)
+            Console.Error.WriteLine($"error: {problem}");
+
+        var reply = result.Reply;
+        if (reply is null)
+            return ChatExitCodes.For(result.Outcome);
 
         Console.Out.WriteLine(HtmlPlainTextRenderer.StripHtml(reply.Content));
 
@@ -163,7 +167,7 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
             foreach (var att in reply.Attachments)
                 Console.Out.WriteLine(AttachmentPlaceholder.Render(att));
         }
-        return 0;
+        return ChatExitCodes.For(result.Outcome);
     }
 
     private static async Task<int> RunInteractiveAsync(UserProxyService proxy, Settings settings, IHost host)
@@ -214,41 +218,58 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
                 ChannelName = "cli"
             };
 
-            string? progressText = null;
-            var progress = new Progress<AgentReply>(r => progressText = r.Content);
+            // No line writer: the spinner shows the latest status and the task list instead.
+            var reporter = new CliTurnReporter();
 
-            AgentReply? reply = null;
+            TurnResult? result = null;
             await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .SpinnerStyle(new Style(Color.Blue))
                 .StartAsync("Thinking...", async ctx =>
                 {
                     var sw = Stopwatch.StartNew();
-                    var replyTask = proxy.SendAsync(message, progress: progress, cancellationToken: stoppingToken);
+                    var turnTask = proxy.SendTurnAsync(message, new TurnOptions
+                    {
+                        Progress = reporter,
+                        Observer = reporter,
+                    }, stoppingToken);
 
-                    while (!replyTask.IsCompleted)
+                    while (!turnTask.IsCompleted)
                     {
                         var elapsed = (int)sw.Elapsed.TotalSeconds;
-                        ctx.Status(progressText is not null
-                            ? Markup.Escape(progressText)
+                        var status = reporter.Status is { } s
+                            ? Markup.Escape(s)
                             : elapsed switch
                             {
                                 < 5  => "Thinking...",
                                 < 15 => $"Working on it... ({elapsed}s)",
                                 < 30 => $"Still thinking... ({elapsed}s)",
                                 _    => $"Complex request, please wait... ({elapsed}s)"
-                            });
+                            };
+                        if (reporter.TaskLine is { } tasks)
+                            status = $"[dim]{Markup.Escape(tasks)}[/] {status}";
+                        ctx.Status(status);
 
-                        await Task.WhenAny(replyTask, Task.Delay(1000, stoppingToken));
+                        await Task.WhenAny(turnTask, Task.Delay(1000, stoppingToken));
                     }
 
-                    reply = await replyTask;
+                    result = await turnTask;
                 });
 
-            if (reply is not null)
-                await frontend.DisplayReplyAsync(reply, stoppingToken);
-            else
-                await frontend.DisplayErrorAsync("No reply received (timeout)", stoppingToken);
+            if (result!.Reply is not null)
+                await frontend.DisplayReplyAsync(result.Reply, stoppingToken);
+
+            switch (result.Outcome)
+            {
+                case TurnResultOutcome.Success:
+                    break;
+                case TurnResultOutcome.Cancelled:
+                    AnsiConsole.MarkupLine($"[yellow]Warning:[/] {Markup.Escape(ChatExitCodes.Describe(result)!)}");
+                    break;
+                default:
+                    await frontend.DisplayErrorAsync(ChatExitCodes.Describe(result)!, stoppingToken);
+                    break;
+            }
 
             AnsiConsole.WriteLine();
         }

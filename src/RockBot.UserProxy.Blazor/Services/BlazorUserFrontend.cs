@@ -53,14 +53,82 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
     public Task DisplayStatusAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
         var category = CategorizeReply(reply);
+        var agentName = LogAgentName(reply);
+
+        // A structured tool call: one entry per call, updated in place as it finishes.
+        if (reply.ToolCall is { } toolCall && !reply.IsCompletion)
+        {
+            chatState.Apply(new ToolCallReported(category, agentName, toolCall, reply.Content));
+            return Task.CompletedTask;
+        }
 
         // Non-final progress — append to the source's activity log bubble
         // instead of creating a separate bubble per message.
         // IsCompletion signals the source has finished (e.g. subagent result Phase 1) —
         // close the activity log so the spinner and header indicator disappear.
-        chatState.Apply(new ActivityReported(category, reply.AgentName, reply.Content, reply.IsCompletion));
+        chatState.Apply(new ActivityReported(category, agentName, reply.Content, reply.IsCompletion));
         return Task.CompletedTask;
     }
+
+    // ── Structured agent events (#795) ──────────────────────────────────────
+
+    public Task OnSubagentStartedAsync(SubagentStarted started, CancellationToken cancellationToken = default)
+    {
+        chatState.Apply(new SubagentRunStarted(started));
+        return Task.CompletedTask;
+    }
+
+    public Task OnSubagentFinishedAsync(SubagentFinished finished, CancellationToken cancellationToken = default)
+    {
+        chatState.Apply(new SubagentRunFinished(finished));
+        return Task.CompletedTask;
+    }
+
+    public Task OnActiveWorkSnapshotAsync(ActiveStatusResponse snapshot, CancellationToken cancellationToken = default)
+    {
+        chatState.Apply(new ActiveStatusReconciled(snapshot));
+        return Task.CompletedTask;
+    }
+
+    public Task OnTaskListSnapshotAsync(TaskListSnapshot snapshot, CancellationToken cancellationToken = default)
+    {
+        chatState.Apply(new TaskListSnapshotReceived(snapshot));
+        return Task.CompletedTask;
+    }
+
+    public Task OnTaskListDeltaAsync(TaskListDelta delta, CancellationToken cancellationToken = default)
+    {
+        chatState.Apply(new TaskListDeltaReceived(delta));
+        return Task.CompletedTask;
+    }
+
+    // Run events for a turn this view stopped waiting on (it timed out): the agent is still at it.
+    public Task OnRunStartedAsync(RunStarted run, CancellationToken cancellationToken = default)
+    {
+        chatState.Apply(new TurnHeartbeat(run.RunId, null));
+        return Task.CompletedTask;
+    }
+
+    public Task OnRunHeartbeatAsync(RunHeartbeat heartbeat, CancellationToken cancellationToken = default)
+    {
+        chatState.Apply(new TurnHeartbeat(heartbeat.RunId, heartbeat.Status));
+        return Task.CompletedTask;
+    }
+
+    public Task OnRunFinishedAsync(RunFinished run, CancellationToken cancellationToken = default)
+    {
+        chatState.Apply(new LateRunFinished(run.RunId, run.Outcome));
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// The agent name an activity log is kept under. A subagent's or worker's comes from its
+    /// source, so its progress lands in the same log its lifecycle events open.
+    /// </summary>
+    private static string? LogAgentName(AgentReply reply) =>
+        reply.Source is { Kind: ReplySourceKind.Subagent or ReplySourceKind.Worker, TaskId: { Length: > 0 } taskId } source
+            ? ChatReducer.SubagentAgentName(source.Kind, taskId)
+            : reply.AgentName;
 
     public Task DisplayErrorAsync(string message, CancellationToken cancellationToken = default)
     {
@@ -87,8 +155,25 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
         return Task.CompletedTask;
     }
 
-    private MessageCategory CategorizeReply(AgentReply reply)
+    internal MessageCategory CategorizeReply(AgentReply reply)
     {
+        // Newer agents say where a reply came from; older ones leave it to the heuristics below.
+        switch (reply.Source?.Kind)
+        {
+            case ReplySourceKind.Subagent or ReplySourceKind.Worker:
+                return MessageCategory.SubagentActivity;
+            case ReplySourceKind.A2A:
+                return MessageCategory.A2AActivity;
+            case ReplySourceKind.Scheduled:
+                // Background system jobs and the user's own scheduled tasks share the kind; the
+                // session tells them apart.
+                return reply.SessionId == WellKnownSessions.ScheduledSystem
+                    ? MessageCategory.ScheduledSystem
+                    : MessageCategory.ScheduledUser;
+            case ReplySourceKind.Primary or ReplySourceKind.Bridge:
+                return reply.IsFinal ? MessageCategory.PrimaryFinal : MessageCategory.PrimaryProgress;
+        }
+
         if (reply.SessionId == WellKnownSessions.ScheduledSystem)
             return MessageCategory.ScheduledSystem;
 
