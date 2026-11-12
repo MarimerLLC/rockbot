@@ -24,8 +24,15 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
         PropertyNameCaseInsensitive = true
     };
 
-    /// <summary>Bytes from the start of the file kept to detect the file being replaced.</summary>
-    private const int FingerprintLength = 256;
+    /// <summary>Bytes kept from the start of the file to detect it being replaced.</summary>
+    private const int HeadFingerprintLength = 256;
+
+    /// <summary>
+    /// Upper bound on the bytes kept from the last consumed line. The whole line is
+    /// normally kept (records are a few KB) so its unique <c>wispId</c> is part of the
+    /// comparison; trailing bytes alone are near-identical across records.
+    /// </summary>
+    private const int MaxTailFingerprintLength = 64 * 1024;
 
     private readonly string _filePath;
     private readonly ILogger<FileWispExecutionLog> _logger;
@@ -38,6 +45,7 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
     private readonly Dictionary<string, List<WispExecutionRecord>> _byHash = new(StringComparer.Ordinal);
     private long _offset;
     private byte[] _headFingerprint = [];
+    private byte[] _tailFingerprint = [];
     private long _linesParsed;
 
     public FileWispExecutionLog(WispOptions options, ILogger<FileWispExecutionLog> logger)
@@ -187,20 +195,18 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
                 bufferSize: 64 * 1024, useAsync: true);
 
             var length = stream.Length;
-            if (length < _offset || (_offset > 0 && !await HeadMatchesAsync(stream, ct)))
+            if (length < _offset || !await ConsumedRegionUnchangedAsync(stream, ct))
                 ResetCache();
 
             if (length == _offset)
                 return;
-
-            if (_offset == 0)
-                _headFingerprint = await ReadHeadAsync(stream, ct);
 
             stream.Seek(_offset, SeekOrigin.Begin);
             var buffer = new byte[length - _offset];
             await stream.ReadExactlyAsync(buffer, ct);
 
             var lineStart = 0;
+            var lastLineStart = 0;
             while (true)
             {
                 var newline = Array.IndexOf(buffer, (byte)'\n', lineStart);
@@ -208,11 +214,20 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
                     break; // trailing partial line: a writer is mid-append; pick it up next time
 
                 ParseLine(buffer.AsSpan(lineStart, newline - lineStart));
+                lastLineStart = lineStart;
                 lineStart = newline + 1;
             }
 
             // Parsing is synchronous, so the cache and offset advance together.
-            _offset += lineStart;
+            if (lineStart > 0)
+            {
+                if (_offset == 0)
+                    _headFingerprint = buffer[..Math.Min(HeadFingerprintLength, lineStart)];
+                _tailFingerprint = buffer[lastLineStart..lineStart];
+                if (_tailFingerprint.Length > MaxTailFingerprintLength)
+                    _tailFingerprint = _tailFingerprint[^MaxTailFingerprintLength..];
+                _offset += lineStart;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -261,23 +276,37 @@ internal sealed class FileWispExecutionLog : IWispExecutionLog, IPrunableLog
         _byHash.Clear();
         _offset = 0;
         _headFingerprint = [];
+        _tailFingerprint = [];
     }
 
-    private static async Task<byte[]> ReadHeadAsync(FileStream stream, CancellationToken ct)
+    /// <summary>
+    /// Whether the bytes already parsed into the cache still look the same on disk: both
+    /// the start of the file and the last consumed line (ending at <see cref="_offset"/>)
+    /// must match.
+    /// Catches a file replaced via temp+move (retention trim by another instance, manual
+    /// edit) even when the new file is the same length or longer, including one that keeps
+    /// the first record but rewrites later ones. This is a cheap probe, not a full
+    /// checksum: an edit confined to the middle of the consumed region is not detected,
+    /// which is acceptable for an append-only log whose only rewrite is a tail-keeping trim.
+    /// </summary>
+    private async Task<bool> ConsumedRegionUnchangedAsync(FileStream stream, CancellationToken ct)
     {
-        var head = new byte[(int)Math.Min(FingerprintLength, stream.Length)];
-        stream.Seek(0, SeekOrigin.Begin);
-        await stream.ReadExactlyAsync(head, ct);
-        return head;
-    }
+        if (_offset == 0)
+            return true;
 
-    private async Task<bool> HeadMatchesAsync(FileStream stream, CancellationToken ct)
-    {
-        if (stream.Length < _headFingerprint.Length)
+        var head = await ReadRangeAsync(stream, 0, _headFingerprint.Length, ct);
+        if (!head.AsSpan().SequenceEqual(_headFingerprint))
             return false;
-        var head = new byte[_headFingerprint.Length];
-        stream.Seek(0, SeekOrigin.Begin);
-        await stream.ReadExactlyAsync(head, ct);
-        return head.AsSpan().SequenceEqual(_headFingerprint);
+
+        var tail = await ReadRangeAsync(stream, _offset - _tailFingerprint.Length, _tailFingerprint.Length, ct);
+        return tail.AsSpan().SequenceEqual(_tailFingerprint);
+    }
+
+    private static async Task<byte[]> ReadRangeAsync(FileStream stream, long start, int count, CancellationToken ct)
+    {
+        var bytes = new byte[count];
+        stream.Seek(start, SeekOrigin.Begin);
+        await stream.ReadExactlyAsync(bytes, ct);
+        return bytes;
     }
 }

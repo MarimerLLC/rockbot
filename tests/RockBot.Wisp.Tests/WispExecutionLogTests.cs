@@ -687,6 +687,44 @@ public class WispExecutionLogTests
     }
 
     [TestMethod]
+    [DataRow(3, DisplayName = "same length")]
+    [DataRow(5, DisplayName = "longer")]
+    public async Task Query_FileReplacedKeepingFirstRecord_Reloads(int replacementCount)
+    {
+        var tempDir = CreateTempDir();
+        try
+        {
+            var log = CreateLog(tempDir);
+            var ts = DateTimeOffset.UtcNow;
+            var first = MakeRecord("w0", "h", succeeded: true, ts);
+            await log.AppendAsync(first);
+            for (var i = 1; i <= 3; i++)
+                await log.AppendAsync(MakeRecord($"w{i}", "h", succeeded: false, ts));
+            Assert.AreEqual(4, (await log.QueryRecentAsync(DateTimeOffset.MinValue, 100)).Count);
+
+            // Keep the first record (so the head bytes match) but rewrite everything after
+            // it. Equal-length ids make the "same length" case byte-for-byte the same size.
+            var lines = new[] { Serialize(first) }
+                .Concat(Enumerable.Range(1, replacementCount)
+                    .Select(i => Serialize(MakeRecord($"x{i}", "h", succeeded: false, ts))));
+            var tmp = LogPath(tempDir) + ".tmp";
+            await File.WriteAllTextAsync(tmp, string.Concat(lines.Select(l => l + Environment.NewLine)));
+            File.Move(tmp, LogPath(tempDir), overwrite: true);
+
+            var expected = new[] { "w0" }
+                .Concat(Enumerable.Range(1, replacementCount).Select(i => $"x{i}"))
+                .ToArray();
+            CollectionAssert.AreEqual(
+                expected,
+                (await log.QueryRecentAsync(DateTimeOffset.MinValue, 100)).Select(r => r.WispId).ToArray());
+        }
+        finally
+        {
+            CleanupTempDir(tempDir);
+        }
+    }
+
+    [TestMethod]
     public async Task PruneAsync_TrimsFile_QueriesReflectTrimAndLaterAppends()
     {
         var tempDir = CreateTempDir();
