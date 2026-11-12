@@ -62,6 +62,10 @@ internal sealed class RunScopedWorkingMemory : IWorkingMemory
         IReadOnlyList<string>? tags, string? writer) =>
         InScope(key) ? _inner.SetAsync(key, value, ttl, category, tags, writer) : throw OutOfScope(key);
 
+    public Task<WorkingMemoryWriteResult> TrySetAsync(string key, string value, TimeSpan? ttl = null,
+        string? category = null, IReadOnlyList<string>? tags = null, string? writer = null) =>
+        InScope(key) ? _inner.TrySetAsync(key, value, ttl, category, tags, writer) : throw OutOfScope(key);
+
     public Task<string?> GetAsync(string key) =>
         InScope(key) ? _inner.GetAsync(key) : Task.FromResult<string?>(null);
 

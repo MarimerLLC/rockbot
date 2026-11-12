@@ -85,33 +85,29 @@ internal sealed class WebBrowseToolExecutor(
         var sanitizedUrl = SanitizeUrlForKey(url);
         var keyBase = $"{request.SessionId}/web-{sanitizedUrl}";
 
-        var chunkKeys = new List<string>(chunks.Count);
-        for (var i = 0; i < chunks.Count; i++)
-        {
-            // SessionId is the full working memory namespace (e.g. "session/abc123", "patrol/heartbeat")
-            var key = $"{keyBase}-chunk{i}";
-            chunkKeys.Add(key);
-            await workingMemory!.SetAsync(key, chunks[i].Content, ttl, category: "web");
-        }
-
-        // Store hierarchical outline as index chunk
-        var indexKey = $"{keyBase}-index";
-        var outline = ContentChunker.BuildOutline(chunks, chunkKeys);
-        await workingMemory!.SetAsync(indexKey, outline, ttl, category: "web");
+        // SessionId is the full working memory namespace (e.g. "session/abc123", "patrol/heartbeat").
+        // #801: only what was actually stored is listed; a shortfall is said out loud.
+        var stored = await ChunkedContentStore.StoreAsync(workingMemory!, keyBase, chunks, ttl, category: "web");
+        var chunkKeys = stored.StoredKeys;
 
         var index = new StringBuilder();
         index.AppendLine(preamble);
         index.AppendLine();
-        index.AppendLine($"Page \"{page.Title}\" has been split into {chunks.Count} chunk(s) stored in working memory.");
-        index.AppendLine($"A document outline is stored at key `{indexKey}` — retrieve it with " +
-            "get_from_working_memory to navigate the content by section heading.");
+        index.AppendLine(stored.IsComplete
+            ? $"Page \"{page.Title}\" has been split into {chunks.Count} chunk(s) stored in working memory."
+            : $"Page \"{page.Title}\" has been split into {chunks.Count} chunk(s); {chunkKeys.Count} are stored in working memory.");
+        if (stored.ShortfallNote is { } shortfall)
+            index.AppendLine(shortfall);
+        if (stored.IndexKey is { } indexKey)
+            index.AppendLine($"A document outline is stored at key `{indexKey}` — retrieve it with " +
+                "get_from_working_memory to navigate the content by section heading.");
         index.AppendLine("Call get_from_working_memory(key) for each relevant chunk BEFORE drawing any conclusions.");
         index.AppendLine("Do not summarise or answer based on this index alone — retrieve the chunks first.");
         index.AppendLine();
         index.AppendLine("| # | Heading | Key |");
         index.AppendLine("|---|---------|-----|");
 
-        for (var i = 0; i < chunks.Count; i++)
+        for (var i = 0; i < chunkKeys.Count; i++)
         {
             var displayHeading = string.IsNullOrWhiteSpace(chunks[i].Heading) ? $"Section {i}" : chunks[i].Heading;
             index.AppendLine($"| {i} | {displayHeading} | `{chunkKeys[i]}` |");

@@ -19,10 +19,30 @@ public sealed class WorkingMemoryOptions
 
     /// <summary>
     /// Maximum number of live entries per namespace (first two key path segments,
-    /// e.g. <c>session/abc123</c> or <c>subagent/task1</c>). New entries are rejected
-    /// (with a warning) once this limit is reached. Defaults to 50.
+    /// e.g. <c>session/abc123</c> or <c>subagent/task1</c>). Once it is reached, a new key first
+    /// makes room by evicting the oldest regenerable content (<see cref="EvictableCategories"/>);
+    /// only when there is none is it refused, which <c>TrySetAsync</c> reports. Defaults to 50.
     /// </summary>
     public int MaxEntriesPerNamespace { get; set; } = 50;
+
+    /// <summary>The evictable categories used when <see cref="EvictableCategories"/> is not set.</summary>
+    public static readonly IReadOnlyList<string> DefaultEvictableCategories = ["web", "tool-result", "wisp-input"];
+
+    /// <summary>
+    /// Categories of entries that are copies of content the agent can fetch or produce again —
+    /// page chunks from <c>web_browse</c>, chunked tool results, chunked wisp input. When a
+    /// namespace is full these give way to new writes, oldest first and a whole chunk group (one
+    /// page or result) at a time, so the newest page stays readable (#801). Anything else (what
+    /// the agent saved on purpose) is never evicted. <c>null</c> means
+    /// <see cref="DefaultEvictableCategories"/>; a configured list replaces the default.
+    /// </summary>
+    public IList<string>? EvictableCategories { get; set; }
+
+    /// <summary>The evictable categories in effect: the configured list, or the default.</summary>
+    public IReadOnlyList<string> EffectiveEvictableCategories =>
+        EvictableCategories is { } configured
+            ? configured.Where(c => !string.IsNullOrWhiteSpace(c)).ToList()
+            : DefaultEvictableCategories;
 
     /// <summary>
     /// Base directory for persisting working memory to disk.

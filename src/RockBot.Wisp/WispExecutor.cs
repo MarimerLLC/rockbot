@@ -1365,29 +1365,23 @@ internal sealed class WispExecutor(
         var runId = Guid.NewGuid().ToString("N")[..8];
         var keyBase = $"{wispNamespace}/input-{stepId}-{runId}";
 
-        var chunkKeys = new List<string>(chunks.Count);
-        for (var i = 0; i < chunks.Count; i++)
-        {
-            var key = $"{keyBase}-chunk{i}";
-            chunkKeys.Add(key);
-            await workingMemory.SetAsync(key, chunks[i].Content, ttl: WispChunkTtl, category: "wisp-input");
-        }
-
-        // Store outline index
-        var indexKey = $"{keyBase}-index";
-        var outline = ContentChunker.BuildOutline(chunks, chunkKeys);
-        await workingMemory.SetAsync(indexKey, outline, ttl: WispChunkTtl, category: "wisp-input");
+        // #801: only what was actually stored is listed; a shortfall is said out loud.
+        var stored = await ChunkedContentStore.StoreAsync(workingMemory, keyBase, chunks, WispChunkTtl, category: "wisp-input");
+        var chunkKeys = stored.StoredKeys;
 
         // Build LLM-friendly index table
         var sb = new StringBuilder();
         sb.AppendLine($"Input data is large ({content.Length:N0} chars) and has been split into {chunks.Count} chunk(s).");
-        sb.AppendLine($"A document outline is stored at key `{indexKey}` — retrieve it with get_from_working_memory.");
+        if (stored.ShortfallNote is { } shortfall)
+            sb.AppendLine(shortfall);
+        if (stored.IndexKey is { } indexKey)
+            sb.AppendLine($"A document outline is stored at key `{indexKey}` — retrieve it with get_from_working_memory.");
         sb.AppendLine("Call get_from_working_memory(key) for each relevant chunk BEFORE drawing conclusions.");
         sb.AppendLine();
         sb.AppendLine("| # | Heading | Key |");
         sb.AppendLine("|---|---------|-----|");
 
-        for (var i = 0; i < chunks.Count; i++)
+        for (var i = 0; i < chunkKeys.Count; i++)
         {
             var label = string.IsNullOrWhiteSpace(chunks[i].Heading) ? $"Part {i}" : chunks[i].Heading;
             sb.AppendLine($"| {i} | {label} | `{chunkKeys[i]}` |");

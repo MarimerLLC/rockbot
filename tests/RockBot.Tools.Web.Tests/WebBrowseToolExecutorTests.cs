@@ -185,6 +185,36 @@ public class WebBrowseToolExecutorTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_LargeContent_FullNamespace_ListsOnlyWhatWasStored()
+    {
+        // #801: the page used to be reported as fully stored when most of it had been dropped.
+        var provider = new CapturingBrowseProvider(new WebPageContent
+        {
+            Title = "Big Page",
+            Content = string.Join("\n\n", Enumerable.Range(0, 6).Select(i => $"## Part {i}\n" + new string('x', 4_000))),
+            SourceUrl = "https://example.com/big"
+        });
+        var memory = new CapturingWorkingMemory { Capacity = 3 };
+        var options = new WebToolOptions { ChunkingThreshold = 8_000, ChunkMaxLength = 5_000, ChunkTtlMinutes = 20 };
+        var executor = new WebBrowseToolExecutor(provider, memory, options);
+
+        var response = await executor.ExecuteAsync(
+            MakeRequest("""{"url": "https://example.com/big"}""", sessionId: "session/session-1"),
+            CancellationToken.None);
+
+        Assert.IsFalse(response.IsError);
+        StringAssert.Contains(response.Content, "only 3 of");
+        StringAssert.Contains(response.Content, "NOT in working memory");
+        StringAssert.Contains(response.Content, "is full");
+        var listedKeys = System.Text.RegularExpressions.Regex.Matches(response.Content, @"`(session/session-1/web-[^`]+-chunk\d+)`")
+            .Select(m => m.Groups[1].Value).ToList();
+        CollectionAssert.AreEqual(memory.Entries.Select(e => e.Key).ToList(), listedKeys,
+            "every chunk listed is one that was stored, and only those");
+        Assert.IsFalse(response.Content.Contains("-index`,") || response.Content.Contains("outline is stored"),
+            "no outline is claimed when it couldn't be stored");
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_LargeContent_NoSession_ReturnsTruncatedContent()
     {
         var largeContent = new string('x', 10_000); // exceeds 8000 default threshold
@@ -234,11 +264,23 @@ public class WebBrowseToolExecutorTests
         public record EntryRecord(string Key, string Value, TimeSpan? Ttl, string? Category);
         public List<EntryRecord> Entries { get; } = [];
 
+        /// <summary>When set, writes beyond this many entries are refused, as a full namespace would.</summary>
+        public int? Capacity { get; init; }
+
         public Task SetAsync(string key, string value, TimeSpan? ttl = null,
             string? category = null, IReadOnlyList<string>? tags = null)
         {
             Entries.Add(new EntryRecord(key, value, ttl, category));
             return Task.CompletedTask;
+        }
+
+        public async Task<WorkingMemoryWriteResult> TrySetAsync(string key, string value, TimeSpan? ttl = null,
+            string? category = null, IReadOnlyList<string>? tags = null, string? writer = null)
+        {
+            if (Entries.Count >= Capacity)
+                return WorkingMemoryWriteResult.Refused("working memory for 'session/session-1' is full (3 entries)");
+            await SetAsync(key, value, ttl, category, tags);
+            return WorkingMemoryWriteResult.Ok;
         }
 
         public Task<string?> GetAsync(string key) => Task.FromResult<string?>(null);
