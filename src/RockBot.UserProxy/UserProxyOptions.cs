@@ -50,6 +50,13 @@ public sealed class UserProxyOptions
     public TimeSpan? HeartbeatTimeout { get; set; }
 
     /// <summary>
+    /// The longest a turn may run, heartbeats or not. Heartbeats prove the agent process is alive,
+    /// not that the run is getting anywhere, so a run stuck behind other work would otherwise keep
+    /// a caller waiting forever. A turn that hits it ends as timed out. Defaults to 30 minutes.
+    /// </summary>
+    public TimeSpan MaxTurnDuration { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// How long to wait for the final reply after a <see cref="RunFinished"/> that arrived
     /// first. Events and replies share a queue, so this is normally not waited out.
     /// </summary>

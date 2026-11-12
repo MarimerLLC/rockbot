@@ -27,6 +27,13 @@ public sealed record TurnOptions
     /// <see cref="UserProxyOptions.HeartbeatTimeout"/>, else three heartbeat intervals.
     /// </summary>
     public TimeSpan? HeartbeatTimeout { get; init; }
+
+    /// <summary>
+    /// The longest the turn may run, however often the agent reports in. Defaults to
+    /// <see cref="UserProxyOptions.MaxTurnDuration"/>. A turn that hits it ends as
+    /// <see cref="TurnResultOutcome.TimedOut"/>.
+    /// </summary>
+    public TimeSpan? MaxDuration { get; init; }
 }
 
 /// <summary>How a turn sent with <see cref="UserProxyService.SendTurnAsync"/> ended.</summary>
@@ -44,7 +51,10 @@ public enum TurnResultOutcome
     /// <summary>The run started, then the agent went silent for longer than the heartbeat timeout.</summary>
     AgentLost,
 
-    /// <summary>Nothing arrived in time. The agent may still be working (or may be too old to send run events).</summary>
+    /// <summary>
+    /// Nothing arrived in time, or the turn ran past its maximum duration. The agent may still be
+    /// working (or may be too old to send run events).
+    /// </summary>
     TimedOut,
 }
 

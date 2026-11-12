@@ -195,6 +195,104 @@ public class ChatReducerAgentEventTests
         Assert.AreEqual(0, next.TaskLists.Count);
     }
 
+    [TestMethod]
+    public void ToolCall_KeepsItsArguments_WhenTheCompletionOmitsThem()
+    {
+        // Only a call's start carries its arguments.
+        var state = ChatReducer.Replay(
+        [
+            new TurnStarted("turn-1") { Timestamp = At(0) },
+            new ToolCallReported(MessageCategory.PrimaryProgress, null, Call("c1", ToolCallPhase.Started), "Calling web_search…")
+                { Timestamp = At(1), MessageId = "log" },
+            new ToolCallReported(MessageCategory.PrimaryProgress, null,
+                Call("c1", ToolCallPhase.Finished, "3 results", 420) with { ArgsSummary = null }, "web_search → 3 results")
+                { Timestamp = At(2) },
+        ]);
+
+        var call = state.FindMessage("log")!.ActivityLogEntries.Single().ToolCall!;
+        Assert.AreEqual(ToolCallPhase.Finished, call.Phase);
+        Assert.AreEqual("web_search(query: rockbot)", call.ArgsSummary);
+    }
+
+    [TestMethod]
+    public void LateReports_ForAFinishedWorker_DontReopenItsLog()
+    {
+        var worker = ChatReducer.SubagentAgentName(ReplySourceKind.Worker, "w1");
+        var state = ChatReducer.Replay(
+        [
+            new SubagentRunStarted(new SubagentStarted
+            {
+                SubagentRunId = "w1", Kind = ReplySourceKind.Worker, Description = "gather", ThreadId = Session, StartedAt = At(0),
+            }) { Timestamp = At(0), MessageId = "worker-log" },
+            new ToolCallReported(MessageCategory.SubagentActivity, worker, Call("c1", ToolCallPhase.Started), "Calling web_search…")
+                { Timestamp = At(1) },
+            new SubagentRunFinished(new SubagentFinished
+            {
+                SubagentRunId = "w1", Kind = ReplySourceKind.Worker, ThreadId = Session, Outcome = SubagentOutcome.Success, FinishedAt = At(2),
+            }) { Timestamp = At(2) },
+            // Progress travels on another topic than the lifecycle, so these trail the finish.
+            new ToolCallReported(MessageCategory.SubagentActivity, worker, Call("c1", ToolCallPhase.Finished, "3 results", 300) with { ArgsSummary = null },
+                "web_search → 3 results") { Timestamp = At(3) },
+            new ToolCallReported(MessageCategory.SubagentActivity, worker, Call("c2", ToolCallPhase.Started), "Calling read_page…")
+                { Timestamp = At(4) },
+            new ActivityReported(MessageCategory.SubagentActivity, worker, "halfway there", IsCompletion: false)
+                { Timestamp = At(5) },
+        ]);
+
+        Assert.AreEqual(1, state.Messages.Count(m => m.AgentName == worker), "no second log for the finished worker");
+        Assert.IsFalse(state.OpenActivityLogs.Values.Contains("worker-log"), "its log stays closed");
+        var log = state.FindMessage("worker-log")!;
+        var call = log.ActivityLogEntries.Single(e => e.ToolCall is not null).ToolCall!;
+        Assert.AreEqual(ToolCallPhase.Finished, call.Phase, "the trailing report still completes its card");
+        Assert.AreEqual("web_search(query: rockbot)", call.ArgsSummary);
+    }
+
+    [TestMethod]
+    public void TaskList_FromAnOlderRun_DoesntTouchTheCurrentPlan()
+    {
+        var state = ChatReducer.Replay(
+        [
+            new TurnStarted("turn-2") { Timestamp = At(0) },
+            new TaskListSnapshotReceived(new TaskListSnapshot
+            {
+                ThreadId = Session, RunId = "turn-2", Source = ReplySource.Primary,
+                Items = [Item("1", "Search", "pending")],
+            }) { Timestamp = At(1) },
+            // turn-1 timed out earlier; its events still trickle in.
+            new TaskListSnapshotReceived(new TaskListSnapshot
+            {
+                ThreadId = Session, RunId = "turn-1", Source = ReplySource.Primary,
+                Items = [Item("1", "Old step", "pending")],
+            }) { Timestamp = At(2) },
+            new TaskListDeltaReceived(new TaskListDelta
+            {
+                ThreadId = Session, RunId = "turn-1", Source = ReplySource.Primary, Item = Item("1", "Old step", "completed"),
+            }) { Timestamp = At(3) },
+        ]);
+
+        var plan = state.TaskLists[ReplySourceKind.Primary];
+        Assert.AreEqual("turn-2", plan.RunId);
+        Assert.AreEqual("Search", plan.Items.Single().Description);
+        Assert.AreEqual("pending", plan.Items.Single().Status);
+    }
+
+    [TestMethod]
+    [DataRow(ReplySourceKind.Scheduled)]
+    [DataRow(ReplySourceKind.A2A)]
+    [DataRow(ReplySourceKind.Primary)]
+    public void TaskList_WithoutARunId_IsNotShownAsThePlan(string kind)
+    {
+        var state = ChatReducer.Replay(
+        [
+            new TurnStarted("turn-1") { Timestamp = At(0) },
+            new TaskListSnapshotReceived(new TaskListSnapshot
+            {
+                ThreadId = "scheduled", Source = new ReplySource { Kind = kind }, Items = [Item("1", "Background step", "pending")],
+            }) { Timestamp = At(1) },
+        ]);
+
+        Assert.AreEqual(0, state.TaskLists.Count);
+    }
     // ── Heartbeats and outcomes ──────────────────────────────────────────
 
     [TestMethod]

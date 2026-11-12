@@ -21,6 +21,7 @@ public sealed class SubagentManager(
     IAgentEventPublisher? eventPublisher = null) : ISubagentManager, ISubagentSessionResolver
 {
     private readonly ConcurrentDictionary<string, SubagentEntry> _active = new();
+    private readonly Lock _spawnLock = new();
 
     // Short-lived record of recently-removed subagents (taskId -> owning primary session).
     // A late A2A reply can arrive after a subagent has exited and been pulled from _active;
@@ -58,21 +59,7 @@ public sealed class SubagentManager(
             maxIterations = raised;
         }
 
-        // Clean up completed tasks first
-        foreach (var key in _active.Keys.ToList())
-        {
-            if (_active.TryGetValue(key, out var entry) && entry.Task.IsCompleted)
-                RemoveActive(key);
-        }
-
         var opts = options.Value;
-        if (_active.Count >= opts.MaxConcurrentSubagents)
-        {
-            logger.LogWarning("Subagent limit reached ({Max}); rejecting spawn request", opts.MaxConcurrentSubagents);
-            return $"Error: maximum concurrent subagents ({opts.MaxConcurrentSubagents}) already running. " +
-                   $"Use list_subagents to see active tasks or cancel_subagent to free a slot.";
-        }
-
         var taskId = Guid.NewGuid().ToString("N")[..12];
         var subagentSessionId = $"subagent-{taskId}";
         var timeoutMin = timeoutMinutes ?? opts.DefaultTimeoutMinutes;
@@ -84,32 +71,38 @@ public sealed class SubagentManager(
         var cts = new CancellationTokenSource();
         cts.CancelAfter(timeoutSpan);
 
-        // #665: the subagent's tool calls (and those of its workers and wisps) count toward the
-        // primary's conversation in the session work registry. Linked before the run starts.
-        sessionWorkRegistry?.LinkSession(subagentSessionId, primarySessionId);
-        sessionWorkRegistry?.LinkSession($"subagent/{taskId}", primarySessionId);
-
         // #715: user messages sent after this moment amend the request the subagent was spawned for.
         var spawnedAt = DateTimeOffset.UtcNow;
 
-        // #795: the spawning tool call (read before any await moves this flow on), and the
-        // started event, published before the run so a fast run's finished event can't overtake it.
+        // #795: the tool call that spawned it, and a gate that holds the run back until its started
+        // event is out, so a run that ends at once can't report finishing before it reported starting.
         var parentToolCallId = CurrentToolCallContext.CallId;
         var finishGuard = new SubagentFinishGuard();
-        await PublishEventAsync(new SubagentStarted
-        {
-            SubagentRunId = taskId,
-            Kind = ReplySourceKind.Subagent,
-            Description = description,
-            ThreadId = SessionIds.Raw(primarySessionId),
-            ParentToolCallId = parentToolCallId,
-            StartedAt = spawnedAt,
-        });
+        var startGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, inputs, actionGate, spawnedAt, timeoutSpan, finishGuard, cts.Token);
-
-        var newEntry = new SubagentEntry
+        // Checking the limit and registering the subagent happen under one lock, with no await
+        // between them, so overlapping spawns can't both take the last slot.
+        lock (_spawnLock)
         {
+            // Clean up completed tasks first
+            foreach (var key in _active.Keys.ToList())
+            {
+                if (_active.TryGetValue(key, out var entry) && entry.Task.IsCompleted)
+                    RemoveActive(key);
+            }
+
+            if (_active.Count >= opts.MaxConcurrentSubagents)
+            {
+                cts.Dispose();
+                logger.LogWarning("Subagent limit reached ({Max}); rejecting spawn request", opts.MaxConcurrentSubagents);
+                return $"Error: maximum concurrent subagents ({opts.MaxConcurrentSubagents}) already running. " +
+                       $"Use list_subagents to see active tasks or cancel_subagent to free a slot.";
+            }
+
+            var task = RunSubagentAsync(taskId, subagentSessionId, description, context, primarySessionId, batchId, consolidate, maxIterations, originatingUserRequest, inputs, actionGate, spawnedAt, timeoutSpan, finishGuard, startGate.Task, cts.Token);
+
+            _active[taskId] = new SubagentEntry
+            {
             TaskId = taskId,
             SubagentSessionId = subagentSessionId,
             PrimarySessionId = primarySessionId,
@@ -121,11 +114,33 @@ public sealed class SubagentManager(
             Consolidate = consolidate,
             OriginatingUserRequest = originatingUserRequest,
             ActionGate = actionGate,
-            ParentToolCallId = parentToolCallId,
-            FinishGuard = finishGuard,
-        };
+                ParentToolCallId = parentToolCallId,
+                FinishGuard = finishGuard,
+            };
+        }
 
-        _active[taskId] = newEntry;
+        // #665: the subagent's tool calls (and those of its workers and wisps) count toward the
+        // primary's conversation in the session work registry. Linked before the run starts (it
+        // waits on the start gate below).
+        sessionWorkRegistry?.LinkSession(subagentSessionId, primarySessionId);
+        sessionWorkRegistry?.LinkSession($"subagent/{taskId}", primarySessionId);
+
+        try
+        {
+            await PublishEventAsync(new SubagentStarted
+            {
+                SubagentRunId = taskId,
+                Kind = ReplySourceKind.Subagent,
+                Description = description,
+                ThreadId = SessionIds.Raw(primarySessionId),
+                ParentToolCallId = parentToolCallId,
+                StartedAt = spawnedAt,
+            });
+        }
+        finally
+        {
+            startGate.TrySetResult();
+        }
 
         SubagentDiagnostics.Spawns.Add(1);
         SubagentDiagnostics.Active.Add(1);
@@ -178,8 +193,12 @@ public sealed class SubagentManager(
         DateTimeOffset spawnedAt,
         TimeSpan timeout,
         SubagentFinishGuard finishGuard,
+        Task startGate,
         CancellationToken ct)
     {
+        // Let SpawnAsync register this run and announce it first.
+        await startGate;
+
         SubagentRunOutcome? outcome = null;
         string? startError = null;
         // SubagentRunner.RunAsync handles all its own exit paths (success, failure,

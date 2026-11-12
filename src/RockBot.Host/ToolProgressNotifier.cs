@@ -103,7 +103,7 @@ public sealed class ToolProgressNotifier(
 
         var content = info.Phase switch
         {
-            ToolCallPhase.Started => StartedText(info.ToolCallName, info.ArgsSummary),
+            ToolCallPhase.Started => StartedText(info.ToolCallName, ToolCallText.Describe(info.ToolCallName, info.ArgsSummary)),
             ToolCallPhase.Failed => $"{info.ToolCallName} failed: {info.Error ?? "unknown error"}",
             _ => FinishedText(info.ToolCallName, info.Result),
         };
@@ -149,6 +149,14 @@ public sealed class ToolProgressNotifier(
     {
         public void Dispose() => _context.Value = previous;
     }
+}
+
+/// <summary>Text forms of a <see cref="ToolCallInfo"/>.</summary>
+public static class ToolCallText
+{
+    /// <summary><c>name(args)</c>, or null without arguments: what progress text has always said for a call.</summary>
+    public static string? Describe(string toolName, string? argsSummary) =>
+        string.IsNullOrEmpty(argsSummary) ? null : $"{toolName}({argsSummary})";
 }
 
 /// <summary>

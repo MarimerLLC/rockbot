@@ -106,7 +106,8 @@ public class SubagentManagerTests
     /// <paramref name="blockUntil"/> TCS is signalled or the token is cancelled.
     /// Useful for testing in-flight task tracking and cancellation.
     /// </summary>
-    private static (SubagentManager manager, TaskCompletionSource<bool> release) CreateBlockingManager(IAgentEventPublisher? events = null)
+    private static (SubagentManager manager, TaskCompletionSource<bool> release) CreateBlockingManager(
+        IAgentEventPublisher? events = null, int maxConcurrent = 3)
     {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -116,7 +117,7 @@ public class SubagentManagerTests
 
         var provider = services.BuildServiceProvider();
 
-        var opts = Options.Create(new SubagentOptions { MaxConcurrentSubagents = 3 });
+        var opts = Options.Create(new SubagentOptions { MaxConcurrentSubagents = maxConcurrent });
         var manager = new SubagentManager(
             provider.GetRequiredService<IServiceScopeFactory>(),
             opts,
@@ -166,6 +167,24 @@ public class SubagentManagerTests
         var finished = events.Of<UserProxy.SubagentFinished>().Single();
         Assert.AreEqual(UserProxy.SubagentOutcome.Failed, finished.Outcome);
         StringAssert.Contains(finished.Error, "model unavailable");
+    }
+
+    [TestMethod]
+    public async Task SpawnAsync_OverlappingSpawns_CantBothTakeTheLastSlot()
+    {
+        // The first spawn is held while it announces itself; it must already count against the limit.
+        var events = new GatedEventPublisher();
+        var (manager, release) = CreateBlockingManager(events, maxConcurrent: 1);
+
+        var first = manager.SpawnAsync("first", null, null, "session/s1", CancellationToken.None);
+        await events.FirstPublishStarted.WaitAsync(TimeSpan.FromSeconds(5));
+        var second = await manager.SpawnAsync("second", null, null, "session/s1", CancellationToken.None);
+        events.Release();
+        var firstId = await first;
+
+        StringAssert.StartsWith(second, "Error: maximum concurrent subagents");
+        Assert.AreEqual(firstId, manager.ListActive().Single().TaskId);
+        release.TrySetResult(true);
     }
 
     [TestMethod]
@@ -766,6 +785,25 @@ public class SubagentManagerTests
     }
 
     /// <summary>LLM client that blocks until the TCS is completed or the token is cancelled.</summary>
+    /// <summary>Holds every publish until released, and says when the first one began.</summary>
+    private sealed class GatedEventPublisher : IAgentEventPublisher
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _firstStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task FirstPublishStarted => _firstStarted.Task;
+        public void Release() => _release.TrySetResult();
+
+        public Task PublishForRunAsync<T>(T evt, ToolProgressContext context, CancellationToken ct = default) where T : class =>
+            BroadcastAsync(evt, ct);
+
+        public async Task BroadcastAsync<T>(T evt, CancellationToken ct = default) where T : class
+        {
+            _firstStarted.TrySetResult();
+            await _release.Task;
+        }
+    }
+
     private sealed class ThrowingLlmClient : ILlmClient
     {
         public Task<ChatResponse> GetResponseAsync(
@@ -785,7 +823,8 @@ public class SubagentManagerTests
 
         public List<T> Of<T>() => Events.OfType<T>().ToList();
 
-        public Task PublishForRunAsync<T>(T evt, CancellationToken ct = default) where T : class => BroadcastAsync(evt, ct);
+        public Task PublishForRunAsync<T>(T evt, ToolProgressContext context, CancellationToken ct = default) where T : class =>
+            BroadcastAsync(evt, ct);
 
         public Task BroadcastAsync<T>(T evt, CancellationToken ct = default) where T : class
         {

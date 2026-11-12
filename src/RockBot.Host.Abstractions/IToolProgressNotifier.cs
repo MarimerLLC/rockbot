@@ -21,7 +21,8 @@ public interface IToolProgressNotifier
     /// </summary>
     Task OnToolCallAsync(ToolCallInfo info, CancellationToken ct) => info.Phase switch
     {
-        ToolCallPhase.Started => OnToolInvokingAsync(info.ToolCallName, info.ArgsSummary, ct),
+        ToolCallPhase.Started => OnToolInvokingAsync(info.ToolCallName,
+            string.IsNullOrEmpty(info.ArgsSummary) ? null : $"{info.ToolCallName}({info.ArgsSummary})", ct),
         ToolCallPhase.Failed => OnToolInvokedAsync(info.ToolCallName, $"failed: {info.Error}", ct),
         _ => OnToolInvokedAsync(info.ToolCallName, info.Result, ct),
     };

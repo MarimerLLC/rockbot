@@ -406,7 +406,8 @@ public sealed class UserProxyService(
             logger.LogDebug("Published user message {CorrelationId} to {Topic}",
                 correlationId, $"{UserProxyTopics.UserMessage}.{options.AgentName}");
 
-            var result = await WaitForTurnAsync(turn, correlationId, effectiveTimeout, turnOptions.HeartbeatTimeout, cancellationToken);
+            var result = await WaitForTurnAsync(turn, correlationId, effectiveTimeout, turnOptions.HeartbeatTimeout,
+                turnOptions.MaxDuration ?? options.MaxTurnDuration, cancellationToken);
             if (result.Reply is not null)
                 UserProxyDiagnostics.RoundtripDuration.Record(sw.Elapsed.TotalMilliseconds);
 
@@ -423,13 +424,28 @@ public sealed class UserProxyService(
     }
 
     private async Task<TurnResult> WaitForTurnAsync(
-        PendingTurn turn, string correlationId, TimeSpan timeout, TimeSpan? heartbeatTimeout, CancellationToken ct)
+        PendingTurn turn, string correlationId, TimeSpan timeout, TimeSpan? heartbeatTimeout, TimeSpan maxDuration,
+        CancellationToken ct)
     {
         var startedAt = Stopwatch.GetTimestamp();
         long? finishedAt = null;
 
         while (true)
         {
+            // The hard cap: heartbeats show the agent is alive, not that this run will ever end.
+            var capRemaining = maxDuration - Stopwatch.GetElapsedTime(startedAt);
+            if (capRemaining <= TimeSpan.Zero && !turn.Reply.Task.IsCompleted)
+            {
+                logger.LogWarning("Turn {CorrelationId} ran past its maximum duration of {Max}", correlationId, maxDuration);
+                return new TurnResult
+                {
+                    Outcome = TurnResultOutcome.TimedOut,
+                    Error = $"The turn ran longer than {maxDuration.TotalMinutes:0.#} minutes.",
+                    CorrelationId = correlationId,
+                    RunStarted = turn.Started is not null,
+                };
+            }
+
             // Read the signal before the state, so a change made after these checks wakes the wait.
             var signal = turn.Signal;
             var started = turn.Started;
@@ -503,6 +519,9 @@ public sealed class UserProxyService(
                     };
                 }
             }
+
+            if (capRemaining < remaining)
+                remaining = capRemaining;
 
             try
             {

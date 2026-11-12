@@ -8,8 +8,10 @@ namespace RockBot.Llm.Copilot;
 public interface ICopilotSessionEvents
 {
     /// <summary>Called when the Copilot session starts executing a tool.</summary>
-    Task OnToolStartAsync(string toolName, string? arguments, CancellationToken ct);
+    /// <param name="toolCallId">The SDK's id for the call; the same id arrives with its completion.</param>
+    Task OnToolStartAsync(string toolCallId, string toolName, string? arguments, CancellationToken ct);
 
     /// <summary>Called when a tool execution completes within the Copilot session.</summary>
-    Task OnToolCompleteAsync(string toolName, bool success, string? resultSummary, CancellationToken ct);
+    /// <param name="toolCallId">The id the call started with.</param>
+    Task OnToolCompleteAsync(string toolCallId, bool success, string? resultSummary, CancellationToken ct);
 }

@@ -163,7 +163,14 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
             case ReplySourceKind.Subagent or ReplySourceKind.Worker:
                 return MessageCategory.SubagentActivity;
             case ReplySourceKind.A2A:
-                return MessageCategory.A2AActivity;
+                // Inbound notifications are A2A activity. The A2A result handlers, though, post the
+                // agent's own answer in the user's session: that is the agent's reply, and their
+                // progress is told apart (the agent's own vs a remote agent's) by the checks below.
+                if (reply.SessionId?.StartsWith("a2a-inbound", StringComparison.OrdinalIgnoreCase) == true)
+                    return MessageCategory.A2AActivity;
+                if (reply.IsFinal)
+                    return MessageCategory.PrimaryFinal;
+                break;
             case ReplySourceKind.Scheduled:
                 // Background system jobs and the user's own scheduled tasks share the kind; the
                 // session tells them apart.

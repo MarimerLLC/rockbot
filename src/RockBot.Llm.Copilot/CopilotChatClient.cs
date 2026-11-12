@@ -190,6 +190,7 @@ public sealed class CopilotChatClient : IChatClient
                         _logger.LogInformation("Copilot tool requested: {Tool}({Args})",
                             tr.Name, tr.Arguments);
                         _ = _sessionEvents?.OnToolStartAsync(
+                            tr.ToolCallId ?? Guid.NewGuid().ToString("N"),
                             tr.Name ?? "unknown",
                             tr.Arguments?.ToString(),
                             cancellationToken);

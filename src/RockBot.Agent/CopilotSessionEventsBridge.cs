@@ -14,11 +14,14 @@ namespace RockBot.Agent;
 /// </summary>
 internal sealed class CopilotSessionEventsBridge : ICopilotSessionEvents
 {
+    // A start that never sees its completion is dropped after this long.
+    internal static readonly TimeSpan InFlightRetention = TimeSpan.FromHours(1);
+
     private IServiceProvider? _serviceProvider;
 
-    // Copilot reports no call ids, so a start is paired with the next completion of the same
-    // tool (#795). Starts are queued per tool name, oldest first.
-    private readonly ConcurrentDictionary<string, ConcurrentQueue<(string Id, long StartedAt)>> _inFlight = new();
+    // #795: the SDK's completion carries only the call id, so the start's tool name and time are
+    // kept under that id until it arrives.
+    private readonly ConcurrentDictionary<string, (string ToolName, long StartedAt)> _inFlight = new();
 
     /// <summary>
     /// Sets the service provider after the host is built. Must be called before
@@ -29,49 +32,57 @@ internal sealed class CopilotSessionEventsBridge : ICopilotSessionEvents
     private IToolProgressNotifier? Notifier =>
         _serviceProvider?.GetService(typeof(IToolProgressNotifier)) as IToolProgressNotifier;
 
-    public Task OnToolStartAsync(string toolName, string? arguments, CancellationToken ct)
+    /// <summary>Calls started and not yet completed. For tests.</summary>
+    internal int InFlightCount => _inFlight.Count;
+
+    public Task OnToolStartAsync(string toolCallId, string toolName, string? arguments, CancellationToken ct)
     {
         var notifier = Notifier;
         if (notifier is null)
             return Task.CompletedTask;
 
-        var id = Guid.NewGuid().ToString("N");
-        _inFlight.GetOrAdd(toolName, _ => new()).Enqueue((id, Stopwatch.GetTimestamp()));
+        PruneStale();
+        _inFlight[toolCallId] = (toolName, Stopwatch.GetTimestamp());
         return notifier.OnToolCallAsync(new ToolCallInfo
         {
-            ToolCallId = id,
+            ToolCallId = toolCallId,
             ToolCallName = toolName,
             Phase = ToolCallPhase.Started,
             ArgsSummary = arguments,
         }, ct);
     }
 
-    public Task OnToolCompleteAsync(string toolName, bool success, string? resultSummary, CancellationToken ct)
+    public Task OnToolCompleteAsync(string toolCallId, bool success, string? resultSummary, CancellationToken ct)
     {
         var notifier = Notifier;
         if (notifier is null)
             return Task.CompletedTask;
 
-        string id;
+        var toolName = "tool";
         long? durationMs = null;
-        if (_inFlight.TryGetValue(toolName, out var queue) && queue.TryDequeue(out var start))
+        if (_inFlight.TryRemove(toolCallId, out var start))
         {
-            id = start.Id;
+            toolName = start.ToolName;
             durationMs = (long)Stopwatch.GetElapsedTime(start.StartedAt).TotalMilliseconds;
-        }
-        else
-        {
-            id = Guid.NewGuid().ToString("N");
         }
 
         return notifier.OnToolCallAsync(new ToolCallInfo
         {
-            ToolCallId = id,
+            ToolCallId = toolCallId,
             ToolCallName = toolName,
             Phase = success ? ToolCallPhase.Finished : ToolCallPhase.Failed,
             Result = resultSummary,
             DurationMs = durationMs,
             Error = success ? null : resultSummary ?? "failed",
         }, ct);
+    }
+
+    private void PruneStale()
+    {
+        foreach (var (id, start) in _inFlight)
+        {
+            if (Stopwatch.GetElapsedTime(start.StartedAt) > InFlightRetention)
+                _inFlight.TryRemove(id, out _);
+        }
     }
 }

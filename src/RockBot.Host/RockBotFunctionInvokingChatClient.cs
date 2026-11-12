@@ -283,13 +283,12 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         var toolCallId = string.IsNullOrEmpty(callContent.CallId) ? Guid.NewGuid().ToString("N") : callContent.CallId;
         if (_progressNotifier is not null)
         {
-            var desc = DescribeToolCall(callContent.Name, argsSummary);
             await _progressNotifier.OnToolCallAsync(new UserProxy.ToolCallInfo
             {
                 ToolCallId = toolCallId,
                 ToolCallName = callContent.Name,
                 Phase = UserProxy.ToolCallPhase.Started,
-                ArgsSummary = desc,
+                ArgsSummary = argsSummary,
             }, cancellationToken);
         }
 
@@ -774,11 +773,6 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         return response.Text?.Trim() ?? string.Empty;
     }
 
-    private static string DescribeToolCall(string name, string? argsSummary)
-    {
-        if (string.IsNullOrEmpty(argsSummary)) return name;
-        return $"{name}({argsSummary})";
-    }
 
     /// <summary>
     /// Sits directly below FICC and enforces the current call's iteration budget at the one

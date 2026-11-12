@@ -167,6 +167,31 @@ public sealed class UserProxyServiceTurnEventsTests
     }
 
     [TestMethod]
+    public async Task SendTurnAsync_HeartbeatsDontOutlastTheMaximumDuration()
+    {
+        // Heartbeats prove the agent is alive, not that the run will end: the cap still applies.
+        var task = _service.SendTurnAsync(Message(), new TurnOptions
+        {
+            Timeout = TimeSpan.FromSeconds(30),
+            HeartbeatTimeout = TimeSpan.FromSeconds(30),
+            MaxDuration = TimeSpan.FromMilliseconds(250),
+        });
+        var id = await PublishedCorrelationIdAsync();
+        await SendToP2P(Started(id), id);
+        for (var i = 0; i < 3; i++)
+        {
+            await Task.Delay(50);
+            await SendToP2P(Heartbeat(id), id);
+        }
+
+        var result = await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(TurnResultOutcome.TimedOut, result.Outcome);
+        Assert.IsTrue(result.RunStarted);
+        Assert.IsNotNull(result.Error);
+    }
+
+    [TestMethod]
     public async Task SendTurnAsync_HeartbeatTimeoutDefaultsToThreeIntervals()
     {
         _options.HeartbeatTimeout = null;

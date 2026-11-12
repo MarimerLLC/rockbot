@@ -62,6 +62,24 @@ public class BlazorUserFrontendSourceTests
     }
 
     [TestMethod]
+    public async Task A2AResult_InTheUsersSession_IsTheAgentsReply()
+    {
+        // A2ATaskResultHandler posts the agent's answer, built from a remote agent's result, in
+        // the user's own session: a chat bubble, not a collapsed A2A item.
+        await _frontend.DisplayReplyAsync(Reply(ReplySource.A2A, sessionId: "blazor-abc", agentName: "RockBot"));
+
+        Assert.AreEqual(MessageCategory.PrimaryFinal, Last.Category);
+    }
+
+    [TestMethod]
+    public async Task A2AProgress_FromTheAgentItself_IsPrimaryProgress()
+    {
+        await _frontend.DisplayStatusAsync(Reply(ReplySource.A2A, isFinal: false, sessionId: "blazor-abc", agentName: "RockBot"));
+
+        Assert.AreEqual(MessageCategory.PrimaryProgress, Last.Category);
+    }
+
+    [TestMethod]
     public async Task NoSource_FallsBackToTheHeuristics()
     {
         await _frontend.DisplayStatusAsync(Reply(null, isFinal: false, agentName: "worker-abc"));

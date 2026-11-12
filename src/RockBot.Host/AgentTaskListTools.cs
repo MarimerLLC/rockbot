@@ -59,9 +59,9 @@ internal sealed class AgentTaskListTools
         var created = _taskList.CreateOrReplace(items ?? []);
 
         // #795: create replaces the whole list, so it goes out as a snapshot.
-        if (_eventPublisher is not null && ToolProgressNotifier.Current is { } ctx)
+        if (PublishTarget() is { } ctx)
         {
-            PublishEvent(new TaskListSnapshot
+            PublishEvent(ctx, new TaskListSnapshot
             {
                 ThreadId = ctx.EffectiveThreadId,
                 RunId = ctx.CorrelationId,
@@ -114,9 +114,9 @@ internal sealed class AgentTaskListTools
             return $"Error: no task with id {id}. Known ids: {ids}.";
         }
 
-        if (_eventPublisher is not null && ToolProgressNotifier.Current is { } ctx)
+        if (PublishTarget() is { } ctx)
         {
-            PublishEvent(new TaskListDelta
+            PublishEvent(ctx, new TaskListDelta
             {
                 ThreadId = ctx.EffectiveThreadId,
                 RunId = ctx.CorrelationId,
@@ -135,21 +135,46 @@ internal sealed class AgentTaskListTools
         Status = item.Status,
     };
 
-    private void PublishEvent<T>(T evt) where T : class
+    /// <summary>
+    /// The run whose task list proxies are told about, or null to keep it to the loop (#795): the
+    /// user's own turn (correlated, so it reaches only that turn's proxy) and subagents (broadcast,
+    /// keyed by task id). The lists of scheduled tasks, A2A handlers and other background runs stay
+    /// private: a proxy would show them as the user's plan.
+    /// </summary>
+    private ToolProgressContext? PublishTarget() =>
+        _eventPublisher is not null
+        && ToolProgressNotifier.Current is { } ctx
+        && (ctx.CorrelationId is not null || ctx.EffectiveSource.Kind == ReplySourceKind.Subagent)
+            ? ctx
+            : null;
+
+    // The tools are synchronous, so each event is published in the background; chaining them keeps
+    // a snapshot ahead of the deltas that follow it.
+    private readonly Lock _publishLock = new();
+    private Task _publishTail = Task.CompletedTask;
+
+    private void PublishEvent<T>(ToolProgressContext ctx, T evt) where T : class
     {
-        // The tools are synchronous; the publisher swallows its own failures.
-        _ = PublishSafelyAsync(evt);
+        lock (_publishLock)
+            _publishTail = PublishAfterAsync(_publishTail, ctx, evt);
     }
 
-    private async Task PublishSafelyAsync<T>(T evt) where T : class
+    private async Task PublishAfterAsync<T>(Task previous, ToolProgressContext ctx, T evt) where T : class
     {
+        await previous;
         try
         {
-            await _eventPublisher!.PublishForRunAsync(evt);
+            await _eventPublisher!.PublishForRunAsync(evt, ctx);
         }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Failed to publish task list event {Type}", typeof(T).Name);
         }
+    }
+
+    /// <summary>Completes once every task-list event published so far has gone out. For tests.</summary>
+    internal Task WhenPublishedAsync()
+    {
+        lock (_publishLock) return _publishTail;
     }
 }

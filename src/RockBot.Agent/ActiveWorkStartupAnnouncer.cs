@@ -10,11 +10,16 @@ namespace RockBot.Agent;
 /// when the agent starts (#795). Nothing survives a restart, so a user interface still showing
 /// subagents or workers from before it clears them.
 /// </summary>
+/// <remarks>
+/// Sent from <see cref="IHostedLifecycleService.StartingAsync"/>, which the host runs for every
+/// lifecycle service before any hosted service's <c>StartAsync</c>, so the reset goes out before
+/// <c>AgentHost</c> starts consuming messages and can't clear work started after the restart.
+/// </remarks>
 internal sealed class ActiveWorkStartupAnnouncer(
     IAgentEventPublisher eventPublisher,
-    ILogger<ActiveWorkStartupAnnouncer> logger) : IHostedService
+    ILogger<ActiveWorkStartupAnnouncer> logger) : IHostedLifecycleService
 {
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartingAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -28,5 +33,9 @@ internal sealed class ActiveWorkStartupAnnouncer(
         }
     }
 
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

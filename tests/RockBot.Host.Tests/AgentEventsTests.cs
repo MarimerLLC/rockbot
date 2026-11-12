@@ -36,7 +36,7 @@ public sealed class AgentEventsTests
 
         await notifier.OnToolCallAsync(new ToolCallInfo
         {
-            ToolCallId = "c1", ToolCallName = "web_search", Phase = ToolCallPhase.Started, ArgsSummary = "web_search(q=x)",
+            ToolCallId = "c1", ToolCallName = "web_search", Phase = ToolCallPhase.Started, ArgsSummary = "q=x",
         }, CancellationToken.None);
         await notifier.OnToolCallAsync(new ToolCallInfo
         {
@@ -176,6 +176,54 @@ public sealed class AgentEventsTests
         var delta = events.Events.OfType<TaskListDelta>().Single();
         Assert.AreEqual("1", delta.Item.Id);
         Assert.AreEqual("in_progress", delta.Item.Status);
+    }
+
+    [TestMethod]
+    public void AgentTaskListTools_UncorrelatedSubagentList_IsPublished()
+    {
+        var events = new RecordingEventPublisher();
+        var tools = new AgentTaskListTools(new AgentTaskList(), NullLogger.Instance, events);
+        using var _ = ToolProgressNotifier.SetContext(Context(correlationId: null, source: ReplySource.Subagent("t9")));
+
+        tools.TaskCreate(["Search"]);
+
+        Assert.AreEqual("t9", events.Events.OfType<TaskListSnapshot>().Single().Source.TaskId);
+    }
+
+    [TestMethod]
+    [DataRow(ReplySourceKind.Scheduled)]
+    [DataRow(ReplySourceKind.A2A)]
+    [DataRow(ReplySourceKind.Primary, DisplayName = "uncorrelated primary (a subagent-result synthesis)")]
+    public void AgentTaskListTools_BackgroundRunLists_StayPrivate(string kind)
+    {
+        // A proxy would show these as the user's plan.
+        var events = new RecordingEventPublisher();
+        var tools = new AgentTaskListTools(new AgentTaskList(), NullLogger.Instance, events);
+        using var _ = ToolProgressNotifier.SetContext(Context(correlationId: null, source: new ReplySource { Kind = kind }));
+
+        tools.TaskCreate(["Search"]);
+        tools.TaskUpdate(1, "completed");
+
+        Assert.AreEqual(0, events.Events.Count);
+    }
+
+    [TestMethod]
+    public async Task AgentTaskListTools_PublishesInOrder_EvenWhenAPublishIsSlow()
+    {
+        var events = new SlowFirstEventPublisher();
+        var tools = new AgentTaskListTools(new AgentTaskList(), NullLogger.Instance, events);
+        using var _ = ToolProgressNotifier.SetContext(Context());
+
+        tools.TaskCreate(["Search", "Summarize"]);
+        tools.TaskUpdate(1, "in_progress");
+        tools.TaskUpdate(1, "completed");
+        events.ReleaseFirst();
+        await tools.WhenPublishedAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        CollectionAssert.AreEqual(
+            new[] { nameof(TaskListSnapshot), nameof(TaskListDelta), nameof(TaskListDelta) },
+            events.Published.Select(e => e.GetType().Name).ToArray());
+        Assert.AreEqual("completed", ((TaskListDelta)events.Published[^1]).Item.Status);
     }
 
     [TestMethod]
@@ -379,7 +427,7 @@ public sealed class AgentEventsTests
     {
         public List<object> Events { get; } = [];
 
-        public Task PublishForRunAsync<T>(T evt, CancellationToken ct = default) where T : class
+        public Task PublishForRunAsync<T>(T evt, ToolProgressContext context, CancellationToken ct = default) where T : class
         {
             Events.Add(evt);
             return Task.CompletedTask;
@@ -390,6 +438,26 @@ public sealed class AgentEventsTests
             Events.Add(evt);
             return Task.CompletedTask;
         }
+    }
+
+    /// <summary>Holds the first publish until released; publishes after it go straight through.</summary>
+    private sealed class SlowFirstEventPublisher : IAgentEventPublisher
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
+
+        public List<object> Published { get; } = [];
+
+        public void ReleaseFirst() => _release.TrySetResult();
+
+        public async Task PublishForRunAsync<T>(T evt, ToolProgressContext context, CancellationToken ct = default) where T : class
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+                await _release.Task;
+            lock (Published) Published.Add(evt);
+        }
+
+        public Task BroadcastAsync<T>(T evt, CancellationToken ct = default) where T : class => Task.CompletedTask;
     }
 
     private sealed class RecordingNotifier : IToolProgressNotifier

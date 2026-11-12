@@ -1669,7 +1669,7 @@ public sealed partial class AgentLoopRunner(
                     try
                     {
                         await NotifyToolCallAsync(textCallId, toolName, UserProxy.ToolCallPhase.Started,
-                            argsSummary: DescribeToolCall(toolName, argsJson), cancellationToken: cancellationToken);
+                            argsSummary: argsJson is null or "" or "{}" ? null : argsJson, cancellationToken: cancellationToken);
                         using (ToolCallOutcomeContext.Set(textOutcome))
                         using (CurrentToolCallContext.Set(textCallId))
                             result = await tool.InvokeAsync(args, cancellationToken);
@@ -1861,7 +1861,7 @@ public sealed partial class AgentLoopRunner(
                 try
                 {
                     await NotifyToolCallAsync(nativeCallId, fc.Name, UserProxy.ToolCallPhase.Started,
-                        argsSummary: DescribeToolCall(fc), cancellationToken: cancellationToken);
+                        argsSummary: fc.Arguments is { Count: > 0 } ? argsSummary : null, cancellationToken: cancellationToken);
                     using (ToolCallOutcomeContext.Set(nativeOutcome))
                     using (CurrentToolCallContext.Set(nativeCallId))
                         result = await tool.InvokeAsync(args, cancellationToken);

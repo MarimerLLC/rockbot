@@ -116,6 +116,12 @@ public sealed record ChatViewState
         ImmutableDictionary.Create<string, TaskListView>(StringComparer.Ordinal);
 
     /// <summary>
+    /// Agent names (<c>subagent-{id}</c>, <c>worker-{id}</c>) of the most recent subagent and worker
+    /// runs that finished, so a report trailing a run's end doesn't reopen its log.
+    /// </summary>
+    public ImmutableHashSet<string> FinishedRuns { get; init; } = ImmutableHashSet.Create<string>(StringComparer.Ordinal);
+
+    /// <summary>
     /// Form answers sent and still waiting for the agent's follow-up reply, by question id, with
     /// when they were sent. Kept apart from <see cref="CurrentTurn"/>: a form can be answered
     /// while the turn that showed it is still running, and that turn's final reply must not end

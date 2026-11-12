@@ -42,8 +42,7 @@ public static class ChatReducer
             CurrentTurn = null,
             FormWaits = state.FormWaits.Clear(),
         }),
-        ActivityReported x => Accept(AppendActivity(state, x.Category, x.AgentName, x.Content,
-            x.IsCompletion, x.MessageId, x.Timestamp)),
+        ActivityReported x => OnActivityReported(state, x),
         ReplyReceived x => Accept(AddReply(state with { ThinkingMessage = null }, x.Reply, x.Category,
             x.MessageId, x.Timestamp)),
         ErrorReported x => Accept(AddError(state, x.Message, x.MessageId, x.Timestamp)),
@@ -52,11 +51,11 @@ public static class ChatReducer
         LateRunFinished x => state.CurrentTurn is null && state.ThinkingMessage is not null
             ? Accept(state with { ThinkingMessage = null })
             : Reject(state),
-        ToolCallReported x => Accept(OnToolCallReported(state, x)),
+        ToolCallReported x => OnToolCallReported(state, x),
         SubagentRunStarted x => Accept(OnSubagentRunStarted(state, x)),
         SubagentRunFinished x => Accept(OnSubagentRunFinished(state, x)),
-        TaskListSnapshotReceived x => Accept(OnTaskListSnapshot(state, x)),
-        TaskListDeltaReceived x => Accept(OnTaskListDelta(state, x)),
+        TaskListSnapshotReceived x => OnTaskListSnapshot(state, x),
+        TaskListDeltaReceived x => OnTaskListDelta(state, x),
         McpQuestionReceived x => OnMcpQuestionReceived(state, x),
         McpQuestionStatusChanged x => OnMcpQuestionStatusChanged(state, x.Status),
         McpAnswerSubmitted x => OnMcpAnswerSubmitted(state, x),
@@ -482,30 +481,48 @@ public static class ChatReducer
 
     /// <summary>
     /// Adds a tool call to its source's activity log, or updates the entry for the same call id
-    /// in place (started, then finished or failed).
+    /// in place (started, then finished or failed). A report for a subagent or worker that has
+    /// already finished updates its closed log rather than opening a new one: lifecycle events and
+    /// progress arrive on different topics, so a tool's last report can trail the run's end.
     /// </summary>
-    private static ChatViewState OnToolCallReported(ChatViewState state, ToolCallReported e)
+    private static ChatReduction OnToolCallReported(ChatViewState state, ToolCallReported e)
     {
         var key = ActivityLogKey(e.Category, e.AgentName);
-        if (state.OpenActivityLogs.TryGetValue(key, out var logId)
-            && state.Messages.FindIndex(m => m.MessageId == logId) is var index and >= 0)
+        var finishedRun = !state.OpenActivityLogs.ContainsKey(key) && IsFinishedRun(state, e.Category, e.AgentName);
+
+        var index = state.OpenActivityLogs.TryGetValue(key, out var logId)
+            ? state.Messages.FindIndex(m => m.MessageId == logId)
+            : finishedRun
+                ? state.Messages.FindLastIndex(m => m.Category == e.Category && m.AgentName == e.AgentName
+                    && m.ActivityLogEntries.Any(x => x.ToolCall?.ToolCallId == e.ToolCall.ToolCallId))
+                : -1;
+
+        if (index >= 0)
         {
             var log = state.Messages[index];
             var entryIndex = log.ActivityLogEntries.FindIndex(x => x.ToolCall?.ToolCallId == e.ToolCall.ToolCallId);
             if (entryIndex >= 0)
             {
                 var entry = log.ActivityLogEntries[entryIndex];
-                return state with
+                // Only a call's start carries its arguments; keep them on the later reports.
+                var call = e.ToolCall.ArgsSummary is null && entry.ToolCall?.ArgsSummary is { } args
+                    ? e.ToolCall with { ArgsSummary = args }
+                    : e.ToolCall;
+                return Accept(state with
                 {
                     Messages = state.Messages.SetItem(index, log with
                     {
-                        Content = e.Content,
+                        Content = finishedRun ? log.Content : e.Content,
                         ActivityLogEntries = log.ActivityLogEntries.SetItem(entryIndex,
-                            entry with { Content = e.Content, ToolCall = e.ToolCall }),
+                            entry with { Content = e.Content, ToolCall = call }),
                     }),
-                };
+                });
             }
         }
+
+        // A new call from a run that has finished: nothing left to show it in.
+        if (finishedRun)
+            return Reject(state);
 
         state = AppendActivity(state, e.Category, e.AgentName, e.Content, close: false, e.MessageId, e.Timestamp);
 
@@ -514,15 +531,30 @@ public static class ChatReducer
         var at = state.Messages.FindIndex(m => m.MessageId == openId);
         var updated = state.Messages[at];
         var last = updated.ActivityLogEntries.Count - 1;
-        return state with
+        return Accept(state with
         {
             Messages = state.Messages.SetItem(at, updated with
             {
                 ActivityLogEntries = updated.ActivityLogEntries.SetItem(last,
                     updated.ActivityLogEntries[last] with { ToolCall = e.ToolCall }),
             }),
-        };
+        });
     }
+
+    /// <summary>
+    /// Progress for a subagent or worker that has already finished and whose log is closed. It
+    /// would open a log nothing closes again (a spinner forever), so it is dropped; a completion
+    /// report still goes through, since it closes what it opens.
+    /// </summary>
+    private static ChatReduction OnActivityReported(ChatViewState state, ActivityReported e) =>
+        !e.IsCompletion
+        && !state.OpenActivityLogs.ContainsKey(ActivityLogKey(e.Category, e.AgentName))
+        && IsFinishedRun(state, e.Category, e.AgentName)
+            ? Reject(state)
+            : Accept(AppendActivity(state, e.Category, e.AgentName, e.Content, e.IsCompletion, e.MessageId, e.Timestamp));
+
+    private static bool IsFinishedRun(ChatViewState state, MessageCategory category, string? agentName) =>
+        category == MessageCategory.SubagentActivity && agentName is not null && state.FinishedRuns.Contains(agentName);
 
     private static ChatViewState OnSubagentRunStarted(ChatViewState state, SubagentRunStarted e)
     {
@@ -536,16 +568,21 @@ public static class ChatReducer
             $"{label} started: {s.Description}", close: false, e.MessageId, e.Timestamp);
     }
 
+    /// <summary>How many finished subagent and worker runs <see cref="ChatViewState.FinishedRuns"/> remembers.</summary>
+    internal const int MaxFinishedRuns = 256;
+
     private static ChatViewState OnSubagentRunFinished(ChatViewState state, SubagentRunFinished e)
     {
         var f = e.Finished;
         var agentName = SubagentAgentName(f.Kind, f.SubagentRunId);
         var key = ActivityLogKey(MessageCategory.SubagentActivity, agentName);
-        var taskLists = state.TaskLists.Remove(f.SubagentRunId);
+        var finishedRuns = (state.FinishedRuns.Count >= MaxFinishedRuns ? state.FinishedRuns.Clear() : state.FinishedRuns)
+            .Add(agentName);
+        state = state with { TaskLists = state.TaskLists.Remove(f.SubagentRunId), FinishedRuns = finishedRuns };
 
         // Its log already closed (its result arrived first): nothing more to show.
         if (!state.OpenActivityLogs.ContainsKey(key))
-            return state with { TaskLists = taskLists };
+            return state;
 
         var content = f.Outcome switch
         {
@@ -554,35 +591,63 @@ public static class ChatReducer
             SubagentOutcome.Timeout => "Timed out",
             _ => string.IsNullOrWhiteSpace(f.Error) ? "Failed" : $"Failed: {f.Error}",
         };
-        return AppendActivity(state with { TaskLists = taskLists }, MessageCategory.SubagentActivity, agentName,
+        return AppendActivity(state, MessageCategory.SubagentActivity, agentName,
             content, close: true, e.MessageId, e.Timestamp);
     }
 
-    private static ChatViewState OnTaskListSnapshot(ChatViewState state, TaskListSnapshotReceived e)
+    /// <summary>
+    /// Whether a task list may be shown, and under which key. A subagent's or worker's list is
+    /// keyed by its task id. Anything else is shown as the user's plan, so it must belong to a
+    /// turn of this view: the running one, the reconciled one, or (with nothing running) the
+    /// last one. A list with no run id, or from an older turn, is turned away, so a late event
+    /// can't replace or check off the plan of the turn that followed.
+    /// </summary>
+    private static string? TaskListKey(ChatViewState state, ReplySource source, string? runId)
+    {
+        var key = TaskListStatus.KeyFor(source);
+        if (key != ReplySourceKind.Primary)
+            return key;
+
+        if (runId is null)
+            return null;
+
+        return state.CurrentTurn is not { } turn
+               || turn.TurnId == runId
+               || turn.TurnId == ChatViewState.ReconciledTurnId
+            ? key
+            : null;
+    }
+
+    private static ChatReduction OnTaskListSnapshot(ChatViewState state, TaskListSnapshotReceived e)
     {
         var s = e.Snapshot;
-        var key = TaskListStatus.KeyFor(s.Source);
-        return state with
+        if (TaskListKey(state, s.Source, s.RunId) is not { } key)
+            return Reject(state);
+
+        return Accept(state with
         {
             TaskLists = state.TaskLists.SetItem(key,
                 new TaskListView(key, s.Source, s.RunId, [.. s.Items], e.Timestamp)),
-        };
+        });
     }
 
-    private static ChatViewState OnTaskListDelta(ChatViewState state, TaskListDeltaReceived e)
+    private static ChatReduction OnTaskListDelta(ChatViewState state, TaskListDeltaReceived e)
     {
         var d = e.Delta;
-        var key = TaskListStatus.KeyFor(d.Source);
-        var list = state.TaskLists.TryGetValue(key, out var existing)
+        if (TaskListKey(state, d.Source, d.RunId) is not { } key)
+            return Reject(state);
+
+        // A delta for another run than the list on show starts that run's list afresh.
+        var list = state.TaskLists.TryGetValue(key, out var existing) && existing.RunId == d.RunId
             ? existing
             : new TaskListView(key, d.Source, d.RunId, [], e.Timestamp);
 
         var index = list.Items.FindIndex(i => i.Id == d.Item.Id);
         var items = index >= 0 ? list.Items.SetItem(index, d.Item) : list.Items.Add(d.Item);
-        return state with
+        return Accept(state with
         {
             TaskLists = state.TaskLists.SetItem(key, list with { Items = items, UpdatedAt = e.Timestamp }),
-        };
+        });
     }
 
     /// <summary>Stops the primary progress log's spinner and clears the thinking text, unless a newer turn owns them.</summary>

@@ -579,17 +579,19 @@ internal sealed class UserMessageHandler(
         var loopSw = System.Diagnostics.Stopwatch.StartNew();
         var nativeTierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", classification.Tier.ToString());
 
-        // Subscribe to fallback events so the user sees model switches in the UI.
-        var fallbackClient = registry.GetClient(classification.Tier)
-            .GetService<FallbackChatClient>();
+        // Subscribe to fallback events so the user sees model switches in the UI. Done inside the
+        // try: this loop owns the turn's run, and only the finally below finishes it.
+        FallbackChatClient? fallbackClient = null;
         void OnFallback(string from, string to, string reason) =>
             _ = PublishReplyAsync(
                 $"Switching models ({reason}) — retrying with {to}…",
                 replyTo, correlationId, sessionId, turnId, isFinal: false, ct);
-        if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
 
         try
         {
+            fallbackClient = registry.GetClient(classification.Tier).GetService<FallbackChatClient>();
+            if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
+
             await using var slot = await workSerializer.AcquireForUserAsync($"user session '{sessionId}'", ct);
 
             logger.LogInformation("Native LLM loop started for session {SessionId}", sessionId);
@@ -757,17 +759,19 @@ internal sealed class UserMessageHandler(
         var bgTierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
         var bgDiag = new LoopDiagnostics();
 
-        // Subscribe to fallback events so the user sees model switches in the UI.
-        var fallbackClient = registry.GetClient(tier)
-            .GetService<FallbackChatClient>();
+        // Subscribe to fallback events so the user sees model switches in the UI. Done inside the
+        // try: this loop owns the turn's run, and only the finally below finishes it.
+        FallbackChatClient? fallbackClient = null;
         void OnFallback(string from, string to, string reason) =>
             _ = PublishReplyAsync(
                 $"Switching models ({reason}) — retrying with {to}…",
                 replyTo, correlationId, sessionId, turnId, isFinal: false, ct);
-        if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
 
         try
         {
+            fallbackClient = registry.GetClient(tier).GetService<FallbackChatClient>();
+            if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
+
             // Acquire the single execution slot, preempting any running scheduled
             // task. If this session itself is cancelled (new user message) while
             // waiting, the await throws OperationCanceledException and we exit.
