@@ -34,12 +34,36 @@ internal sealed partial class HybridCacheWorkingMemory : IWorkingMemory
     /// </summary>
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _editLocks = new(StringComparer.OrdinalIgnoreCase);
 
-    private sealed record EntryMeta(
-        DateTimeOffset StoredAt,
-        DateTimeOffset ExpiresAt,
-        string? Category,
-        IReadOnlyList<string> Tags,
-        string? Writer = null);
+    /// <summary>Categories whose entries are regenerable — see <see cref="IsRegenerable"/>.</summary>
+    private readonly HashSet<string> _regenerableCategories;
+
+    /// <summary>
+    /// A class rather than a record: it carries mutable read recency, which must not take part
+    /// in value equality or be copied by a <c>with</c> expression.
+    /// </summary>
+    private sealed class EntryMeta(
+        DateTimeOffset storedAt,
+        DateTimeOffset expiresAt,
+        string? category,
+        IReadOnlyList<string> tags,
+        string? writer = null)
+    {
+        private long _lastReadTicks;
+
+        public DateTimeOffset StoredAt { get; } = storedAt;
+        public DateTimeOffset ExpiresAt { get; } = expiresAt;
+        public string? Category { get; } = category;
+        public IReadOnlyList<string> Tags { get; } = tags;
+        public string? Writer { get; } = writer;
+
+        /// <summary>UTC ticks of the last <see cref="TouchAsync"/> (a model read); 0 when never read.</summary>
+        public long LastReadTicks => Interlocked.Read(ref _lastReadTicks);
+
+        public void MarkRead(long utcTicks) => Interlocked.Exchange(ref _lastReadTicks, utcTicks);
+
+        /// <summary>When the entry was last written or read, whichever is later (#803).</summary>
+        public long LastUsedTicks => Math.Max(StoredAt.UtcTicks, LastReadTicks);
+    }
 
     public HybridCacheWorkingMemory(
         IMemoryCache cache,
@@ -55,6 +79,63 @@ internal sealed partial class HybridCacheWorkingMemory : IWorkingMemory
         _embeddingGenerator = embeddingGenerator;
         _preparer = preparer;
         _minSimilarity = embeddingOptions.Value.MinSimilarityThreshold;
+        _regenerableCategories = new HashSet<string>(_options.EffectiveEvictableCategories, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Whether an entry of this category is regenerable content (page chunks, chunked tool
+    /// results, chunked wisp input — <see cref="WorkingMemoryOptions.EvictableCategories"/>).
+    /// Regenerable entries count against <see cref="WorkingMemoryOptions.MaxRegenerableEntriesPerNamespace"/>
+    /// and can be evicted; everything else counts against
+    /// <see cref="WorkingMemoryOptions.MaxEntriesPerNamespace"/> and never is (#803).
+    /// </summary>
+    internal bool IsRegenerable(string? category) =>
+        category is not null && _regenerableCategories.Contains(category);
+
+    /// <summary>
+    /// Whether <paramref name="key"/> holds a live entry, and its category, without counting as
+    /// a read. <see cref="FileWorkingMemory"/> uses it to decide whether a write touches what it
+    /// persists.
+    /// </summary>
+    internal bool TryPeekCategory(string key, out string? category)
+    {
+        if (_index.TryGetValue(key, out var meta) && meta.ExpiresAt > DateTimeOffset.UtcNow)
+        {
+            category = meta.Category;
+            return true;
+        }
+
+        category = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Marks <paramref name="key"/> as just read by the model, so its chunk group is the last to
+    /// be evicted (#803). Separate from <see cref="GetAsync"/>: bookkeeping reads (the context
+    /// builder ranking page indexes, the trimmer checking a key still exists) would otherwise
+    /// make pages the model stopped using look fresh.
+    /// </summary>
+    public Task TouchAsync(string key)
+    {
+        if (_index.TryGetValue(key, out var meta))
+            meta.MarkRead(DateTimeOffset.UtcNow.UtcTicks);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="key"/> is in namespace <paramref name="ns"/> (as
+    /// <see cref="GetNamespace"/> would say), without allocating — this runs over the whole
+    /// index on every write.
+    /// </summary>
+    private static bool InNamespace(string key, string ns)
+    {
+        if (key.Length == ns.Length)
+            return key.Equals(ns, StringComparison.OrdinalIgnoreCase);
+        // A namespace without '/' is a single-segment key, which is its own namespace.
+        return ns.Contains('/')
+            && key.Length > ns.Length
+            && key[ns.Length] == '/'
+            && key.StartsWith(ns, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CacheKey(string key) => $"wm:{key}";
@@ -108,31 +189,49 @@ internal sealed partial class HybridCacheWorkingMemory : IWorkingMemory
         var now = DateTimeOffset.UtcNow;
         var effectiveTtl = expiresAt - now;
 
+        // #803: regenerable content (page and result chunks) and deliberate saves have separate
+        // budgets, so a research run can't crowd out the agent's own notes.
         var ns = GetNamespace(key);
-        var nsCount = _index.Count(kvp =>
-            GetNamespace(kvp.Key).Equals(ns, StringComparison.OrdinalIgnoreCase) &&
-            kvp.Value.ExpiresAt > now);
+        var regenerable = IsRegenerable(category);
+        var limit = regenerable ? _options.MaxRegenerableEntriesPerNamespace : _options.MaxEntriesPerNamespace;
+        var budget = regenerable ? "cached page and result chunks" : "saved entries";
+
+        // Overwriting a key is always allowed, even into the other budget: it adds no entry.
+        _index.TryGetValue(key, out var existing);
 
         List<string>? evicted = null;
-        if (!_index.ContainsKey(key) && nsCount >= _options.MaxEntriesPerNamespace)
+        if (existing is null)
         {
-            // #801: make room from regenerable content (page and result chunks) before refusing.
-            evicted = EvictForRoom(ns, key, now, needed: nsCount - _options.MaxEntriesPerNamespace + 1);
-            if (evicted.Count == 0)
-            {
-                _logger.LogWarning(
-                    "Working memory limit reached for namespace '{Namespace}' ({Max} entries) with nothing evictable; refusing key '{Key}'",
-                    ns, _options.MaxEntriesPerNamespace, key);
-                return WorkingMemoryWriteResult.Refused(
-                    $"working memory for '{ns}' is full ({_options.MaxEntriesPerNamespace} entries) and holds nothing that can be evicted");
-            }
+            var count = _index.Count(kvp =>
+                kvp.Value.ExpiresAt > now &&
+                IsRegenerable(kvp.Value.Category) == regenerable &&
+                InNamespace(kvp.Key, ns));
 
-            _logger.LogInformation(
-                "Working memory limit reached for namespace '{Namespace}' ({Max} entries); evicted {Count} older regenerable entr(ies) for '{Key}'",
-                ns, _options.MaxEntriesPerNamespace, evicted.Count, key);
+            if (count >= limit)
+            {
+                // #801: make room from other regenerable content before refusing. Deliberate saves
+                // are never evicted, and evicting pages wouldn't free one of their slots.
+                evicted = regenerable ? EvictForRoom(ns, key, now, needed: count - limit + 1) : [];
+                if (evicted.Count == 0)
+                {
+                    _logger.LogWarning(
+                        "Working memory limit reached for namespace '{Namespace}' ({Max} {Budget}) with nothing evictable; refusing key '{Key}'",
+                        ns, limit, budget, key);
+                    return WorkingMemoryWriteResult.Refused(regenerable
+                        ? $"working memory for '{ns}' is full ({limit} {budget}) and holds no other page or result that can be evicted"
+                        : $"working memory for '{ns}' is full ({limit} {budget}); delete or overwrite an entry you no longer need");
+                }
+
+                _logger.LogInformation(
+                    "Working memory limit reached for namespace '{Namespace}' ({Max} {Budget}); evicted {Count} least recently read regenerable entr(ies) for '{Key}'",
+                    ns, limit, budget, evicted.Count, key);
+            }
         }
 
-        _index[key] = new EntryMeta(storedAt, expiresAt, category, tags ?? [], writer);
+        var meta = new EntryMeta(storedAt, expiresAt, category, tags ?? [], writer);
+        if (existing is not null)
+            meta.MarkRead(existing.LastReadTicks); // an overwrite or edit keeps the read history
+        _index[key] = meta;
         _cache.Set(CacheKey(key), value, new MemoryCacheEntryOptions
         {
             AbsoluteExpiration = expiresAt
@@ -151,29 +250,28 @@ internal sealed partial class HybridCacheWorkingMemory : IWorkingMemory
     }
 
     /// <summary>
-    /// Evicts the oldest regenerable entries in <paramref name="ns"/> (categories in
-    /// <see cref="WorkingMemoryOptions.EffectiveEvictableCategories"/>) until at least
+    /// Evicts the least recently used regenerable entries in <paramref name="ns"/> (categories
+    /// in <see cref="WorkingMemoryOptions.EffectiveEvictableCategories"/>) until at least
     /// <paramref name="needed"/> are gone. A whole chunk group goes at once (every chunk and the
-    /// index of one page or result), so nothing is left half there; the group
-    /// <paramref name="incomingKey"/> belongs to is never a candidate, so a page being written
-    /// can't evict its own earlier chunks. Returns the evicted keys; empty when nothing could go.
+    /// index of one page or result), so nothing is left half there; a group's recency is the
+    /// latest write or model read (<see cref="TouchAsync"/>) of any of its entries, so a page the
+    /// model keeps reading stays and
+    /// one it fetched and never opened goes first (#803). The group <paramref name="incomingKey"/>
+    /// belongs to is never a candidate, so a page being written can't evict its own earlier
+    /// chunks. Returns the evicted keys; empty when nothing could go.
     /// </summary>
     private List<string> EvictForRoom(string ns, string incomingKey, DateTimeOffset now, int needed)
     {
         var evicted = new List<string>();
-        var evictable = _options.EffectiveEvictableCategories;
-        if (evictable.Count == 0)
-            return evicted;
-
         var incomingGroup = ChunkGroup(incomingKey);
         var groups = _index
             .Where(kvp => kvp.Value.ExpiresAt > now
-                && GetNamespace(kvp.Key).Equals(ns, StringComparison.OrdinalIgnoreCase)
-                && kvp.Value.Category is { } category
-                && evictable.Contains(category, StringComparer.OrdinalIgnoreCase))
+                && IsRegenerable(kvp.Value.Category)
+                && InNamespace(kvp.Key, ns))
             .GroupBy(kvp => ChunkGroup(kvp.Key), StringComparer.OrdinalIgnoreCase)
             .Where(g => !g.Key.Equals(incomingGroup, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(g => g.Min(e => e.Value.StoredAt));
+            .OrderBy(g => g.Max(e => e.Value.LastUsedTicks))
+            .ToList(); // snapshot: the loop below removes from _index
 
         foreach (var group in groups)
         {

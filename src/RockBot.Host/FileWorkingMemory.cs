@@ -75,7 +75,8 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
                 var entries = JsonSerializer.Deserialize<List<PersistedEntry>>(json, JsonOptions);
                 if (entries is null || entries.Count == 0) continue;
 
-                var live = entries.Where(e => e.ExpiresAt > now).ToList();
+                // Cached page/result chunks aren't persisted (#803); older files may still hold some.
+                var live = entries.Where(e => e.ExpiresAt > now && !_inner.IsRegenerable(e.Category)).ToList();
                 if (live.Count == 0)
                 {
                     File.Delete(file);
@@ -147,26 +148,45 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
 
     // ── IWorkingMemory ────────────────────────────────────────────────────────
 
+    // Cached page and result chunks (WorkingMemoryOptions.EvictableCategories) are not
+    // persisted (#803): they are copies of content the agent can fetch again, they expire in
+    // minutes, and a namespace can hold hundreds of them — rewriting the group file on every
+    // chunk write made storing one page cost dozens of multi-megabyte file writes. A write
+    // or delete rewrites the file only when it touches a saved entry.
+
+    /// <summary>Whether <paramref name="key"/> currently holds an entry that is on disk.</summary>
+    private bool HoldsPersisted(string key) =>
+        _inner.TryPeekCategory(key, out var category) && !_inner.IsRegenerable(category);
+
+    /// <summary>Whether writing <paramref name="key"/> with <paramref name="category"/> changes what is on disk.</summary>
+    private bool WriteAffectsDisk(string key, string? category) =>
+        !_inner.IsRegenerable(category) || HoldsPersisted(key);
+
     public async Task SetAsync(string key, string value, TimeSpan? ttl = null,
         string? category = null, IReadOnlyList<string>? tags = null)
     {
+        var persist = WriteAffectsDisk(key, category);
         await _inner.SetAsync(key, value, ttl, category, tags);
-        await PersistGroupAsync(GetGroup(key));
+        if (persist)
+            await PersistGroupAsync(GetGroup(key));
     }
 
     public async Task SetAsync(string key, string value, TimeSpan? ttl, string? category,
         IReadOnlyList<string>? tags, string? writer)
     {
+        var persist = WriteAffectsDisk(key, category);
         await _inner.SetAsync(key, value, ttl, category, tags, writer);
-        await PersistGroupAsync(GetGroup(key));
+        if (persist)
+            await PersistGroupAsync(GetGroup(key));
     }
 
     public async Task<WorkingMemoryWriteResult> TrySetAsync(string key, string value, TimeSpan? ttl = null,
         string? category = null, IReadOnlyList<string>? tags = null, string? writer = null)
     {
+        var persist = WriteAffectsDisk(key, category);
         var result = await _inner.TrySetAsync(key, value, ttl, category, tags, writer);
-        // Evicted entries share the key's namespace, and so its persisted group.
-        if (result.Stored)
+        // Anything evicted to make room was a regenerable chunk, which is not on disk.
+        if (result.Stored && persist)
             await PersistGroupAsync(GetGroup(key));
         return result;
     }
@@ -177,12 +197,17 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
     public Task<WorkingMemoryEntry?> GetEntryAsync(string key)
         => _inner.GetEntryAsync(key);
 
+    public Task TouchAsync(string key)
+        => _inner.TouchAsync(key);
+
     public async Task<ContentEditResult> EditAsync(string key, string oldText, string newText, bool replaceAll = false)
     {
         // The inner store applies the edit through its own SetAsync, which does not know about
         // persistence — so the group file is rewritten here, and only when something changed.
+        // An edit keeps the entry's category, so it is on disk exactly when it was before.
+        var persist = HoldsPersisted(key);
         var result = await _inner.EditAsync(key, oldText, newText, replaceAll);
-        if (result.IsSuccess)
+        if (result.IsSuccess && persist)
             await PersistGroupAsync(GetGroup(key));
         return result;
     }
@@ -192,8 +217,10 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
 
     public async Task DeleteAsync(string key)
     {
+        var persist = HoldsPersisted(key);
         await _inner.DeleteAsync(key);
-        await PersistGroupAsync(GetGroup(key));
+        if (persist)
+            await PersistGroupAsync(GetGroup(key));
     }
 
     public async Task ClearAsync(string? prefix = null)
@@ -238,7 +265,9 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
         {
             // Collect all in-memory entries belonging to this group
             var prefix = group == "_other" ? null : group + "/";
-            var entries = await _inner.ListAsync(prefix);
+            var entries = (await _inner.ListAsync(prefix))
+                .Where(e => !_inner.IsRegenerable(e.Category))
+                .ToList();
 
             // If group is "_other", also include ungrouped keys (no slash)
             if (group == "_other")

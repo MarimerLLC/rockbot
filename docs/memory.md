@@ -357,12 +357,24 @@ public sealed record WorkingMemoryEntry(
 
 - **Default TTL:** 5 minutes (configurable per entry)
 - **Background TTL floor:** `save_to_working_memory` calls from subagents and workers are raised to at least `BackgroundTaskMinimumTtl` (4 hours), so findings outlive batch consolidation even when the model picks a short TTL or omits it
-- **Per-namespace limit:** 50 entries per namespace (first two key segments); configurable via `MaxEntriesPerNamespace`. When a namespace is full, a new key first evicts the oldest regenerable content: entries in `EvictableCategories` (default `web`, `tool-result`, `wisp-input`), one whole chunk group (every chunk and the index of one page or result) at a time, never the group being written. Only when nothing is evictable is the write refused. `TrySetAsync` reports the refusal and any evictions, and `web_browse`, the chunking wrapper, wisp input and `save_to_working_memory` tell the model what wasn't stored instead of claiming success (#801).
+- **Per-namespace limits:** each namespace (first two key segments) has two separate budgets (#803):
+  - **Saved entries:** 50 by default (`MaxEntriesPerNamespace`), for what the agent saved on purpose, meaning any category not in `EvictableCategories`. These are never evicted. A new key past the limit is refused. Overwriting an existing key is always allowed.
+  - **Regenerable content:** 400 by default (`MaxRegenerableEntriesPerNamespace`), for entries in `EvictableCategories` (default `web`, `tool-result`, `wisp-input`, matched ignoring case): page chunks from `web_browse`, chunked tool results and chunked wisp input. Long pages run 17–38 chunks, so the default keeps ten or more readable for their TTL (20 minutes for `web_browse`).
+  - **When the regenerable budget is full:** a new chunk evicts the **least recently read** chunk group, one whole page or result (every chunk and its index) at a time, and never the group being written. A group's recency is the latest write of any of its entries, or the latest time the model read one through `get_from_working_memory`. So a page the model keeps coming back to stays, and one it fetched and never opened goes first. Only that tool counts as a read (it calls `IWorkingMemory.TouchAsync`). `GetAsync` doesn't, so bookkeeping reads by the context builder and the tool-result trimmer leave recency alone, and neither do listing and searching. Only when nothing else is left is the write refused.
+  - **Reserved categories:** `save_to_working_memory` doesn't let a deliberate save land in the regenerable budget. If the model passes one of the `EvictableCategories`, the entry is stored under a sub-category (`web` becomes `web/saved`) and the tool says so. A category search for `web` still finds it by prefix.
+  - **Reporting:** `TrySetAsync` reports refusals and evictions. `web_browse`, the chunking wrapper, wisp input and `save_to_working_memory` tell the model what wasn't stored instead of claiming success (#801).
+  - **Disabling the split:** with every entry a saved entry, nothing is evicted.
+    - In code: `WithWorkingMemory(o => o.EvictableCategories = [])`.
+    - From configuration: .NET configuration can't express an empty list. An empty JSON array binds as "not set", which means the defaults. Set a single category nothing uses instead, e.g. `WorkingMemory__EvictableCategories__0=none`.
+- **Inventory:** the own-namespace inventory injected each turn lists a chunked page or result as one line, naming its index key and chunk count, rather than one line per chunk.
 - **Prefix filtering:** `ListAsync(prefix)` and `SearchAsync(criteria, prefix)` filter by key prefix
 
 `FileWorkingMemory` wraps the in-memory store with disk persistence. Entries are grouped by
 top-level key segment into files (`session.json`, `patrol.json`, `subagent.json`) under
 `{BasePath}/working-memory/`. Expired entries are discarded on load and swept hourly.
+Regenerable entries (`EvictableCategories`) are not persisted. They are copies the agent can
+fetch again, and they expire in minutes. Writing or deleting one doesn't rewrite the group
+file unless it replaces a saved entry (#803).
 
 ### Injection
 
@@ -659,7 +671,8 @@ public sealed class WorkingMemoryOptions
 {
     public TimeSpan DefaultTtl { get; set; } = TimeSpan.FromMinutes(5);
     public TimeSpan BackgroundTaskMinimumTtl { get; set; } = TimeSpan.FromHours(4);  // floor for subagent/worker saves
-    public int MaxEntriesPerNamespace { get; set; } = 50;  // per first-two-segment namespace prefix
+    public int MaxEntriesPerNamespace { get; set; } = 50;  // saved entries per first-two-segment namespace prefix
+    public int MaxRegenerableEntriesPerNamespace { get; set; } = 400;  // evictable chunks per namespace, least recently read evicted first
     public IList<string>? EvictableCategories { get; set; }  // null = web, tool-result, wisp-input
     public string BasePath { get; set; } = "working-memory";
 }
