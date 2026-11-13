@@ -172,9 +172,36 @@ internal sealed class AgentTaskListTools
         }
     }
 
-    /// <summary>Completes once every task-list event published so far has gone out. For tests.</summary>
+    /// <summary>Completes once every task-list event published so far has gone out.</summary>
     internal Task WhenPublishedAsync()
     {
         lock (_publishLock) return _publishTail;
+    }
+
+    /// <summary>The longest a run waits, as it ends, for its task-list events to go out.</summary>
+    internal static readonly TimeSpan PublishFlushTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// On dispose, waits (up to <paramref name="timeout"/>) for every task-list event published so
+    /// far to go out. <see cref="AgentLoopRunner.RunAsync"/> holds one for the whole run, so its
+    /// caller's final reply, published on the same queue, can't overtake the last snapshot or
+    /// delta; a proxy drops events for a turn that has already ended (#797).
+    /// </summary>
+    internal IAsyncDisposable FlushOnDispose(TimeSpan timeout) => new PublishFlush(this, timeout);
+
+    private sealed class PublishFlush(AgentTaskListTools tools, TimeSpan timeout) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                await tools.WhenPublishedAsync().WaitAsync(timeout);
+            }
+            catch (TimeoutException)
+            {
+                // Never hold up the reply for long: the list is a progress aid, not the answer.
+                tools._logger.LogWarning("Task list events still unpublished after {Timeout}; the run ends without them", timeout);
+            }
+        }
     }
 }

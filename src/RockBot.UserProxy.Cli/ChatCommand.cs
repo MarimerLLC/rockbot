@@ -214,7 +214,7 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
         if (ChatExitCodes.Describe(result) is { } problem)
             Console.Error.WriteLine($"error: {problem}");
 
-        output.Finish(result);
+        await output.FinishAsync(result);
         return ChatExitCodes.For(result.Outcome);
     }
 

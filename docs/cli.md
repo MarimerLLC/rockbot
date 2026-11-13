@@ -76,9 +76,11 @@ epoch. The `runId` is the turn's correlation id on the bus.
 | `RUN_FINISHED` | The turn succeeded, or was cancelled (`outcome.type: "cancelled"`) |
 | `RUN_ERROR` | The turn failed. `code` is `error`, `timeout`, `agent_lost`, `attachment_failed` or `client_error`. |
 
-Events from a subagent or worker carry its id as `subagentRunId`. The process exits after the turn's
-own reply, so a subagent that outlives the turn shows `SUBAGENT_STARTED` with no finish; its result
-arrives later, in other clients.
+Events from a subagent or worker carry its id as `subagentRunId`. Subagent lifecycle events travel on
+a different queue from the turn's reply, so after the reply the CLI waits until nothing has arrived
+for 250 ms (2 s at most) before writing the last line. That lets an awaited worker's
+`SUBAGENT_FINISHED` land in the stream. The process exits after the turn, so a subagent that
+outlives it shows `SUBAGENT_STARTED` with no finish; its result arrives later, in other clients.
 
 For example, to check that a turn called `github__get_issue` and the call succeeded:
 

@@ -424,14 +424,120 @@ public sealed class JsonLinesTurnWriterTests
     }
 
     [TestMethod]
-    [DataRow("cli-session", "cli-session")]
-    [DataRow("session/cli-session", "cli-session")]
-    [DataRow("Session/cli-session", "cli-session")]
-    [DataRow("subagent-1", "subagent-1")]
-    [DataRow(null, null)]
-    public void RawSessionId_StripsTheNamespace(string? sessionId, string? expected)
+    [DataRow("cli-session", true)]
+    [DataRow("session/cli-session", true, DisplayName = "the agent's working-memory form of this session")]
+    [DataRow("session/session/cli-session", false)]
+    [DataRow("Session/cli-session", false)]
+    [DataRow("cli-session-2", false)]
+    [DataRow(null, false)]
+    public void Reply_MatchesOnlyThisSessionsTwoForms(string? sessionId, bool expected)
     {
-        Assert.AreEqual(expected, JsonLinesFrontend.RawSessionId(sessionId));
+        Assert.AreEqual(expected, new JsonLinesFrontend(_writer).IsThisSessionsReply(sessionId));
+    }
+
+    [TestMethod]
+    public void NamespacedRun_KeepsItsOwnToolProgress_AndNoOtherSessions()
+    {
+        // A run whose raw id itself starts with session/ must neither drop its own namespaced
+        // progress nor pick up events of the raw session it would alias if the prefix were stripped.
+        var writer = new JsonLinesTurnWriter(_out, "session/foo", Run);
+        IUserFrontend frontend = new JsonLinesFrontend(writer);
+        var call = new ToolCallInfo { ToolCallId = "c1", ToolCallName = "web_search", Phase = ToolCallPhase.Started };
+
+        frontend.DisplayStatusAsync(Progress("mine", call, ReplySource.Subagent("s1")) with { SessionId = "session/session/foo" });
+        frontend.DisplayStatusAsync(Progress("not mine") with { SessionId = "foo" });
+        frontend.OnSubagentStartedAsync(new SubagentStarted
+        {
+            SubagentRunId = "other", Kind = ReplySourceKind.Subagent, Description = "d", ThreadId = "foo", StartedAt = DateTimeOffset.UtcNow,
+        });
+
+        CollectionAssert.AreEqual(
+            new[] { "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END" },
+            Lines().Select(Type).ToArray());
+    }
+
+    [TestMethod]
+    public void LifecycleEvents_MatchTheRawThreadIdExactly()
+    {
+        // ThreadId is always the raw id, so the working-memory form names some other session.
+        IUserFrontend frontend = new JsonLinesFrontend(_writer);
+        frontend.OnSubagentStartedAsync(new SubagentStarted
+        {
+            SubagentRunId = "x", Kind = ReplySourceKind.Subagent, Description = "d", ThreadId = $"session/{Session}",
+            StartedAt = DateTimeOffset.UtcNow,
+        });
+
+        Assert.AreEqual(0, _out.ToString().Length);
+    }
+
+    [TestMethod]
+    public void SubagentResult_IsAReply_NotReplaceableProgress()
+    {
+        // SubagentResultHandler sends the result as a non-final completion; it reaches the frontend
+        // as status, but it is the subagent's answer.
+        IUserFrontend frontend = new JsonLinesFrontend(_writer);
+        frontend.DisplayStatusAsync(Progress("The research found three sources.", source: ReplySource.Subagent("sub-1")) with
+        {
+            IsCompletion = true,
+        });
+
+        var lines = Lines().Skip(1).ToList();
+        CollectionAssert.AreEqual(
+            new[] { "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "CUSTOM" },
+            lines.Select(Type).ToArray());
+        Assert.AreEqual("The research found three sources.", Str(lines[1], "delta"));
+        Assert.AreEqual("sub-1", Str(lines[1], "subagentRunId"));
+        Assert.AreEqual(TurnEventMapper.CustomNames.Origin, Str(lines[3], "name"));
+    }
+
+    [TestMethod]
+    public async Task FinishAsync_LetsStragglersLandBeforeTheTerminalLine()
+    {
+        // A subagent's SUBAGENT_FINISHED travels on another queue than the reply, so it can land
+        // just after the turn ends.
+        _writer.Start();
+        var finishing = _writer.FinishAsync(
+            new TurnResult { Outcome = TurnResultOutcome.Success, CorrelationId = Run },
+            quiet: TimeSpan.FromMilliseconds(300), max: TimeSpan.FromSeconds(5));
+
+        await Task.Delay(50);
+        _writer.SubagentFinished(new SubagentFinished
+        {
+            SubagentRunId = "w1", Kind = ReplySourceKind.Worker, ThreadId = Session, Outcome = SubagentOutcome.Success,
+            FinishedAt = DateTimeOffset.UtcNow,
+        });
+        await finishing.WaitAsync(TimeSpan.FromSeconds(5));
+
+        CollectionAssert.AreEqual(
+            new[] { "RUN_STARTED", "SUBAGENT_FINISHED", "RUN_FINISHED" },
+            Lines().Select(Type).ToArray());
+    }
+
+    [TestMethod]
+    public async Task FinishAsync_StopsWaitingAtItsCap()
+    {
+        _writer.Start();
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        using var cts = new CancellationTokenSource();
+
+        // Something keeps talking: the stream must still close by the cap.
+        var chatter = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                _writer.Report(Progress("still going"));
+                await Task.Delay(20);
+            }
+        });
+
+        await _writer.FinishAsync(
+            new TurnResult { Outcome = TurnResultOutcome.Success, CorrelationId = Run },
+            quiet: TimeSpan.FromMilliseconds(100), max: TimeSpan.FromMilliseconds(400));
+        cts.Cancel();
+        await chatter;
+
+        Assert.IsTrue(started.Elapsed < TimeSpan.FromSeconds(3), started.Elapsed.ToString());
+        Assert.AreEqual("RUN_FINISHED", Type(Lines()[^1]));
     }
 
     [TestMethod]

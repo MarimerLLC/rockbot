@@ -24,7 +24,7 @@ internal interface IOneShotOutput
     void AttachmentFailed(string error);
 
     /// <summary>The turn ended. Any problem has already been written to stderr.</summary>
-    void Finish(TurnResult result);
+    Task FinishAsync(TurnResult result);
 }
 
 /// <summary>
@@ -45,10 +45,10 @@ internal sealed class TextOneShotOutput : IOneShotOutput
 
     public void AttachmentFailed(string error) { }
 
-    public void Finish(TurnResult result)
+    public Task FinishAsync(TurnResult result)
     {
         if (result.Reply is not { } reply)
-            return;
+            return Task.CompletedTask;
 
         Console.Out.WriteLine(HtmlPlainTextRenderer.StripHtml(reply.Content));
 
@@ -60,5 +60,6 @@ internal sealed class TextOneShotOutput : IOneShotOutput
             foreach (var att in reply.Attachments)
                 Console.Out.WriteLine(AttachmentPlaceholder.Render(att));
         }
+        return Task.CompletedTask;
     }
 }

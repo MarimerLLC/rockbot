@@ -2,22 +2,29 @@ namespace RockBot.UserProxy.Cli;
 
 /// <summary>
 /// The frontend for <c>rockbot chat --output jsonl</c> (#797). Broadcast and uncorrelated traffic
-/// (subagent lifecycle and progress, subagent task lists, unsolicited replies) for the turn's
-/// session goes to the <see cref="JsonLinesTurnWriter"/>; everything else is dropped, so nothing
-/// reaches stdout outside the JSON-lines contract.
+/// (subagent lifecycle and progress, subagent task lists, subagent results and other unsolicited
+/// replies) for the turn's session goes to the <see cref="JsonLinesTurnWriter"/>; everything else
+/// is dropped, so nothing reaches stdout outside the JSON-lines contract.
 /// </summary>
 internal sealed class JsonLinesFrontend(JsonLinesTurnWriter writer) : IUserFrontend
 {
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
-        if (IsThisSession(reply.SessionId))
+        if (IsThisSessionsReply(reply.SessionId))
             writer.UnsolicitedReply(reply);
         return Task.CompletedTask;
     }
 
     public Task DisplayStatusAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
-        if (IsThisSession(reply.SessionId))
+        if (!IsThisSessionsReply(reply.SessionId))
+            return Task.CompletedTask;
+
+        // A subagent's result arrives as a non-final completion (SubagentResultHandler): it is a
+        // reply in its own right, not progress a later line may replace.
+        if (reply.IsCompletion)
+            writer.UnsolicitedReply(reply);
+        else
             writer.Report(reply);
         return Task.CompletedTask;
     }
@@ -57,18 +64,24 @@ internal sealed class JsonLinesFrontend(JsonLinesTurnWriter writer) : IUserFront
     }
 
     /// <summary>
-    /// The agent namespaces session ids as <c>session/&lt;id&gt;</c>, and not every reply strips
-    /// that (a subagent's tool progress keeps it), so compare the raw ids.
+    /// For events that carry a <c>ThreadId</c>: the agent always sends the raw session id there,
+    /// so only an exact match is this session.
     /// </summary>
-    private bool IsThisSession(string? sessionId) =>
-        string.Equals(RawSessionId(sessionId), RawSessionId(writer.ThreadId), StringComparison.Ordinal);
+    private bool IsThisSession(string? threadId) =>
+        string.Equals(threadId, writer.ThreadId, StringComparison.Ordinal);
 
-    private const string SessionPrefix = "session/";
+    /// <summary>
+    /// For replies: <see cref="AgentReply.SessionId"/> is the raw id, except that a subagent's or
+    /// worker's tool progress keeps the agent's working-memory form, <c>session/&lt;raw id&gt;</c>.
+    /// Accept exactly those two forms of this session, and strip no more than that one prefix, so
+    /// a different session never matches.
+    /// </summary>
+    internal bool IsThisSessionsReply(string? sessionId) =>
+        IsThisSession(sessionId)
+        || string.Equals(sessionId, NamespacedSessionPrefix + writer.ThreadId, StringComparison.Ordinal);
 
-    internal static string? RawSessionId(string? sessionId) =>
-        sessionId is not null && sessionId.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
-            ? sessionId[SessionPrefix.Length..]
-            : sessionId;
+    /// <summary>The prefix the agent's <c>SessionIds.Raw</c> removes.</summary>
+    private const string NamespacedSessionPrefix = "session/";
 
     private static bool IsBackgroundWork(ReplySource source) =>
         source.Kind is ReplySourceKind.Subagent or ReplySourceKind.Worker;

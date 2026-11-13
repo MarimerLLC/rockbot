@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -31,6 +32,7 @@ internal sealed class JsonLinesTurnWriter : IOneShotOutput, ITurnObserver, IProg
     private readonly TurnEventMapper _mapper;
     private bool _started;
     private bool _closed;
+    private long _lastWrite = Stopwatch.GetTimestamp();
 
     public JsonLinesTurnWriter(TextWriter output, string threadId, string runId, TimeProvider? clock = null)
     {
@@ -83,6 +85,35 @@ internal sealed class JsonLinesTurnWriter : IOneShotOutput, ITurnObserver, IProg
     /// <summary>Writes the final reply and the terminal event, and closes the stream.</summary>
     public void Finish(TurnResult result) => Emit(m => m.Finish(result));
 
+    /// <summary>How long the stream must be quiet after the turn ends before it closes.</summary>
+    public static readonly TimeSpan DefaultSettleQuiet = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>The longest <see cref="FinishAsync"/> waits for the stream to go quiet.</summary>
+    public static readonly TimeSpan DefaultSettleMax = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Waits for stragglers, then <see cref="Finish"/>es. Subagent lifecycle and task lists are
+    /// broadcast on a different queue from the turn's reply, and RabbitMQ orders nothing across
+    /// queues, so an event the agent published before the reply can still be in flight when the
+    /// turn ends. Waiting until nothing has arrived for <paramref name="quiet"/> (each event
+    /// restarts the wait, up to <paramref name="max"/>) lets those land before the terminal line.
+    /// It is a bound, not a guarantee: true ordering would need those events on the reply's queue.
+    /// </summary>
+    public async Task FinishAsync(TurnResult result, TimeSpan quiet, TimeSpan max)
+    {
+        var settleStart = Stopwatch.GetTimestamp();
+        while (true)
+        {
+            var lastActivity = Math.Max(settleStart, Interlocked.Read(ref _lastWrite));
+            var idle = Stopwatch.GetElapsedTime(lastActivity);
+            var left = max - Stopwatch.GetElapsedTime(settleStart);
+            if (idle >= quiet || left <= TimeSpan.Zero)
+                break;
+            await Task.Delay(quiet - idle < left ? quiet - idle : left);
+        }
+        Finish(result);
+    }
+
     /// <summary>Ends the stream with <c>RUN_ERROR</c> (writing <c>RUN_STARTED</c> first if it never was).</summary>
     public void Fail(string code, string message) => Emit(m => [m.RunError(code, message)]);
 
@@ -92,6 +123,7 @@ internal sealed class JsonLinesTurnWriter : IOneShotOutput, ITurnObserver, IProg
     ITurnObserver IOneShotOutput.Observer => this;
     void IOneShotOutput.AttachmentStaged(AgentAttachment attachment) => AttachmentSent(attachment);
     void IOneShotOutput.AttachmentFailed(string error) => Fail(TurnEventMapper.ErrorCodes.AttachmentFailed, error);
+    Task IOneShotOutput.FinishAsync(TurnResult result) => FinishAsync(result, DefaultSettleQuiet, DefaultSettleMax);
 
     private void Emit(Func<TurnEventMapper, IEnumerable<BaseEvent>> map)
     {
@@ -119,6 +151,7 @@ internal sealed class JsonLinesTurnWriter : IOneShotOutput, ITurnObserver, IProg
                 }
             }
             _out.Flush();
+            Interlocked.Exchange(ref _lastWrite, Stopwatch.GetTimestamp());
         }
     }
 }

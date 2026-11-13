@@ -227,6 +227,46 @@ public sealed class AgentEventsTests
     }
 
     [TestMethod]
+    public async Task AgentTaskListTools_FlushOnDispose_WaitsForPendingEvents()
+    {
+        // RunAsync holds this for the run, so the final reply can't overtake the last task-list
+        // event on the turn's queue: a proxy drops events for a turn that has already ended (#797).
+        var events = new SlowFirstEventPublisher();
+        var tools = new AgentTaskListTools(new AgentTaskList(), NullLogger.Instance, events);
+        using var _ = ToolProgressNotifier.SetContext(Context());
+
+        var flush = tools.FlushOnDispose(TimeSpan.FromSeconds(5));
+        tools.TaskCreate(["Search"]);
+        tools.TaskUpdate(1, "completed");
+
+        var disposing = flush.DisposeAsync().AsTask();
+        await Task.Delay(100);
+        Assert.IsFalse(disposing.IsCompleted, "the run must not end while a task-list event is unpublished");
+
+        events.ReleaseFirst();
+        await disposing.WaitAsync(TimeSpan.FromSeconds(5));
+
+        CollectionAssert.AreEqual(
+            new[] { nameof(TaskListSnapshot), nameof(TaskListDelta) },
+            events.Published.Select(e => e.GetType().Name).ToArray());
+    }
+
+    [TestMethod]
+    public async Task AgentTaskListTools_FlushOnDispose_GivesUpAfterItsTimeout()
+    {
+        // A stuck publish must not hold up the user's reply for long.
+        var events = new SlowFirstEventPublisher();
+        var tools = new AgentTaskListTools(new AgentTaskList(), NullLogger.Instance, events);
+        using var _ = ToolProgressNotifier.SetContext(Context());
+
+        tools.TaskCreate(["Search"]);
+        await tools.FlushOnDispose(TimeSpan.FromMilliseconds(50)).DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(0, events.Published.Count);
+        events.ReleaseFirst();
+    }
+
+    [TestMethod]
     public void AgentTaskListTools_FailedUpdate_PublishesNothing()
     {
         var events = new RecordingEventPublisher();
