@@ -17,7 +17,7 @@ internal sealed class ClearCommand : AsyncCommand<CommonSettings.Plain>
         try
         {
             var proxy = host.Services.GetRequiredService<UserProxyService>();
-            var sessionId = settings.SessionId ?? "cli-session";
+            var sessionId = settings.EffectiveSessionId;
             await proxy.ClearContextAsync(sessionId);
             Console.Out.WriteLine($"cleared context for session '{sessionId}'");
             return 0;

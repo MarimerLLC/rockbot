@@ -1,5 +1,4 @@
 using RockBot.UserProxy.Cli;
-using Spectre.Console.Cli;
 
 namespace RockBot.Cli.Tests;
 
@@ -26,7 +25,7 @@ public sealed class ChatCommandAttachTests
             RabbitMqPassword = "test",
         };
 
-        var exitCode = await new ChatCommand().ExecuteAsync(Context(), settings);
+        var exitCode = await new ChatCommand().ExecuteAsync(TestCommandContext.Create(), settings);
 
         Assert.AreEqual(1, exitCode);
     }
@@ -57,16 +56,5 @@ public sealed class ChatCommandAttachTests
         // The agent owns the allowlist and answers with what it does accept. A guess here would
         // only turn a clear rejection into a confusing one.
         Assert.AreEqual("application/octet-stream", AttachmentMimeGuess.FromFileName("notes.txt"));
-    }
-
-    private static CommandContext Context() =>
-        new([], new NoRemainingArguments(), name: "chat", data: null);
-
-    private sealed class NoRemainingArguments : IRemainingArguments
-    {
-        public ILookup<string, string?> Parsed { get; } =
-            Array.Empty<KeyValuePair<string, string?>>().ToLookup(p => p.Key, p => p.Value);
-
-        public IReadOnlyList<string> Raw { get; } = [];
     }
 }

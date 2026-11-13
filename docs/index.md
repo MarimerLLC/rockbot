@@ -42,6 +42,7 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 - [Memory audit](memory-audit) — scheduled read-only health check of long-term memory
 - [Knowledge graph](knowledge-graph)
 - [Blazor UI](blazor-ui)
+- [CLI](cli) — one-shot chat for scripts, turn events as AG-UI JSON lines
 - [NuGet release](nuget-release)
 
 ## Community
