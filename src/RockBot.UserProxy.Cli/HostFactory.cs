@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 using RockBot.Messaging.RabbitMQ;
 
 namespace RockBot.UserProxy.Cli;
@@ -40,6 +41,10 @@ internal static class HostFactory
         if (settings.AgentName is not null) overrides["Agent:Name"] = settings.AgentName;
         if (overrides.Count > 0)
             builder.Configuration.AddInMemoryCollection(overrides);
+
+        // Logs are diagnostics: keep them off stdout, which carries each command's result (the
+        // reply, the JSON-lines stream, history) for callers that pipe or capture it.
+        builder.Services.Configure<ConsoleLoggerOptions>(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 
         if (!settings.Verbose)
         {

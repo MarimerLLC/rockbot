@@ -67,8 +67,8 @@ epoch. The `runId` is the turn's correlation id on the bus.
 | `CUSTOM rockbot.heartbeat` | The agent is still working (`elapsedSeconds`, `status`) |
 | `ACTIVITY_SNAPSHOT` (`activityType: rockbot.progress`) | Progress text (`content.agentName`, `content.text`). Each one replaces the last for its source. |
 | `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END` | A tool call started. RockBot carries a readable argument summary, not the JSON arguments, so `delta` is `{"summary": "…"}`. |
-| `TOOL_CALL_RESULT` | A tool call finished or failed. `content` is the result summary or the error, and `metadata.rockbot` holds `status` (`finished`/`failed`), `failed`, `durationMs`, `error` and `agentName`. `rawEvent` is RockBot's `ToolCallInfo`. |
-| `STATE_SNAPSHOT`, `STATE_DELTA` | The agent's task lists, as state `{"taskLists": {"primary": [...], "<subagent id>": [...]}}`. Each item has `id`, `description` and `status` (`pending`, `in_progress`, `completed`). Deltas are RFC 6902 patches. |
+| `TOOL_CALL_RESULT` | A tool call finished or failed. `content` is the result summary or the error, and `metadata.rockbot` holds `status` (`finished`/`failed`), `failed`, `durationMs` and `agentName`. |
+| `STATE_SNAPSHOT`, `STATE_DELTA` | The agent's task lists, as state `{"taskLists": {"primary": [...], "<subagent id>": [...]}}`. Each item has `id`, `description` and `status` (`pending`, `in_progress`, `completed`). A list's first appearance is always a snapshot of the whole state; later changes to it are RFC 6902 patches. |
 | `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR` | A subagent or worker this session spawned. `name` is `subagent` or `worker`. `SUBAGENT_ERROR.code` is `failed`, `cancelled` or `timeout`. |
 | `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END` | A reply, as one content chunk. The turn's own reply comes right before the last line. |
 | `CUSTOM rockbot.attachments` | Attachments on that reply (`value.messageId`, `value.attachments`) |

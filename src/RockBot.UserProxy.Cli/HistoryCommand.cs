@@ -16,7 +16,7 @@ internal sealed class HistoryCommand : AsyncCommand<CommonSettings.Plain>
         try
         {
             var proxy = host.Services.GetRequiredService<UserProxyService>();
-            var sessionId = settings.SessionId ?? "cli-session";
+            var sessionId = settings.EffectiveSessionId;
 
             var response = await proxy.GetHistoryAsync(sessionId);
             if (response is null)

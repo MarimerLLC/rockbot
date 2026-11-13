@@ -16,7 +16,7 @@ namespace RockBot.UserProxy.Cli;
 /// mapped, written and flushed under one lock, so lines never interleave and the mapper's state
 /// stays consistent.
 /// </remarks>
-internal sealed class JsonLinesTurnWriter : ITurnObserver, IProgress<AgentReply>
+internal sealed class JsonLinesTurnWriter : IOneShotOutput, ITurnObserver, IProgress<AgentReply>
 {
     // AG-UI's own serializer context, so the JSON is the SDK's. The relaxed encoder keeps
     // arrows, quotes and markup readable; every line is still valid JSON.
@@ -85,6 +85,13 @@ internal sealed class JsonLinesTurnWriter : ITurnObserver, IProgress<AgentReply>
 
     /// <summary>Ends the stream with <c>RUN_ERROR</c> (writing <c>RUN_STARTED</c> first if it never was).</summary>
     public void Fail(string code, string message) => Emit(m => [m.RunError(code, message)]);
+
+    // IOneShotOutput: the run id is the turn's correlation id, so the agent's run events line up.
+    string? IOneShotOutput.CorrelationId => RunId;
+    IProgress<AgentReply> IOneShotOutput.Progress => this;
+    ITurnObserver IOneShotOutput.Observer => this;
+    void IOneShotOutput.AttachmentStaged(AgentAttachment attachment) => AttachmentSent(attachment);
+    void IOneShotOutput.AttachmentFailed(string error) => Fail(TurnEventMapper.ErrorCodes.AttachmentFailed, error);
 
     private void Emit(Func<TurnEventMapper, IEnumerable<BaseEvent>> map)
     {

@@ -16,7 +16,7 @@ internal sealed class StatusCommand : AsyncCommand<CommonSettings.Plain>
         try
         {
             var proxy = host.Services.GetRequiredService<UserProxyService>();
-            var status = await proxy.GetActiveStatusAsync(settings.SessionId ?? "cli-session");
+            var status = await proxy.GetActiveStatusAsync(settings.EffectiveSessionId);
             if (status is null)
             {
                 Console.Error.WriteLine("error: agent did not respond before timeout");

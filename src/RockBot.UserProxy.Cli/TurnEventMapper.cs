@@ -14,7 +14,8 @@ namespace RockBot.UserProxy.Cli;
 /// Keeps the turn's state (activity ids, task lists), so it is not thread-safe: the caller
 /// serializes calls (<see cref="JsonLinesTurnWriter"/> does, under its lock). AG-UI has no field
 /// for some RockBot detail, such as tool-call durations and failures; that goes in the event's
-/// <c>metadata.rockbot</c> object, and the RockBot record it came from goes in <c>rawEvent</c>.
+/// <c>metadata.rockbot</c> object. Subagent lifecycle events also carry the RockBot record they
+/// came from in <c>rawEvent</c>, for its kind, thread and times.
 /// </remarks>
 internal sealed class TurnEventMapper(string threadId, string runId, TimeProvider? clock = null)
 {
@@ -124,15 +125,15 @@ internal sealed class TurnEventMapper(string threadId, string runId, TimeProvide
                             Content = content,
                             Role = "tool",
                             SubagentRunId = subagentRunId,
+                            // content already holds the result or the error; this adds only what
+                            // AG-UI has no field for.
                             Metadata = RockBotMetadata(new
                             {
                                 status = call.Phase,
                                 failed,
                                 call.DurationMs,
-                                call.Error,
                                 reply.AgentName,
                             }),
-                            RawEvent = ToElement(call),
                         }),
                     ];
                 }
@@ -164,21 +165,25 @@ internal sealed class TurnEventMapper(string threadId, string runId, TimeProvide
         return Stamp(new StateSnapshotEvent { Snapshot = StateDocument() });
     }
 
-    /// <summary>One task-list item changed: an RFC 6902 patch against the state.</summary>
+    /// <summary>
+    /// One task-list item changed: an RFC 6902 patch against the state. For a list the stream has
+    /// not shown yet, a snapshot instead: a patch would need a parent (<c>/taskLists</c>, or the
+    /// list) the consumer may never have been given.
+    /// </summary>
     public BaseEvent TaskListDelta(TaskListDelta delta)
     {
         var key = TaskListKey(delta.Source);
+        if (!_taskLists.TryGetValue(key, out var list))
+        {
+            _taskLists[key] = [delta.Item];
+            return Stamp(new StateSnapshotEvent { Snapshot = StateDocument() });
+        }
+
         var listPath = $"/taskLists/{EscapePointer(key)}";
         var item = ToNode(delta.Item);
         JsonObject op;
 
-        if (!_taskLists.TryGetValue(key, out var list))
-        {
-            // A delta for a list we never saw: create the list with this item.
-            _taskLists[key] = [delta.Item];
-            op = new JsonObject { ["op"] = "add", ["path"] = listPath, ["value"] = new JsonArray(item) };
-        }
-        else if (list.FindIndex(t => t.Id == delta.Item.Id) is var index and >= 0)
+        if (list.FindIndex(t => t.Id == delta.Item.Id) is var index and >= 0)
         {
             list[index] = delta.Item;
             op = new JsonObject { ["op"] = "replace", ["path"] = $"{listPath}/{index}", ["value"] = item };

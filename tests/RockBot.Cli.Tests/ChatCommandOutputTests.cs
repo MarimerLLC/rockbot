@@ -1,5 +1,8 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
+using Microsoft.Extensions.Options;
 using RockBot.UserProxy.Cli;
-using Spectre.Console.Cli;
 
 namespace RockBot.Cli.Tests;
 
@@ -14,7 +17,7 @@ public sealed class ChatCommandOutputTests
         // HostFactory.Build, so it needs no RabbitMQ.
         var settings = new ChatCommand.Settings { Output = "jsonl" };
 
-        var exitCode = await new ChatCommand().ExecuteAsync(Context(), settings);
+        var exitCode = await new ChatCommand().ExecuteAsync(TestCommandContext.Create(), settings);
 
         Assert.AreEqual(1, exitCode);
     }
@@ -46,14 +49,27 @@ public sealed class ChatCommandOutputTests
         Assert.IsFalse(settings.JsonLines);
     }
 
-    private static CommandContext Context() =>
-        new([], new NoRemainingArguments(), name: "chat", data: null);
-
-    private sealed class NoRemainingArguments : IRemainingArguments
+    [TestMethod]
+    public void SessionAndUser_DefaultInOnePlace()
     {
-        public ILookup<string, string?> Parsed { get; } =
-            Array.Empty<KeyValuePair<string, string?>>().ToLookup(p => p.Key, p => p.Value);
+        var defaults = new ChatCommand.Settings();
+        Assert.AreEqual(CommonSettings.DefaultSessionId, defaults.EffectiveSessionId);
+        Assert.AreEqual(CommonSettings.DefaultUserId, defaults.EffectiveUserId);
 
-        public IReadOnlyList<string> Raw { get; } = [];
+        var given = new ChatCommand.Settings { SessionId = "s1", UserId = "u1" };
+        Assert.AreEqual("s1", given.EffectiveSessionId);
+        Assert.AreEqual("u1", given.EffectiveUserId);
+    }
+
+    [TestMethod]
+    public void EveryHost_LogsToStderr()
+    {
+        // Stdout carries each command's result (a reply, the JSON-lines stream); a warning logged
+        // there would land in whatever the caller captured. Building the host connects nothing.
+        using var host = HostFactory.Build(new CommonSettings.Plain(), useRichFrontend: false);
+
+        var options = host.Services.GetRequiredService<IOptions<ConsoleLoggerOptions>>().Value;
+
+        Assert.AreEqual(LogLevel.Trace, options.LogToStandardErrorThreshold);
     }
 }

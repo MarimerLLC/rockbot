@@ -2,9 +2,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Console;
-using RockBot.UserProxy.Rendering;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -73,23 +70,50 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
             return 1;
         }
 
-        if (settings.JsonLines)
-            return await RunJsonLinesAsync(settings);
+        // With --output jsonl (#797), RUN_STARTED goes out before connecting, so even a turn that
+        // never reaches the agent has a first and a last line.
+        using var jsonOut = settings.JsonLines ? JsonLinesTurnWriter.StandardOutput() : null;
+        var writer = jsonOut is null
+            ? null
+            : new JsonLinesTurnWriter(jsonOut, threadId: settings.EffectiveSessionId, runId: Guid.NewGuid().ToString("N"));
+        writer?.Start();
 
-        using var host = HostFactory.Build(settings, useRichFrontend: !oneShot);
-
-        await host.StartAsync();
+        int? exitCode = null;
         try
         {
-            var proxy = host.Services.GetRequiredService<UserProxyService>();
+            using var host = HostFactory.Build(
+                settings,
+                useRichFrontend: !oneShot,
+                frontend: writer is null ? null : new JsonLinesFrontend(writer));
 
-            return oneShot
-                ? await RunOneShotAsync(proxy, settings)
-                : await RunInteractiveAsync(proxy, settings, host);
+            await host.StartAsync();
+            try
+            {
+                var proxy = host.Services.GetRequiredService<UserProxyService>();
+
+                exitCode = oneShot
+                    ? await RunOneShotAsync(proxy, settings, (IOneShotOutput?)writer ?? new TextOneShotOutput())
+                    : await RunInteractiveAsync(proxy, settings, host);
+                return exitCode.Value;
+            }
+            finally
+            {
+                await host.StopAsync();
+            }
         }
-        finally
+        catch (Exception ex) when (writer is not null)
         {
-            await host.StopAsync();
+            // Stdout is the JSON stream, so no exception may reach Spectre, which prints it there.
+            Console.Error.WriteLine($"error: {ex.Message}");
+
+            // Shutting down failed after the turn ended: the stream is complete, and the exit code
+            // is the turn's.
+            if (writer.IsClosed)
+                return exitCode ?? 1;
+
+            // Connecting to the broker, or the bus itself, failed.
+            writer.Fail(TurnEventMapper.ErrorCodes.ClientError, ex.Message);
+            return 1;
         }
     }
 
@@ -98,16 +122,14 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
     /// reference. The CLI has no access to that volume — it may not even be on the same machine —
     /// so the bytes go over the bus and only the reference rides on the message.
     /// </summary>
-    /// <param name="onStaged">
-    /// Called for each file the agent accepted. Without it, a <c>sent …</c> line goes to stderr.
-    /// </param>
+    /// <param name="onStaged">Called for each file the agent accepted.</param>
     /// <returns>
     /// The staged references, a process exit code (non-zero if any file failed), and what went
     /// wrong, which is also written to stderr.
     /// </returns>
     internal static async Task<(IReadOnlyList<AgentAttachment> Attachments, int ExitCode, string? Error)>
         UploadAttachmentsAsync(UserProxyService proxy, string[] paths, string sessionId, string userId,
-            Action<AgentAttachment>? onStaged = null)
+            Action<AgentAttachment> onStaged)
     {
         var staged = new List<AgentAttachment>(paths.Length);
 
@@ -141,151 +163,58 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
                 return Fail(1, $"{fileName} was not accepted — {response.Error}");
 
             staged.Add(response.Attachment);
-            if (onStaged is not null)
-                onStaged(response.Attachment);
-            else
-                Console.Error.WriteLine($"sent {AttachmentPlaceholder.Render(response.Attachment)}");
+            onStaged(response.Attachment);
         }
 
         return (staged, 0, null);
     }
 
-    private static async Task<string> ReadContentAsync(Settings settings) =>
-        settings.Message == "-"
+    /// <summary>
+    /// One turn: read the message, upload its attachments, send it and follow it to its end.
+    /// <paramref name="output"/> decides where it all goes (text or JSON lines).
+    /// </summary>
+    private static async Task<int> RunOneShotAsync(UserProxyService proxy, Settings settings, IOneShotOutput output)
+    {
+        var content = settings.Message == "-"
             ? await Console.In.ReadToEndAsync()
             : settings.Message!;
-
-    private static UserMessage OneShotMessage(
-        Settings settings, string content, IReadOnlyList<AgentAttachment>? attachments) => new()
-    {
-        Content = content,
-        SessionId = settings.SessionId ?? "cli-session",
-        UserId = settings.UserId ?? "cli-user",
-        TargetAgent = settings.TargetAgent,
-        ClientCapabilities = ClientCapabilityPresets.Cli,
-        ChannelName = "cli",
-        Attachments = attachments
-    };
-
-    /// <summary>
-    /// One-shot with <c>--output jsonl</c> (#797): the turn's events on stdout as AG-UI JSON
-    /// lines. <c>RUN_STARTED</c> goes out before connecting, so even a turn that never reaches
-    /// the agent has a first and a last line; stderr keeps only <c>error:</c> diagnostics.
-    /// </summary>
-    private static async Task<int> RunJsonLinesAsync(Settings settings)
-    {
-        using var stdout = JsonLinesTurnWriter.StandardOutput();
-        var writer = new JsonLinesTurnWriter(
-            stdout, threadId: settings.SessionId ?? "cli-session", runId: Guid.NewGuid().ToString("N"));
-        writer.Start();
-
-        try
-        {
-            using var host = HostFactory.Build(
-                settings,
-                useRichFrontend: false,
-                // The console logger writes to stdout by default; stdout is the JSON stream here.
-                configure: b => b.Services.Configure<ConsoleLoggerOptions>(o => o.LogToStandardErrorThreshold = LogLevel.Trace),
-                frontend: new JsonLinesFrontend(writer));
-            await host.StartAsync();
-            try
-            {
-                var proxy = host.Services.GetRequiredService<UserProxyService>();
-                return await RunJsonLinesTurnAsync(proxy, settings, writer);
-            }
-            finally
-            {
-                await host.StopAsync();
-            }
-        }
-        catch (Exception ex) when (!writer.IsClosed)
-        {
-            // Connecting to the broker, or the bus itself, failed: end the stream rather than let
-            // Spectre print the exception to stdout.
-            Console.Error.WriteLine($"error: {ex.Message}");
-            writer.Fail(TurnEventMapper.ErrorCodes.ClientError, ex.Message);
-            return 1;
-        }
-    }
-
-    private static async Task<int> RunJsonLinesTurnAsync(UserProxyService proxy, Settings settings, JsonLinesTurnWriter writer)
-    {
-        var content = await ReadContentAsync(settings);
 
         IReadOnlyList<AgentAttachment>? attachments = null;
         if (settings.Attach is { Length: > 0 })
         {
             var (uploaded, exitCode, error) = await UploadAttachmentsAsync(
-                proxy, settings.Attach, writer.ThreadId, settings.UserId ?? "cli-user", writer.AttachmentSent);
+                proxy, settings.Attach, settings.EffectiveSessionId, settings.EffectiveUserId, output.AttachmentStaged);
             if (exitCode != 0)
             {
-                writer.Fail(TurnEventMapper.ErrorCodes.AttachmentFailed, error ?? "an attachment could not be sent");
+                output.AttachmentFailed(error ?? "an attachment could not be sent");
                 return exitCode;
             }
             attachments = uploaded;
         }
 
-        // The run id is the turn's correlation id, so the agent's run events line up with ours.
-        var result = await proxy.SendTurnAsync(OneShotMessage(settings, content, attachments), new TurnOptions
+        var message = new UserMessage
         {
-            CorrelationId = writer.RunId,
-            Progress = writer,
-            Observer = writer,
-        });
-
-        if (ChatExitCodes.Describe(result) is { } problem)
-            Console.Error.WriteLine($"error: {problem}");
-
-        writer.Finish(result);
-        return ChatExitCodes.For(result.Outcome);
-    }
-
-    private static async Task<int> RunOneShotAsync(UserProxyService proxy, Settings settings)
-    {
-        var content = await ReadContentAsync(settings);
-
-        var sessionId = settings.SessionId ?? "cli-session";
-        var userId = settings.UserId ?? "cli-user";
-
-        IReadOnlyList<AgentAttachment>? attachments = null;
-        if (settings.Attach is { Length: > 0 })
-        {
-            var (uploaded, exitCode, _) = await UploadAttachmentsAsync(
-                proxy, settings.Attach, sessionId, userId);
-            if (exitCode != 0)
-                return exitCode;
-            attachments = uploaded;
-        }
-
-        var message = OneShotMessage(settings, content, attachments);
-
-        // Mirror intermediate progress (and the task list) to stderr so callers piping stdout
-        // get only the final reply text. Written synchronously, in arrival order.
-        var reporter = new CliTurnReporter(Console.Error.WriteLine);
+            Content = content,
+            SessionId = settings.EffectiveSessionId,
+            UserId = settings.EffectiveUserId,
+            TargetAgent = settings.TargetAgent,
+            ClientCapabilities = ClientCapabilityPresets.Cli,
+            ChannelName = "cli",
+            Attachments = attachments
+        };
 
         var result = await proxy.SendTurnAsync(message, new TurnOptions
         {
-            Progress = reporter,
-            Observer = reporter,
+            // JSON lines uses the turn's correlation id as its run id, so the agent's run events line up.
+            CorrelationId = output.CorrelationId,
+            Progress = output.Progress,
+            Observer = output.Observer,
         });
 
         if (ChatExitCodes.Describe(result) is { } problem)
             Console.Error.WriteLine($"error: {problem}");
 
-        var reply = result.Reply;
-        if (reply is null)
-            return ChatExitCodes.For(result.Outcome);
-
-        Console.Out.WriteLine(HtmlPlainTextRenderer.StripHtml(reply.Content));
-
-        // The one-shot form can't render binaries inline, so print a placeholder line per
-        // attachment — to stdout, alongside the reply content, matching PlainConsoleFrontend —
-        // so the caller knows an attachment was produced (and where).
-        if (reply.Attachments is { Count: > 0 })
-        {
-            foreach (var att in reply.Attachments)
-                Console.Out.WriteLine(AttachmentPlaceholder.Render(att));
-        }
+        output.Finish(result);
         return ChatExitCodes.For(result.Outcome);
     }
 
@@ -293,8 +222,8 @@ internal sealed class ChatCommand : AsyncCommand<ChatCommand.Settings>
     {
         var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
         var stoppingToken = lifetime.ApplicationStopping;
-        var sessionId = settings.SessionId ?? "cli-session";
-        var userId = settings.UserId ?? "cli-user";
+        var sessionId = settings.EffectiveSessionId;
+        var userId = settings.EffectiveUserId;
 
         AnsiConsole.MarkupLine($"[bold blue]RockBot User Proxy[/] [dim]v{Markup.Escape(AssemblyVersion.Current)}[/]");
 

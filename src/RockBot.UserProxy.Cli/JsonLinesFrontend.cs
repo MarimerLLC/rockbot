@@ -56,8 +56,19 @@ internal sealed class JsonLinesFrontend(JsonLinesTurnWriter writer) : IUserFront
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// The agent namespaces session ids as <c>session/&lt;id&gt;</c>, and not every reply strips
+    /// that (a subagent's tool progress keeps it), so compare the raw ids.
+    /// </summary>
     private bool IsThisSession(string? sessionId) =>
-        string.Equals(sessionId, writer.ThreadId, StringComparison.Ordinal);
+        string.Equals(RawSessionId(sessionId), RawSessionId(writer.ThreadId), StringComparison.Ordinal);
+
+    private const string SessionPrefix = "session/";
+
+    internal static string? RawSessionId(string? sessionId) =>
+        sessionId is not null && sessionId.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
+            ? sessionId[SessionPrefix.Length..]
+            : sessionId;
 
     private static bool IsBackgroundWork(ReplySource source) =>
         source.Kind is ReplySourceKind.Subagent or ReplySourceKind.Worker;

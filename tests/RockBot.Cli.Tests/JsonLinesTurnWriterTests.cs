@@ -117,13 +117,22 @@ public sealed class JsonLinesTurnWriterTests
         var ok = lines[3];
         Assert.AreEqual("open", Str(ok, "content"));
         var okMeta = ok.GetProperty("metadata").GetProperty("rockbot");
+        Assert.AreEqual("finished", Str(okMeta, "status"));
         Assert.IsFalse(okMeta.GetProperty("failed").GetBoolean());
         Assert.AreEqual(420, okMeta.GetProperty("durationMs").GetInt64());
-        Assert.AreEqual("finished", ok.GetProperty("rawEvent").GetProperty("phase").GetString());
 
         var failed = lines[4];
         Assert.AreEqual("404", Str(failed, "content"));
-        Assert.IsTrue(failed.GetProperty("metadata").GetProperty("rockbot").GetProperty("failed").GetBoolean());
+        var failedMeta = failed.GetProperty("metadata").GetProperty("rockbot");
+        Assert.AreEqual("failed", Str(failedMeta, "status"));
+        Assert.IsTrue(failedMeta.GetProperty("failed").GetBoolean());
+
+        // Each fact appears once: the result or error in content, the rest in metadata.
+        foreach (var result in new[] { ok, failed })
+        {
+            Assert.IsFalse(result.TryGetProperty("rawEvent", out _));
+            Assert.IsFalse(result.GetProperty("metadata").GetProperty("rockbot").TryGetProperty("error", out _));
+        }
     }
 
     [TestMethod]
@@ -163,7 +172,8 @@ public sealed class JsonLinesTurnWriterTests
         });
         _writer.OnTaskListDelta(new TaskListDelta { ThreadId = Session, Source = ReplySource.Primary, Item = Item("2", "completed") });
         _writer.OnTaskListDelta(new TaskListDelta { ThreadId = Session, Source = ReplySource.Primary, Item = Item("3", "pending") });
-        _writer.OnTaskListDelta(new TaskListDelta { ThreadId = Session, Source = ReplySource.Subagent("a/b"), Item = Item("1", "pending") });
+        _writer.OnTaskListSnapshot(new TaskListSnapshot { ThreadId = Session, Source = ReplySource.Subagent("a/b"), Items = [Item("1", "pending")] });
+        _writer.OnTaskListDelta(new TaskListDelta { ThreadId = Session, Source = ReplySource.Subagent("a/b"), Item = Item("1", "completed") });
 
         var lines = Lines().Skip(1).ToList();
 
@@ -182,10 +192,36 @@ public sealed class JsonLinesTurnWriterTests
         Assert.AreEqual("add", Str(Op(lines[2]), "op"));
         Assert.AreEqual("/taskLists/primary/-", Str(Op(lines[2]), "path"));
 
-        // A list never seen before is created; the key is escaped as a JSON Pointer segment.
-        Assert.AreEqual("add", Str(Op(lines[3]), "op"));
-        Assert.AreEqual("/taskLists/a~1b", Str(Op(lines[3]), "path"));
-        Assert.AreEqual(JsonValueKind.Array, Op(lines[3]).GetProperty("value").ValueKind);
+        // A second list joins the state; its key is escaped as a JSON Pointer segment in patches.
+        Assert.AreEqual("STATE_SNAPSHOT", Type(lines[3]));
+        Assert.AreEqual(3, lines[3].GetProperty("snapshot").GetProperty("taskLists").GetProperty("primary").GetArrayLength());
+        Assert.AreEqual("replace", Str(Op(lines[4]), "op"));
+        Assert.AreEqual("/taskLists/a~1b/0", Str(Op(lines[4]), "path"));
+    }
+
+    [TestMethod]
+    public void TaskList_DeltaForAListNeverShown_IsASnapshot()
+    {
+        // With no prior state event, the consumer has no /taskLists to patch: RFC 6902 'add'
+        // needs the parent to exist, so the stream gives the whole state instead.
+        _writer.OnTaskListDelta(new TaskListDelta { ThreadId = Session, Source = ReplySource.Primary, Item = Item("1", "in_progress") });
+        _writer.OnTaskListDelta(new TaskListDelta { ThreadId = Session, Source = ReplySource.Worker("w1"), Item = Item("1", "pending") });
+        _writer.OnTaskListDelta(new TaskListDelta { ThreadId = Session, Source = ReplySource.Primary, Item = Item("1", "completed") });
+
+        var lines = Lines().Skip(1).ToList();
+        CollectionAssert.AreEqual(
+            new[] { "STATE_SNAPSHOT", "STATE_SNAPSHOT", "STATE_DELTA" },
+            lines.Select(Type).ToArray());
+
+        var first = lines[0].GetProperty("snapshot").GetProperty("taskLists");
+        Assert.AreEqual("in_progress", first.GetProperty("primary")[0].GetProperty("status").GetString());
+
+        // The worker's list joins the state without losing the turn's.
+        var second = lines[1].GetProperty("snapshot").GetProperty("taskLists");
+        Assert.IsTrue(second.TryGetProperty("primary", out _));
+        Assert.AreEqual("pending", second.GetProperty("w1")[0].GetProperty("status").GetString());
+
+        Assert.AreEqual("/taskLists/primary/0", Str(lines[2].GetProperty("delta")[0], "path"));
     }
 
     [TestMethod]
@@ -367,6 +403,35 @@ public sealed class JsonLinesTurnWriterTests
         Assert.AreEqual("mine", Str(lines[0], "subagentRunId"));
         Assert.AreEqual("mine", Str(lines[2], "subagentRunId"));
         Assert.AreEqual(TurnEventMapper.CustomNames.Origin, Str(lines[5], "name"));
+    }
+
+    [TestMethod]
+    public void Frontend_MatchesANamespacedSessionId()
+    {
+        // A subagent's tool progress carries the primary session as the agent namespaces it.
+        IUserFrontend frontend = new JsonLinesFrontend(_writer);
+        var call = new ToolCallInfo { ToolCallId = "c1", ToolCallName = "web_search", Phase = ToolCallPhase.Started };
+
+        frontend.DisplayStatusAsync(Progress("Calling web_search…", call, ReplySource.Subagent("sub-1")) with
+        {
+            SessionId = $"session/{Session}",
+        });
+        frontend.DisplayStatusAsync(Progress("other") with { SessionId = "session/blazor-session" });
+
+        var lines = Lines().Skip(1).ToList();
+        CollectionAssert.AreEqual(new[] { "TOOL_CALL_START", "TOOL_CALL_END" }, lines.Select(Type).ToArray());
+        Assert.AreEqual("sub-1", Str(lines[0], "subagentRunId"));
+    }
+
+    [TestMethod]
+    [DataRow("cli-session", "cli-session")]
+    [DataRow("session/cli-session", "cli-session")]
+    [DataRow("Session/cli-session", "cli-session")]
+    [DataRow("subagent-1", "subagent-1")]
+    [DataRow(null, null)]
+    public void RawSessionId_StripsTheNamespace(string? sessionId, string? expected)
+    {
+        Assert.AreEqual(expected, JsonLinesFrontend.RawSessionId(sessionId));
     }
 
     [TestMethod]
