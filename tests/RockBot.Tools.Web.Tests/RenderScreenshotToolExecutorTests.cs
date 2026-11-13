@@ -187,6 +187,93 @@ public class RenderScreenshotToolExecutorTests
     }
 
     [TestMethod]
+    public async Task ExistingOutputFile_IsNeverOverwritten()
+    {
+        Write("exports/deck.html");
+        Write("exports/q3-chart.png", "the user's chart");
+        var service = new ScreenshotStub(() => PngResponse());
+
+        // file_write would refuse or keep a backup; this tool has neither, so it must not replace.
+        var response = await Executor(service).ExecuteAsync(
+            Request(new { path = "exports/deck.html", output_path = "exports/q3-chart.png" }), CancellationToken.None);
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content, "already exists");
+        Assert.AreEqual(0, service.Calls);
+        Assert.AreEqual("the user's chart", File.ReadAllText(Path.Combine(_root, "exports", "q3-chart.png")));
+    }
+
+    [TestMethod]
+    public async Task DefaultName_StepsAside_ForACaptureMadeInTheSameSecond()
+    {
+        Write("exports/deck.html");
+        var executor = Executor(new ScreenshotStub(() => PngResponse()));
+
+        var first = await executor.ExecuteAsync(Request(new { path = "exports/deck.html" }), CancellationToken.None);
+        var second = await executor.ExecuteAsync(Request(new { path = "exports/deck.html" }), CancellationToken.None);
+
+        Assert.IsFalse(first.IsError, first.Content);
+        Assert.IsFalse(second.IsError, second.Content);
+        StringAssert.Contains(first.Content, "tmp/screenshots/deck-20261113-101500.png");
+        StringAssert.Contains(second.Content, "tmp/screenshots/deck-20261113-101500-2.png");
+        Assert.AreEqual(2, Directory.GetFiles(Path.Combine(_root, "tmp", "screenshots")).Length);
+    }
+
+    [TestMethod]
+    [DataRow("1280.0", "720.0", 1280, 720)]   // float-typed numbers, as some models send them
+    [DataRow("1e3", "5e2", 1000, 500)]
+    [DataRow("\"1920\"", "\"1080.0\"", 1920, 1080)]
+    [DataRow("1e30", "-1e30", int.MaxValue, int.MinValue)] // absurd, but the service clamps; do not throw
+    public async Task ViewportNumbers_InAnyJsonForm_AreAccepted(string width, string height, int expectedWidth, int expectedHeight)
+    {
+        Write("exports/deck.html");
+        var service = new ScreenshotStub(() => PngResponse());
+        var request = new ToolInvokeRequest
+        {
+            ToolCallId = "call_1",
+            ToolName = "render_screenshot",
+            Arguments = $$"""{"path":"exports/deck.html","width":{{width}},"height":{{height}}}"""
+        };
+
+        var response = await Executor(service).ExecuteAsync(request, CancellationToken.None);
+
+        Assert.IsFalse(response.IsError, response.Content);
+        using var body = JsonDocument.Parse(service.LastBody!);
+        Assert.AreEqual(expectedWidth, body.RootElement.GetProperty("width").GetInt32());
+        Assert.AreEqual(expectedHeight, body.RootElement.GetProperty("height").GetInt32());
+    }
+
+    [TestMethod]
+    public async Task SymbolicLinkSource_IsRejected_WithoutCallingTheService()
+    {
+        // A link planted on the shared volume must not get the agent's own files posted and pictured.
+        var secret = Path.Combine(Path.GetDirectoryName(_root)!, $"secret-{Guid.NewGuid():N}.html");
+        File.WriteAllText(secret, "token");
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(Path.Combine(_root, "exports", "x.html"), secret);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Assert.Inconclusive($"Cannot create symbolic links here: {ex.Message}");
+            }
+            var service = new ScreenshotStub(() => PngResponse());
+
+            var response = await Executor(service).ExecuteAsync(Request(new { path = "exports/x.html" }), CancellationToken.None);
+
+            Assert.IsTrue(response.IsError);
+            StringAssert.Contains(response.Content, "symbolic link");
+            Assert.AreEqual(0, service.Calls);
+        }
+        finally
+        {
+            try { File.Delete(secret); } catch { /* best effort */ }
+        }
+    }
+
+    [TestMethod]
     public async Task NonHtmlSource_IsRejected_AndPointsAtAnalyzeFile()
     {
         File.WriteAllText(Path.Combine(_root, "exports", "deck.md"), "# Slide");

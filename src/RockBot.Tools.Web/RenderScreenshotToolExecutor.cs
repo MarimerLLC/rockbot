@@ -45,7 +45,7 @@ internal sealed class RenderScreenshotToolExecutor(
             width = GetInt(args, "width");
             height = GetInt(args, "height");
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             return Error(request, $"Invalid arguments: {ex.Message}");
         }
@@ -55,9 +55,9 @@ internal sealed class RenderScreenshotToolExecutor(
         if (string.IsNullOrWhiteSpace(options.RenderServiceUrl))
             return Error(request, "No render service is configured, so screenshots are not available.");
 
-        var source = ResolveUnderBase(path);
+        var source = SharedVolumePath.Resolve(options.SharedBasePath, path);
         if (source is null)
-            return Error(request, $"Invalid path '{path}': must be within the shared volume.");
+            return Error(request, $"Invalid path '{path}': must be a regular file within the shared volume (no symbolic links).");
         if (!File.Exists(source))
             return Error(request, $"File not found: {path}");
 
@@ -74,15 +74,26 @@ internal sealed class RenderScreenshotToolExecutor(
                 "Link large media instead of embedding it.");
 
         var stem = Path.GetFileNameWithoutExtension(source);
-        var relativeOutput = string.IsNullOrWhiteSpace(outputPath)
-            ? $"tmp/screenshots/{stem}-{_time.GetUtcNow().ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)}.png"
-            : outputPath.Trim();
+        var named = !string.IsNullOrWhiteSpace(outputPath);
+        var relativeOutput = named
+            ? outputPath!.Trim()
+            : $"tmp/screenshots/{stem}-{_time.GetUtcNow().ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)}.png";
         if (!relativeOutput.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
             return Error(request, $"Invalid output_path '{relativeOutput}': the screenshot is a PNG, so the name must end in .png.");
 
-        var target = ResolveUnderBase(relativeOutput);
+        var target = SharedVolumePath.Resolve(options.SharedBasePath, relativeOutput);
         if (target is null)
-            return Error(request, $"Invalid output_path '{relativeOutput}': must be within the shared volume.");
+            return Error(request, $"Invalid output_path '{relativeOutput}': must be within the shared volume (no symbolic links).");
+
+        // This tool has none of file_write's safeguards (read-before-overwrite, a .prev backup),
+        // so it never replaces a file: a name the model chose must be free, and the default name
+        // steps aside for an earlier capture made in the same second.
+        if (named && File.Exists(target))
+            return Error(request,
+                $"Invalid output_path '{relativeOutput}': a file with that name already exists and render_screenshot " +
+                "does not overwrite. Choose another name, or omit output_path.");
+        for (var n = 2; !named && File.Exists(target); n++)
+            target = Path.Combine(Path.GetDirectoryName(target)!, $"{Path.GetFileNameWithoutExtension(relativeOutput)}-{n}.png");
 
         try
         {
@@ -105,8 +116,17 @@ internal sealed class RenderScreenshotToolExecutor(
             if (png.Length == 0)
                 return Error(request, "The screenshot failed: the render service returned an empty image.");
 
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            await File.WriteAllBytesAsync(target, png, ct);
+            var directory = Path.GetDirectoryName(target)!;
+            var createdDirectory = !Directory.Exists(directory);
+            Directory.CreateDirectory(directory);
+
+            // CreateNew: if the name was taken between the check above and now, fail rather than replace.
+            await using (var file = new FileStream(
+                             target, FileMode.CreateNew, FileAccess.Write, FileShare.None, bufferSize: 81920, useAsync: true))
+            {
+                await file.WriteAsync(png, ct);
+            }
+            MakeShared(target, createdDirectory ? directory : null);
 
             var shown = Path.GetRelativePath(Path.GetFullPath(options.SharedBasePath), target).Replace('\\', '/');
             var content =
@@ -152,24 +172,26 @@ internal sealed class RenderScreenshotToolExecutor(
     }
 
     /// <summary>
-    /// Resolves a shared-volume path, relative or absolute, and returns null when it escapes the
-    /// volume. The comparison includes the separator, so a sibling directory whose name merely
-    /// starts with the base's does not pass.
+    /// Lets the other containers on the volume (script pods, MCP servers), which may run as another
+    /// user, read and remove the capture, as the file tools do for what they write. Best effort.
     /// </summary>
-    private string? ResolveUnderBase(string path)
+    private static void MakeShared(string file, string? newDirectory)
     {
+        if (OperatingSystem.IsWindows())
+            return;
         try
         {
-            var fullBase = Path.GetFullPath(options.SharedBasePath)
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var full = Path.GetFullPath(Path.Combine(fullBase, path.Trim()));
-            return full.StartsWith(fullBase + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                ? full
-                : null;
+            const UnixFileMode ReadWrite =
+                UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                UnixFileMode.GroupRead | UnixFileMode.GroupWrite |
+                UnixFileMode.OtherRead | UnixFileMode.OtherWrite;
+            File.SetUnixFileMode(file, ReadWrite);
+            if (newDirectory is not null)
+                File.SetUnixFileMode(newDirectory,
+                    ReadWrite | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
         }
-        catch (ArgumentException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return null;
         }
     }
 
@@ -181,12 +203,17 @@ internal sealed class RenderScreenshotToolExecutor(
     {
         if (!args.TryGetValue(name, out var value))
             return null;
-        return value.ValueKind switch
+        // 1280.0 and 1e3 are numbers too; the service clamps the size, so anything finite will do.
+        double? number = value.ValueKind switch
         {
-            JsonValueKind.Number => value.GetInt32(),
-            JsonValueKind.String when int.TryParse(value.GetString(), out var parsed) => parsed,
+            JsonValueKind.Number when value.TryGetDouble(out var d) => d,
+            JsonValueKind.String when double.TryParse(
+                value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var d) => d,
             _ => null
         };
+        return number is { } n && double.IsFinite(n)
+            ? (int)Math.Clamp(Math.Round(n), int.MinValue, int.MaxValue)
+            : null;
     }
 
     private static ToolInvokeResponse Error(ToolInvokeRequest request, string message) =>

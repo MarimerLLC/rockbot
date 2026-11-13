@@ -91,7 +91,7 @@ app.MapGet("/attachments", (string? file, HttpContext context) =>
     if (AttachmentPresentation.ContentSecurityPolicyFor(mime) is { } csp)
         context.Response.Headers.ContentSecurityPolicy = csp;
 
-    return Results.File(resolved, mime);
+    return Results.File(resolved, AttachmentPresentation.ContentTypeFor(mime));
 })
 // This endpoint serves PVC bytes. Left anonymous it is a side door around sign-in entirely —
 // however well the chat page is locked down, the attachments it references would not be. The

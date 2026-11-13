@@ -76,6 +76,8 @@ public class AttachmentEndpointHeaderTests
 
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
         Assert.AreEqual("text/html", response.Content.Headers.ContentType?.MediaType);
+        // With sniffing off, an undeclared charset means windows-1252 and mojibake for "·" and "é".
+        Assert.AreEqual("utf-8", response.Content.Headers.ContentType?.CharSet);
         Assert.AreEqual("sandbox allow-scripts", Header(response, "Content-Security-Policy"));
         Assert.AreEqual("nosniff", Header(response, "X-Content-Type-Options"));
     }

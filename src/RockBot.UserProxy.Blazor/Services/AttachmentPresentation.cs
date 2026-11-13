@@ -40,6 +40,18 @@ public static class AttachmentPresentation
     }
 
     /// <summary>
+    /// The <c>Content-Type</c> the endpoint sends for a file of type <paramref name="mime"/>.
+    /// HTML is declared UTF-8, which is what the agent's file tools write. Without a charset —
+    /// and with sniffing off — a document that has no <c>&lt;meta charset&gt;</c> is read as
+    /// windows-1252 and its punctuation and accents turn to mojibake, while the agent's own
+    /// screenshot of the same file, taken from decoded text, looks fine.
+    /// </summary>
+    public static string ContentTypeFor(string mime) =>
+        AttachmentMimeTypes.IsHtml(mime) && !mime.Contains("charset", StringComparison.OrdinalIgnoreCase)
+            ? $"{AttachmentMimeTypes.Html}; charset=utf-8"
+            : mime;
+
+    /// <summary>
     /// The <c>Content-Security-Policy</c> the endpoint sends for a file of type
     /// <paramref name="mime"/>, or null for none. HTML and SVG can both carry script, and served
     /// plainly they would run it in this app's origin when opened directly. SVG gets a full

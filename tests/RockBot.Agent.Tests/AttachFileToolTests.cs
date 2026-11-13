@@ -47,6 +47,9 @@ public sealed class AttachFileToolTests
 
     private IReadOnlyList<AgentAttachment> Drain() => _buffer.Drain(Session, Turn);
 
+    private string ReadAttachment(AgentAttachment attachment) =>
+        File.ReadAllText(Path.Combine(_attachments, attachment.Path.Replace('/', Path.DirectorySeparatorChar)));
+
     [TestMethod]
     public void ToolList_OffersAttachFile_BesideAttachImage()
     {
@@ -57,50 +60,75 @@ public sealed class AttachFileToolTests
     }
 
     [TestMethod]
-    public void HtmlOutsideAttachments_IsCopiedIntoPreviews_AndStagedAsHtml()
+    public async Task HtmlOutsideAttachments_IsCopiedIntoPreviews_AndStagedAsHtml()
     {
         Write("exports/deck.html", "<html>v1</html>");
 
-        var result = Tools().AttachFile("exports/deck.html");
+        var result = await Tools().AttachFile("exports/deck.html");
 
         StringAssert.Contains(result, "Attached");
         var staged = Drain();
         Assert.AreEqual(1, staged.Count);
         Assert.AreEqual("text/html", staged[0].Mime);
-        Assert.AreEqual("deck.html", staged[0].FileName);
+        Assert.AreEqual("deck.html", staged[0].FileName, "the user sees the name the agent gave the file");
 
         // The reference is relative to the attachments directory, which is all a client serves.
-        StringAssert.StartsWith(staged[0].Path, "previews/");
-        StringAssert.EndsWith(staged[0].Path, "/deck.html");
-        var copy = Path.Combine(_attachments, staged[0].Path.Replace('/', Path.DirectorySeparatorChar));
-        Assert.AreEqual("<html>v1</html>", File.ReadAllText(copy));
+        StringAssert.Matches(staged[0].Path, new System.Text.RegularExpressions.Regex(@"^previews/deck-[0-9a-f]{12}\.html$"));
+        Assert.AreEqual("<html>v1</html>", ReadAttachment(staged[0]));
     }
 
     [TestMethod]
-    public void AttachingTwice_KeepsBothSnapshots()
+    public async Task ARevisedFile_GetsANewSnapshot_AndTheEarlierOneIsKept()
     {
         var source = Write("exports/deck.html", "<html>v1</html>");
         var tools = Tools();
 
-        tools.AttachFile("exports/deck.html");
+        await tools.AttachFile("exports/deck.html");
         File.WriteAllText(source, "<html>v2</html>");
-        tools.AttachFile("exports/deck.html");
+        await tools.AttachFile("exports/deck.html");
 
         var staged = Drain();
         Assert.AreEqual(2, staged.Count);
         Assert.AreNotEqual(staged[0].Path, staged[1].Path);
-        string Read(AgentAttachment a) =>
-            File.ReadAllText(Path.Combine(_attachments, a.Path.Replace('/', Path.DirectorySeparatorChar)));
-        Assert.AreEqual("<html>v1</html>", Read(staged[0]), "an earlier reply keeps showing what it showed");
-        Assert.AreEqual("<html>v2</html>", Read(staged[1]));
+        Assert.AreEqual("<html>v1</html>", ReadAttachment(staged[0]), "an earlier reply keeps showing what it showed");
+        Assert.AreEqual("<html>v2</html>", ReadAttachment(staged[1]));
     }
 
     [TestMethod]
-    public void FileAlreadyUnderAttachments_IsReferencedInPlace()
+    public async Task TheSameContentAttachedTwiceInATurn_IsStagedOnce()
+    {
+        Write("exports/deck.html");
+        var tools = Tools();
+
+        await tools.AttachFile("exports/deck.html");
+        var second = await tools.AttachFile("exports/deck.html");
+
+        StringAssert.Contains(second, "already attached");
+        Assert.AreEqual(1, Drain().Count);
+    }
+
+    [TestMethod]
+    public async Task UnchangedContent_ReusesTheCopy_AcrossTurns()
+    {
+        Write("exports/deck.html");
+
+        await Tools().AttachFile("exports/deck.html");
+        // A later turn builds its own tools; iterating on a deck must not pile up identical copies.
+        var laterTurn = new AttachmentReplyTools(
+            new AttachmentStorage(_attachments), _buffer, Session, "turn-2", NullLogger.Instance);
+        await laterTurn.AttachFile("exports/deck.html");
+
+        var previews = Directory.GetFiles(Path.Combine(_attachments, "previews"));
+        Assert.AreEqual(1, previews.Length, "one copy per distinct content, and no temp files left behind");
+        Assert.AreEqual(Drain()[0].Path, _buffer.Drain(Session, "turn-2")[0].Path);
+    }
+
+    [TestMethod]
+    public async Task FileAlreadyUnderAttachments_IsReferencedInPlace()
     {
         Write("attachments/charts/q3.png", "png");
 
-        var result = Tools().AttachFile("attachments/charts/q3.png");
+        var result = await Tools().AttachFile("attachments/charts/q3.png");
 
         StringAssert.Contains(result, "Attached");
         var staged = Drain();
@@ -110,22 +138,40 @@ public sealed class AttachFileToolTests
     }
 
     [TestMethod]
-    public void AbsolutePathOnTheSharedVolume_IsAccepted()
+    public async Task AbsolutePathOnTheSharedVolume_IsAccepted()
     {
         var full = Write("exports/deck.html");
 
-        var result = Tools().AttachFile(full);
+        var result = await Tools().AttachFile(full);
 
         StringAssert.Contains(result, "Attached");
         Assert.AreEqual(1, Drain().Count);
     }
 
     [TestMethod]
-    public void FriendlyName_IsUsed()
+    public async Task PathsResolveAgainstTheFileToolsRoot_WhenItIsNotTheAttachmentsParent()
+    {
+        // FileSystem:BasePath and ROCKBOT_SHARED_PATH are separate settings. file_write and
+        // render_screenshot use the first, so attach_file must find "exports/deck.html" there too.
+        var fileToolsRoot = Path.Combine(_root, "elsewhere");
+        Directory.CreateDirectory(Path.Combine(fileToolsRoot, "exports"));
+        File.WriteAllText(Path.Combine(fileToolsRoot, "exports", "deck.html"), "<html>there</html>");
+        var tools = new AttachmentReplyTools(
+            new AttachmentStorage(_attachments), _buffer, Session, Turn, NullLogger.Instance,
+            ClientCapabilityPresets.Blazor, sharedRoot: fileToolsRoot);
+
+        var result = await tools.AttachFile("exports/deck.html");
+
+        StringAssert.Contains(result, "Attached");
+        Assert.AreEqual("<html>there</html>", ReadAttachment(Drain()[0]));
+    }
+
+    [TestMethod]
+    public async Task FriendlyName_IsUsed()
     {
         Write("exports/deck.html");
 
-        Tools().AttachFile("exports/deck.html", fileName: "Q3 review deck");
+        await Tools().AttachFile("exports/deck.html", fileName: "Q3 review deck");
 
         Assert.AreEqual("Q3 review deck", Drain()[0].FileName);
     }
@@ -133,18 +179,18 @@ public sealed class AttachFileToolTests
     [TestMethod]
     [DataRow("../outside.html")]
     [DataRow("exports/../../outside.html")]
-    public void Traversal_IsRejected(string path)
+    public async Task Traversal_IsRejected(string path)
     {
         File.WriteAllText(Path.Combine(Path.GetDirectoryName(_root)!, "outside.html"), "<html/>");
 
-        var result = Tools().AttachFile(path);
+        var result = await Tools().AttachFile(path);
 
         StringAssert.Contains(result, "outside the shared volume");
         Assert.AreEqual(0, Drain().Count);
     }
 
     [TestMethod]
-    public void AbsolutePathOutsideTheSharedVolume_IsRejected()
+    public async Task AbsolutePathOutsideTheSharedVolume_IsRejected()
     {
         // A sibling whose name merely starts with the root's must not pass a prefix check.
         var sibling = _root + "-sibling";
@@ -153,7 +199,7 @@ public sealed class AttachFileToolTests
         File.WriteAllText(outside, "<html/>");
         try
         {
-            var result = Tools().AttachFile(outside);
+            var result = await Tools().AttachFile(outside);
 
             StringAssert.Contains(result, "outside the shared volume");
             Assert.AreEqual(0, Drain().Count);
@@ -165,18 +211,47 @@ public sealed class AttachFileToolTests
     }
 
     [TestMethod]
-    public void MissingFile_IsRejected()
+    public async Task SymbolicLinkToAFileOutsideTheVolume_IsRejected_AndNothingIsCopied()
     {
-        var result = Tools().AttachFile("exports/nope.html");
+        // A script pod can plant a link on the shared volume that points at the agent's own files.
+        var secret = Path.Combine(Path.GetDirectoryName(_root)!, $"secret-{Guid.NewGuid():N}.html");
+        File.WriteAllText(secret, "token");
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(Path.Combine(_root, "exports", "x.html"), secret);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Assert.Inconclusive($"Cannot create symbolic links here: {ex.Message}");
+            }
+
+            var result = await Tools().AttachFile("exports/x.html");
+
+            StringAssert.Contains(result, "symbolic link");
+            Assert.AreEqual(0, Drain().Count);
+            Assert.IsFalse(Directory.Exists(Path.Combine(_attachments, "previews")));
+        }
+        finally
+        {
+            try { File.Delete(secret); } catch { /* best effort */ }
+        }
+    }
+
+    [TestMethod]
+    public async Task MissingFile_IsRejected()
+    {
+        var result = await Tools().AttachFile("exports/nope.html");
 
         StringAssert.Contains(result, "no such file");
         Assert.AreEqual(0, Drain().Count);
     }
 
     [TestMethod]
-    public void EmptyPath_IsRejected()
+    public async Task EmptyPath_IsRejected()
     {
-        var result = Tools().AttachFile(" ");
+        var result = await Tools().AttachFile(" ");
 
         StringAssert.Contains(result, "no path");
         Assert.AreEqual(0, Drain().Count);
@@ -186,11 +261,11 @@ public sealed class AttachFileToolTests
     [DataRow("exports/deck.md")]
     [DataRow("exports/run.py")]
     [DataRow("exports/noextension")]
-    public void TypeTheUserCannotBeShown_IsRejected_AndNamesTheAllowedTypes(string path)
+    public async Task TypeTheUserCannotBeShown_IsRejected_AndNamesTheAllowedTypes(string path)
     {
         Write(path, "# Slide one");
 
-        var result = Tools().AttachFile(path);
+        var result = await Tools().AttachFile(path);
 
         StringAssert.Contains(result, "Allowed types");
         StringAssert.Contains(result, ".html");
@@ -198,34 +273,34 @@ public sealed class AttachFileToolTests
     }
 
     [TestMethod]
-    public void OversizeFile_IsRejected()
+    public async Task OversizeFile_IsRejected()
     {
         var full = Write("exports/huge.html");
         using (var stream = new FileStream(full, FileMode.Open, FileAccess.Write))
             stream.SetLength(AttachmentReplyTools.MaxAttachFileBytes + 1);
 
-        var result = Tools().AttachFile("exports/huge.html");
+        var result = await Tools().AttachFile("exports/huge.html");
 
         StringAssert.Contains(result, "limit");
         Assert.AreEqual(0, Drain().Count);
     }
 
     [TestMethod]
-    public void Html_OnAClientThatPreviews_SaysTheUserSeesAPreview()
+    public async Task Html_OnAClientThatPreviews_SaysTheUserSeesAPreview()
     {
         Write("exports/deck.html");
 
-        var result = Tools(ClientCapabilityPresets.Blazor).AttachFile("exports/deck.html");
+        var result = await Tools(ClientCapabilityPresets.Blazor).AttachFile("exports/deck.html");
 
         StringAssert.Contains(result, "live preview");
     }
 
     [TestMethod]
-    public void Html_OnAClientThatCannotPreview_TellsTheAgentToGiveAnotherWay()
+    public async Task Html_OnAClientThatCannotPreview_TellsTheAgentToGiveAnotherWay()
     {
         Write("exports/deck.html");
 
-        var result = Tools(ClientCapabilityPresets.Cli).AttachFile("exports/deck.html");
+        var result = await Tools(ClientCapabilityPresets.Cli).AttachFile("exports/deck.html");
 
         StringAssert.Contains(result, "cannot preview HTML");
         StringAssert.Contains(result, "cloud storage");
@@ -233,11 +308,11 @@ public sealed class AttachFileToolTests
     }
 
     [TestMethod]
-    public void Pdf_OnAClientWithAttachments_IsDescribedAsALink()
+    public async Task Pdf_OnAClientWithAttachments_IsDescribedAsALink()
     {
         Write("exports/report.pdf", "%PDF-1.7");
 
-        var result = Tools(ClientCapabilityPresets.Blazor).AttachFile("exports/report.pdf");
+        var result = await Tools(ClientCapabilityPresets.Blazor).AttachFile("exports/report.pdf");
 
         StringAssert.Contains(result, "link");
         Assert.AreEqual("application/pdf", Drain()[0].Mime);

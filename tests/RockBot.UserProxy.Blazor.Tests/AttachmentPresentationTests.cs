@@ -46,6 +46,17 @@ public class AttachmentPresentationTests
     }
 
     [TestMethod]
+    [DataRow("text/html", "text/html; charset=utf-8")]
+    [DataRow("text/html; charset=iso-8859-1", "text/html; charset=iso-8859-1")] // an explicit one stands
+    [DataRow("image/png", "image/png")]
+    [DataRow("image/svg+xml", "image/svg+xml")] // XML declares its own encoding
+    [DataRow("application/pdf", "application/pdf")]
+    public void ContentTypeFor_DeclaresUtf8_ForHtmlOnly(string mime, string expected)
+    {
+        Assert.AreEqual(expected, AttachmentPresentation.ContentTypeFor(mime));
+    }
+
+    [TestMethod]
     public void MimeTable_KnowsHtml()
     {
         Assert.AreEqual("text/html", AttachmentPathResolver.GuessMime("deck.html"));

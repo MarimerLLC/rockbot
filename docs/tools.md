@@ -1058,7 +1058,17 @@ Requests the guard refused are counted in the `X-RockBot-Blocked-Requests` respo
 reported in the tool result. The capture is the first viewport (1280x720 by default, clamped to
 320-3840 by 240-2160).
 
-The output path must end in `.png` and stay on the shared volume. Guidance for the whole
+A picture shows whatever a frame or image loaded, so it is a stronger readout than the text
+`/render` returns. Playwright routes a request once, at its first URL, and the browser follows
+redirects without asking again; the service therefore records every redirect hop and, if one
+landed on a private or local address, discards the capture and answers 502. `timeoutMs` is one
+budget for the whole capture, including the wait for a free page, so it stays inside the
+caller's HTTP timeout.
+
+The output path must end in `.png`, stay on the shared volume, and name a file that does not
+exist: the tool has none of `file_write`'s overwrite safeguards, so it never replaces a file.
+Source and output paths go through `SharedVolumePath` (`RockBot.Tools.Abstractions`), which
+refuses anything reached through a symbolic link; `attach_file` uses the same resolver. Guidance for the whole
 write-check-deliver loop is in the code-owned `presentations` tool guide
 (`PresentationsSkillProvider`), and delivery is `attach_file` (see
 `design/client-rendering-capabilities.md`).

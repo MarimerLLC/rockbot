@@ -78,11 +78,13 @@ internal sealed class GuardedContext(BrowserHost host, UrlGuard guard, BrowserOp
     }
 
     /// <summary>Best effort: pages that keep polling never go idle, and are taken as they stand.</summary>
-    public async Task SettleAsync(IPage page, LoadState state)
+    /// <param name="maxMs">A tighter limit than the configured settle time, when the caller is on a budget.</param>
+    public async Task SettleAsync(IPage page, LoadState state, int? maxMs = null)
     {
         try
         {
-            await page.WaitForLoadStateAsync(state, new PageWaitForLoadStateOptions { Timeout = options.SettleMs });
+            var timeout = maxMs is { } max ? Math.Min(options.SettleMs, max) : options.SettleMs;
+            await page.WaitForLoadStateAsync(state, new PageWaitForLoadStateOptions { Timeout = timeout });
         }
         catch (PlaywrightException)
         {
