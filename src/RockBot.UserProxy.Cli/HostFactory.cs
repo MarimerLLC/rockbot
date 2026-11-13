@@ -13,10 +13,15 @@ namespace RockBot.UserProxy.Cli;
 /// </summary>
 internal static class HostFactory
 {
+    /// <param name="frontend">
+    /// A frontend to use instead of the rich or plain console one, such as
+    /// <see cref="JsonLinesFrontend"/>; <paramref name="useRichFrontend"/> is then ignored.
+    /// </param>
     public static IHost Build(
         CommonSettings settings,
         bool useRichFrontend,
-        Action<HostApplicationBuilder>? configure = null)
+        Action<HostApplicationBuilder>? configure = null,
+        IUserFrontend? frontend = null)
     {
         // Pass no args — CLI flags are already parsed by Spectre and applied
         // below as in-memory config; we don't want Microsoft's CommandLine
@@ -72,7 +77,9 @@ internal static class HostFactory
             }
         });
 
-        if (useRichFrontend)
+        if (frontend is not null)
+            builder.Services.AddSingleton(frontend);
+        else if (useRichFrontend)
             builder.Services.AddSingleton<IUserFrontend, SpectreConsoleFrontend>();
         else
             builder.Services.AddSingleton<IUserFrontend, PlainConsoleFrontend>();

@@ -329,6 +329,13 @@ One PR each.
 
 ## Testing
 
+**Already exercised by the CLI.** `rockbot chat --output jsonl` (#797, [`docs/cli.md`](../docs/cli.md))
+writes one turn's bus traffic as AG-UI events built with `AGUI.Abstractions` 1.0.1: the run lifecycle,
+progress as activity, tool calls, task lists as state, subagent lifecycle, the reply, and attachments
+and origins as `CUSTOM rockbot.*` events. The mapping lives in `TurnEventMapper`
+(`src/RockBot.UserProxy.Cli`). Phase 1 can move it into a shared library and reuse it, rather than
+writing a second one.
+
 - **Unit.** The `AgentReply` → event mapping and question-mode state are pure functions over
   recorded envelopes. Use `RockBot.Messaging.InProcess` for the proxy service.
 - **Conformance.** Drive `POST /agui` with `AGUI.Client`'s `AGUIChatClient` in an integration test,
