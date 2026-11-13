@@ -69,6 +69,11 @@ public static class ClientCapabilityPromptBuilder
         if (caps.HasFlag(ClientCapabilities.ImageAttachment))
             allow.Add("image attachments (PNG/JPEG) when a rendered chart conveys more than prose");
 
+        if (caps.HasFlag(ClientCapabilities.HtmlPreview))
+            allow.Add(
+                "an attached HTML document (a slide deck, a report page) shown as a live preview: " +
+                "write one self-contained .html file and attach it with `attach_file`");
+
         // ── Platform-native UI (future) ───────────────────────────────────
         var nativeUi = caps & ClientCapabilityMasks.NativeUi;
         if (nativeUi != 0)
@@ -102,7 +107,7 @@ internal static class ClientCapabilityMasks
         ClientCapabilities.LinkInline | ClientCapabilities.MarkdownStrikethrough |
         ClientCapabilities.MarkdownTaskList | ClientCapabilities.HtmlInline |
         ClientCapabilities.SvgInline | ClientCapabilities.ImageAttachment |
-        NativeUi;
+        ClientCapabilities.HtmlPreview | NativeUi;
 
     public const ClientCapabilities NativeUi =
         ClientCapabilities.DiscordEmbed | ClientCapabilities.SlackBlockKit |

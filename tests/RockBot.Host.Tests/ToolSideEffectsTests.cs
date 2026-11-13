@@ -28,6 +28,7 @@ public class ToolSideEffectsTests
     [DataRow("file_edit", null)]
     [DataRow("file_delete", null)]
     [DataRow("attach_image", null)]
+    [DataRow("attach_file", null)]
     [DataRow("schedule_task", null)]
     [DataRow("cancel_scheduled_task", null)]
     [DataRow("send_email", null)]
@@ -47,6 +48,7 @@ public class ToolSideEffectsTests
     [DataRow("file_get_path", null)]
     [DataRow("web_search", null)]
     [DataRow("web_browse", null)]
+    [DataRow("render_screenshot", null)]                        // a scratch PNG for the agent's own eyes
     [DataRow("get_file_base64", null)]
     [DataRow("list_completed", null)]
     [DataRow("search_memory", null)]

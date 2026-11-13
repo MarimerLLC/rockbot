@@ -77,13 +77,21 @@ app.MapRockBotAuthEndpoints(authOptions);
 // enforces containment under the shared attachments directory so this endpoint can't be coaxed
 // into serving arbitrary files via traversal or absolute paths.
 var attachmentResolver = AttachmentPathResolver.FromEnvironment();
-app.MapGet("/attachments", (string? file) =>
+app.MapGet("/attachments", (string? file, HttpContext context) =>
 {
     var resolved = attachmentResolver.Resolve(file);
     if (resolved is null)
         return Results.NotFound();
 
-    return Results.File(resolved, AttachmentPathResolver.GuessMime(resolved));
+    // These bytes were written by the agent, a script or a remote server. The declared type is
+    // the only one the browser may act on, and a type that can carry script (HTML, SVG) is
+    // confined to an opaque origin so it cannot use this app's cookies or circuit (#669).
+    var mime = AttachmentPathResolver.GuessMime(resolved);
+    context.Response.Headers.XContentTypeOptions = "nosniff";
+    if (AttachmentPresentation.ContentSecurityPolicyFor(mime) is { } csp)
+        context.Response.Headers.ContentSecurityPolicy = csp;
+
+    return Results.File(resolved, mime);
 })
 // This endpoint serves PVC bytes. Left anonymous it is a side door around sign-in entirely —
 // however well the chat page is locked down, the attachments it references would not be. The

@@ -1003,7 +1003,8 @@ Statuses: `blocked_by_consent_wall`, `js_required`, `empty`. The result is not a
 model can still use whatever text came back, but it is told plainly not to treat it as the page.
 
 **Render service (`RockBot.Browser`):** an ASP.NET sidecar running headless Chromium via
-Microsoft.Playwright (`POST /render {url, timeoutMs}`, `GET /health`). Each page gets a fresh
+Microsoft.Playwright (`POST /render {url, timeoutMs}`, `POST /screenshot` for `render_screenshot`
+below, `GET /health`). Each page gets a fresh
 browser context, so no cookies or storage carry over. It clicks away common consent banners,
 refusing before accepting. It is anonymous by design: pages behind a login stay out of reach.
 Because it shares the agent pod's network, it refuses loopback, private, link-local and
@@ -1033,11 +1034,41 @@ routes them through the GitHub REST API instead of the browser view:
 This returns cleaner structured data (title, state, author, labels, body) rather than HTML
 rendered for humans. Public repos work without authentication.
 
+### `render_screenshot(path, output_path?, width?, height?)`
+
+Lets the agent look at an HTML document it wrote: a slide deck, a report page. Registered only
+when `RenderServiceUrl` is set.
+
+```
+render_screenshot({ path: "exports/q3-review.html" })
+→ Saved a screenshot of exports/q3-review.html to tmp/screenshots/q3-review-20261113-101500.png ...
+analyze_file({ path: "tmp/screenshots/q3-review-20261113-101500.png", prompt: "Does any text overflow?" })
+```
+
+The executor reads the `.html` file from the shared volume (`WebToolOptions.SharedBasePath`, 4 MiB
+cap), posts its text to the render service (`POST /screenshot {html, width, height, timeoutMs}`)
+and writes the PNG it gets back to the shared volume, by default under `tmp/screenshots/`. The
+tool returns the PNG's path, not the image: seeing it takes `analyze_file`, and the result says so.
+
+The render service has no access to the shared volume, so the document must be self-contained:
+one file, with libraries, fonts and images on public URLs or inlined. The document's scripts run
+(that is how a deck draws its first slide) under the same confinement as any rendered page: a
+fresh context with no cookies, and no request to a loopback, private or link-local address.
+Requests the guard refused are counted in the `X-RockBot-Blocked-Requests` response header and
+reported in the tool result. The capture is the first viewport (1280x720 by default, clamped to
+320-3840 by 240-2160).
+
+The output path must end in `.png` and stay on the shared volume. Guidance for the whole
+write-check-deliver loop is in the code-owned `presentations` tool guide
+(`PresentationsSkillProvider`), and delivery is `attach_file` (see
+`design/client-rendering-capabilities.md`).
+
 ### DI registration
 
 ```csharp
 agent.AddWebTools(opts =>
 {
+    opts.SharedBasePath = "/rockbot/shared";          // where render_screenshot reads and writes
     opts.ApiKey = config["WebTools:ApiKey"];
     opts.ChunkingThreshold = 8000;
     opts.ChunkMaxLength = 4000;

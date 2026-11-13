@@ -89,6 +89,13 @@ public sealed class WebToolOptions
     public string? RenderServiceUrl { get; set; }
 
     /// <summary>
+    /// Root of the shared volume, which <c>render_screenshot</c> reads an HTML file from and
+    /// writes the PNG back to. Defaults to <c>/rockbot/shared</c>; set it to the same directory
+    /// as the file tools' <c>FileSystem:BasePath</c>.
+    /// </summary>
+    public string SharedBasePath { get; set; } = "/rockbot/shared";
+
+    /// <summary>
     /// How long the render service may spend on one page, in seconds. Defaults to 30.
     /// </summary>
     public int RenderTimeoutSeconds { get; set; } = 30;

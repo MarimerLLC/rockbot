@@ -10,6 +10,7 @@ internal sealed class WebToolRegistrar(
     IWebBrowseProvider browseProvider,
     IWorkingMemory workingMemory,
     WebToolOptions options,
+    IHttpClientFactory httpClientFactory,
     ILogger<WebToolRegistrar> logger) : IHostedService
 {
     private const string SearchSchema = """
@@ -48,6 +49,31 @@ internal sealed class WebToolRegistrar(
         }
         """;
 
+    private const string ScreenshotSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Shared-volume path of the .html file to capture, e.g. 'exports/q3-review.html'"
+            },
+            "output_path": {
+              "type": "string",
+              "description": "Where to save the PNG on the shared volume. Defaults to tmp/screenshots/<name>-<timestamp>.png"
+            },
+            "width": {
+              "type": "integer",
+              "description": "Viewport width in pixels (default 1280)"
+            },
+            "height": {
+              "type": "integer",
+              "description": "Viewport height in pixels (default 720)"
+            }
+          },
+          "required": ["path"]
+        }
+        """;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         registry.Register(new ToolRegistration
@@ -79,6 +105,28 @@ internal sealed class WebToolRegistrar(
             Source = "web"
         }, new WebBrowseToolExecutor(browseProvider, workingMemory, options));
         logger.LogInformation("Registered web tool: web_browse");
+
+        // Only with a render service: without one there is no browser to take the picture.
+        if (!string.IsNullOrWhiteSpace(options.RenderServiceUrl))
+        {
+            registry.Register(new ToolRegistration
+            {
+                Name = RenderScreenshotToolExecutor.ToolName,
+                Description = """
+                    Take a screenshot of an HTML file you wrote on the shared volume (a slide deck,
+                    a report page) as it renders in a real browser, and save it as a PNG on the
+                    shared volume. Returns the PNG's path; you have not seen the image until you
+                    call analyze_file on that path. Use it to check your own output — layout,
+                    overflow, missing styles — before telling the user it is ready. Captures the
+                    first viewport only (the title slide of a deck). The file must be
+                    self-contained: one .html file, with any libraries, fonts or images loaded
+                    from public URLs or inlined. Not for web pages: use web_browse for those.
+                    """,
+                ParametersSchema = ScreenshotSchema,
+                Source = "web"
+            }, new RenderScreenshotToolExecutor(httpClientFactory, options));
+            logger.LogInformation("Registered web tool: {Tool}", RenderScreenshotToolExecutor.ToolName);
+        }
 
         return Task.CompletedTask;
     }

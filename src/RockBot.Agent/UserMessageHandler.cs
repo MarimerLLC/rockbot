@@ -277,9 +277,11 @@ internal sealed class UserMessageHandler(
             var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger,
                 options: workingMemoryOptions?.Value);
 
-            // Per-turn attachment tool — attach_image stages files for this turn's final reply.
+            // Per-turn attachment tools — attach_image and attach_file stage files for this turn's
+            // final reply. The client's capabilities let attach_file say what the user will see.
             var attachmentReplyTools = new AttachmentReplyTools(
-                attachmentStorage, attachmentBuffer, message.SessionId, turnId, logger);
+                attachmentStorage, attachmentBuffer, message.SessionId, turnId, logger,
+                message.ClientCapabilities);
 
             // Per-session skill tools with usage tracking
             var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore,

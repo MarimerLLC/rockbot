@@ -103,6 +103,45 @@ body {
     width: fit-content;
 }
 
+/* An attached HTML document (a deck, a report) shown live. A fixed width with a max keeps the
+   frame from collapsing inside a shrink-to-fit message bubble. */
+.message-attachments .attachment-preview {
+    width: 720px;
+    max-width: 100%;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 6px;
+    overflow: hidden;
+    background: #fff;
+}
+
+.message-attachments .attachment-preview-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.25rem 0.6rem;
+    font-size: 0.85rem;
+    background: rgba(0, 0, 0, 0.04);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.message-attachments .attachment-preview-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.message-attachments .attachment-preview-bar .attachment-link {
+    flex-shrink: 0;
+}
+
+.message-attachments .attachment-preview-frame {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border: 0;
+}
+
 /* Links inside user bubbles (blue bg) must be white to stay visible */
 .user-message .message-bubble .message-content a {
     color: rgba(255, 255, 255, 0.9);

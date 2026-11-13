@@ -214,6 +214,9 @@ services:
       # blazor-init above exists to guarantee: Docker named volumes are root-owned and
       # the image runs as a non-root user. Kubernetes gets this free from fsGroup.
       DataProtection__KeyRingPath: /data/blazor/keys
+      # Reply attachments (images, HTML previews) are served from the shared volume the
+      # agent writes them to; mounted read-only below.
+      ROCKBOT_SHARED_PATH: /rockbot/shared
       # -- OAuth sign-in (optional) --
       # Off unless BLAZOR_AUTH_ENABLED=true in .env. Google is the only provider today.
       #
@@ -233,6 +236,7 @@ services:
       Auth__AllowedEmails__0: ${BLAZOR_AUTH_ALLOWED_EMAILS:-}
     volumes:
       - blazor-data:/data/blazor
+      - shared:/rockbot/shared:ro
 
 volumes:
   rabbitmq-data:

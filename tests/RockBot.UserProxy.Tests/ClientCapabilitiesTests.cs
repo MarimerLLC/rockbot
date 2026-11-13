@@ -58,6 +58,19 @@ public sealed class ClientCapabilitiesTests
     }
 
     [TestMethod]
+    public void HtmlPreview_IsBlazorOnly_AmongDeclaredPresets()
+    {
+        // Only Blazor has a sandboxed frame to show an attached HTML document in (#669). The flag
+        // decides what attach_file tells the model the user will see.
+        Assert.IsTrue(ClientCapabilityPresets.Blazor.HasFlag(ClientCapabilities.HtmlPreview));
+        Assert.IsFalse(ClientCapabilityPresets.Cli.HasFlag(ClientCapabilities.HtmlPreview));
+        Assert.IsFalse(ClientCapabilityPresets.Teams.HasFlag(ClientCapabilities.HtmlPreview));
+        Assert.IsFalse(ClientCapabilityPresets.Slack.HasFlag(ClientCapabilities.HtmlPreview));
+        Assert.IsFalse(ClientCapabilityPresets.Discord.HasFlag(ClientCapabilities.HtmlPreview));
+        Assert.IsFalse(ClientCapabilityPresets.WhatsApp.HasFlag(ClientCapabilities.HtmlPreview));
+    }
+
+    [TestMethod]
     public void CliPreset_IsMarkdownOnly()
     {
         var preset = ClientCapabilityPresets.Cli;

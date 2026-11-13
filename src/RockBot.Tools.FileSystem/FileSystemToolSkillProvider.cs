@@ -182,6 +182,12 @@ internal sealed class FileSystemToolSkillProvider(IServiceProvider services) : I
         // → "/rockbot/shared/exports/chart.png"
         ```
 
+        ### Showing a file to the user
+        A file the user should look at — an HTML deck or report, a PDF, an image — goes
+        out with your reply through `attach_file(path: "exports/q3-review.html")`. Do not
+        tell the user a shared-volume path: they cannot open it. For decks and other
+        visual HTML, read the `presentations` guide first.
+
 
         ## Path Conventions
 
