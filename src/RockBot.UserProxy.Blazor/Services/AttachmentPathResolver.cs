@@ -80,19 +80,5 @@ public sealed class AttachmentPathResolver
     /// <summary>
     /// Best-effort MIME lookup from the file extension, for the <c>Content-Type</c> response header.
     /// </summary>
-    public static string GuessMime(string fileName)
-    {
-        var ext = Path.GetExtension(fileName).ToLowerInvariant();
-        return ext switch
-        {
-            ".png" => "image/png",
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".gif" => "image/gif",
-            ".webp" => "image/webp",
-            ".svg" => "image/svg+xml",
-            ".bmp" => "image/bmp",
-            ".pdf" => "application/pdf",
-            _ => "application/octet-stream"
-        };
-    }
+    public static string GuessMime(string fileName) => AttachmentMimeTypes.FromFileName(fileName);
 }

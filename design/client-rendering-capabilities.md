@@ -370,6 +370,27 @@ These are deliberately out of scope for v1:
   (the buffer is now keyed and swept to make that safe), SVG→PNG rasterization, chat-platform
   proxies (none exist yet), and attachments in conversation-history replay (replies are
   ephemeral; history stores text).
+- **HTML previews** — ✅ **implemented** (issue #669). `ClientCapabilities.HtmlPreview` (bit 19,
+  in the Blazor preset) says the client can show an attached HTML document live. Producing side:
+  `attach_file` (`AttachmentReplyTools`) takes a file anywhere on the shared volume — the file
+  tools cannot write `attachments/` — copies it to `attachments/previews/<name>-<content hash>.<ext>`
+  and stages an `AgentAttachment` with `mime: text/html` (PDF, SVG and images are accepted too).
+  The copy is a snapshot, so an earlier reply keeps showing what it showed; naming it after its
+  content means an unchanged file attached again reuses the copy. Paths resolve against the file
+  tools' root (`FileSystem:BasePath`) through `SharedVolumePath`, which also refuses a file
+  reached through a symbolic link, since script pods can plant one. The tool result tells the model
+  whether this client previews HTML, so it can fall back to cloud storage for one that does not.
+  Rendering side: `AttachmentList.razor` shows `text/html` in an
+  `<iframe sandbox="allow-scripts">` with an "open in new tab" link, and the `/attachments`
+  endpoint sends `Content-Security-Policy: sandbox allow-scripts` for HTML (`sandbox` for SVG)
+  plus `X-Content-Type-Options: nosniff` on everything, and declares HTML as UTF-8 so a document
+  without `<meta charset>` reads the same for the user as it did in the agent's screenshot. Neither sandbox has `allow-same-origin`:
+  an agent-written document runs its scripts in an opaque origin, without the app's cookie or
+  circuit, whether framed or opened directly. `AttachmentPresentation` holds both decisions so
+  they cannot drift. A separate preview origin would be stronger isolation and is not done.
+  Previews last as long as the file: the shared-volume sweep removes it 30 days after it was
+  written. The agent checks its own output first with `render_screenshot` + `analyze_file`
+  (`docs/tools.md`).
 - **Platform-native UI emission** — `DiscordEmbed` / `SlackBlockKit` /
   `TeamsAdaptiveCard` bits are reserved in the enum but no tooling produces
   them. Adding them is opportunistic upgrade work in each proxy (e.g., a

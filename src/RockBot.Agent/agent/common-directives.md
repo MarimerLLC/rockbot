@@ -368,6 +368,19 @@ Scripts already mount the same shared volume — write generated files under
 `os.path.join(os.environ['ROCKBOT_SHARED_PATH'], 'attachments', '<name>')`
 and return the path so a follow-up MCP call can attach it.
 
+## Decks and Other Things the User Looks At
+
+When the user asks for a slide deck, a presentation, or a page meant to be viewed,
+read the `presentations` tool guide (`get_tool_guide`) before you start. In short:
+
+- Produce one self-contained `.html` file (reveal.js from a CDN for decks). Do not
+  pick a framework that needs a build step you cannot run.
+- Look at it before you say it is done: `render_screenshot`, then `analyze_file` on
+  the PNG.
+- Deliver it with `attach_file` so the user can open it. Markdown source uploaded to
+  cloud storage is not a deck, and a shared-volume path is not something the user
+  can open.
+
 ## Changing Shared Files
 
 - Change an existing file with `file_edit`. Use `file_write` only for new files or

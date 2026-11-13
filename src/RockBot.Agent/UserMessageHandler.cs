@@ -70,7 +70,8 @@ internal sealed class UserMessageHandler(
     IncompleteReplyCheck? incompleteCheck = null,
     CompletionCheckClassifier? completionCheck = null,
     ISavedResponseStore? savedResponseStore = null,
-    ResultArchive? resultArchive = null) : IMessageHandler<UserMessage>
+    ResultArchive? resultArchive = null,
+    RockBot.Tools.FileSystem.FileSystemOptions? fileSystemOptions = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -277,9 +278,13 @@ internal sealed class UserMessageHandler(
             var sessionWorkingMemoryTools = new WorkingMemoryTools(workingMemory, sessionNamespace, logger,
                 options: workingMemoryOptions?.Value);
 
-            // Per-turn attachment tool — attach_image stages files for this turn's final reply.
+            // Per-turn attachment tools — attach_image and attach_file stage files for this turn's
+            // final reply. The client's capabilities let attach_file say what the user will see.
+            // attach_file names files the way file_write does, so it resolves them against the
+            // file tools' root rather than assuming the attachments directory sits under it.
             var attachmentReplyTools = new AttachmentReplyTools(
-                attachmentStorage, attachmentBuffer, message.SessionId, turnId, logger);
+                attachmentStorage, attachmentBuffer, message.SessionId, turnId, logger,
+                message.ClientCapabilities, fileSystemOptions?.BasePath);
 
             // Per-session skill tools with usage tracking
             var sessionSkillTools = new SkillTools(skillStore, llmClient, logger, message.SessionId, skillUsageStore,

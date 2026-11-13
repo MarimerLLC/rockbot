@@ -9,7 +9,8 @@ namespace RockBot.Tools.Web;
 internal sealed class WebToolSkillProvider : IToolSkillProvider
 {
     public string Name => "web";
-    public string Summary => "Web search and page browsing tools (web_search, web_browse).";
+    public string Summary =>
+        "Web search and page browsing tools (web_search, web_browse), and render_screenshot for checking HTML you wrote.";
 
     public string GetDocument() =>
         """
@@ -191,6 +192,16 @@ internal sealed class WebToolSkillProvider : IToolSkillProvider
         Fetch a web page and receive its full content as Markdown.
         Use this when you need more than the snippet — full articles, documentation,
         release notes, or structured data.
+
+        ### render_screenshot
+        Not for web pages. It renders an HTML file **you wrote** on the shared volume
+        (a slide deck, a report page) in the same headless browser and saves a PNG, so
+        you can check your own output with `analyze_file` before showing it to the user.
+        Offered only when a render service is configured. See the `presentations` guide.
+
+        ```
+        render_screenshot(path: "exports/q3-review.html")
+        ```
 
 
         ## Best Practices

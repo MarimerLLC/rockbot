@@ -409,6 +409,7 @@ builder.Services.AddSingleton<SkillRecallTracker>();
 // Tool guides for memory and skill subsystems
 builder.Services.AddSingleton<IToolSkillProvider, MemoryToolSkillProvider>();
 builder.Services.AddSingleton<IToolSkillProvider, SkillToolSkillProvider>();
+builder.Services.AddSingleton<IToolSkillProvider, PresentationsSkillProvider>();
 
 builder.Services.AddRockBotHost(agent =>
 {
@@ -445,7 +446,12 @@ builder.Services.AddRockBotHost(agent =>
         responseTimeout: TimeSpan.FromSeconds(
             mcpProxySection.GetValue("ResponseTimeoutSeconds", 930)));
     agent.AddFileSystemTools(opts => builder.Configuration.GetSection("FileSystem").Bind(opts));
-    agent.AddWebTools(opts => builder.Configuration.GetSection("WebTools").Bind(opts));
+    agent.AddWebTools(opts =>
+    {
+        // render_screenshot reads and writes the same shared volume as the file tools.
+        opts.SharedBasePath = builder.Configuration["FileSystem:BasePath"] ?? "/rockbot/shared";
+        builder.Configuration.GetSection("WebTools").Bind(opts);
+    });
     agent.AddSchedulingTools();
     agent.AddHeartbeatBootstrap(opts =>
         builder.Configuration.GetSection("HeartbeatPatrol").Bind(opts));

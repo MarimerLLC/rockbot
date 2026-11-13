@@ -26,6 +26,7 @@ public enum ClientCapabilities : ulong
     HtmlInline        = 1UL << 16,   // sanitized HTML inside markdown
     SvgInline         = 1UL << 17,   // inline <svg>
     ImageAttachment   = 1UL << 18,   // out-of-band image binaries
+    HtmlPreview       = 1UL << 19,   // an attached HTML document (a deck, a report) shown as a sandboxed preview
 
     // Platform-native UI primitives, reserved for future proxies (bits 32–47)
     DiscordEmbed      = 1UL << 32,
@@ -59,7 +60,7 @@ public static class ClientCapabilityPresets
         ClientCapabilities.MarkdownTables | ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline |
         ClientCapabilities.MarkdownStrikethrough | ClientCapabilities.MarkdownTaskList |
         ClientCapabilities.HtmlInline | ClientCapabilities.SvgInline | ClientCapabilities.ImageAttachment |
-        ClientCapabilities.InteractiveForms;
+        ClientCapabilities.HtmlPreview | ClientCapabilities.InteractiveForms;
 
     // Documented in advance so capability-vocabulary decisions stay coherent —
     // not used by code until those proxies ship.

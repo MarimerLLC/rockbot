@@ -1,7 +1,9 @@
 @* Renders agent reply attachments natively, OUTSIDE the markdown sanitizer (which strips
-   <img> and data: URLs). Image MIME types render as <img> served from the /attachments
-   endpoint; anything else renders as a download link. Bytes are served by the endpoint —
-   only a path reference reaches the browser here. *@
+   <img>, <iframe> and data: URLs). Image MIME types render as <img> served from the
+   /attachments endpoint; an HTML document (a deck, a report) renders as a sandboxed frame with
+   a link to open it full-window; anything else renders as a link. Bytes are served by the
+   endpoint — only a path reference reaches the browser here. *@
+@using RockBot.UserProxy.Blazor.Services
 
 @if (Attachments is { Count: > 0 })
 {
@@ -10,13 +12,30 @@
         {
             var label = string.IsNullOrWhiteSpace(att.FileName) ? att.Path : att.FileName;
             var url = $"/attachments?file={Uri.EscapeDataString(att.Path)}";
-            @if (att.Mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            @switch (AttachmentPresentation.KindFor(att.Mime))
             {
-                <img class="attachment-image" src="@url" alt="@label" loading="lazy" />
-            }
-            else
-            {
-                <a class="attachment-link" href="@url" target="_blank" rel="noopener">📎 @label</a>
+                case AttachmentKind.Image:
+                    <img class="attachment-image" src="@url" alt="@label" loading="lazy" />
+                    break;
+
+                case AttachmentKind.HtmlPreview:
+                    @* The sandbox has no allow-same-origin: the document runs its scripts in an
+                       opaque origin and cannot touch this app. The endpoint sends the same
+                       sandbox as a response header for the open-in-new-tab case. *@
+                    <div class="attachment-preview">
+                        <div class="attachment-preview-bar">
+                            <span class="attachment-preview-title">@label</span>
+                            <a class="attachment-link" href="@url" target="_blank" rel="noopener">Open in new tab ↗</a>
+                        </div>
+                        <iframe class="attachment-preview-frame" src="@url" title="@label"
+                                sandbox="@AttachmentPresentation.HtmlSandbox" loading="lazy"
+                                referrerpolicy="no-referrer" allowfullscreen></iframe>
+                    </div>
+                    break;
+
+                default:
+                    <a class="attachment-link" href="@url" target="_blank" rel="noopener">📎 @label</a>
+                    break;
             }
         }
     </div>
