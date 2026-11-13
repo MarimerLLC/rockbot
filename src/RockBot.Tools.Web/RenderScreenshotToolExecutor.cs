@@ -132,7 +132,11 @@ internal sealed class RenderScreenshotToolExecutor(
             var content =
                 $"Saved a screenshot of {path} to {shown} ({png.Length:N0} bytes, first viewport only). " +
                 $"You have not seen it yet: call analyze_file(path: \"{shown}\", prompt: ...) to check " +
-                "layout, overflow and legibility before you tell the user it is ready.";
+                "layout, overflow and legibility before you tell the user it is ready. " +
+                // The guide that says this may have aged out of context by the time the check
+                // passes, and a path on the shared volume is the natural thing to hand over.
+                $"When it passes, deliver it with attach_file(path: \"{path}\"): the user cannot open a " +
+                "shared-volume path, so do not give them one in place of the attachment.";
 
             if (response.Headers.TryGetValues(BlockedRequestsHeader, out var values) &&
                 int.TryParse(values.FirstOrDefault(), out var blocked) && blocked > 0)

@@ -77,6 +77,10 @@ public class RenderScreenshotToolExecutorTests
         // A saved path is not a look at the slide; the next step has to be named.
         StringAssert.Contains(response.Content, "analyze_file");
         StringAssert.Contains(response.Content, "not seen");
+        // Live, the presentations guide aged out of context before delivery and the agent handed
+        // the user a shared-volume path. The step after the check is named here, where it is read.
+        StringAssert.Contains(response.Content, "attach_file(path: \"exports/deck.html\")");
+        StringAssert.Contains(response.Content, "cannot open a shared-volume path");
     }
 
     [TestMethod]
