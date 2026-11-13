@@ -39,7 +39,7 @@ public abstract class CommonSettings : CommandSettings
     public string? UserId { get; init; }
 
     [CommandOption("--timeout <SECONDS>")]
-    [Description("Reply timeout in seconds (default: 180)")]
+    [Description("Reply timeout in seconds (default: 180). When given, also the longest a turn may run even while the agent reports progress (default: 30 minutes).")]
     public int? TimeoutSeconds { get; init; }
 
     [CommandOption("--proxy-id <ID>")]

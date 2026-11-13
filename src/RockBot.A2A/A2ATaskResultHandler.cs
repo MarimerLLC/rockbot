@@ -339,6 +339,7 @@ internal sealed class A2ATaskResultHandler(
         {
             using var progressCtx = ToolProgressNotifier.SetContext(new ToolProgressContext
             {
+                Source = UserProxy.ReplySource.A2A,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
                 ReplyTo = $"{UserProxyTopics.UserResponse}.{agent.Name}"
@@ -356,6 +357,7 @@ internal sealed class A2ATaskResultHandler(
 
             var reply = new AgentReply
             {
+                Source = UserProxy.ReplySource.A2A,
                 Content = finalContent,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
@@ -407,6 +409,7 @@ internal sealed class A2ATaskResultHandler(
         {
             var reply = new AgentReply
             {
+                Source = UserProxy.ReplySource.A2A,
                 Content = errorMessage,
                 SessionId = rawSessionId,
                 AgentName = DisplayName,

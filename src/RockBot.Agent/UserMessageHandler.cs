@@ -161,6 +161,14 @@ internal sealed class UserMessageHandler(
         logger.LogInformation("Received message from {UserId} in session {SessionId}: {Content}",
             message.UserId, message.SessionId, message.Content);
 
+        // #795: run started/heartbeat/finished for a proxy that asked for them. This method owns
+        // the run until it hands the turn to a background loop, which then finishes it.
+        var turn = new TurnLifecycle(
+            publisher, agent.Name, message.SessionId, correlationId, replyTo,
+            eventsEnabled: message.ClientCapabilities.HasFlag(ClientCapabilities.AgentEvents),
+            heartbeatInterval: TimeSpan.FromSeconds(hostOptions.Value.RunHeartbeatIntervalSeconds),
+            logger);
+
         // Establish whether this session already has an active topical thread, so
         // the tier selector can route follow-ups through Balanced instead of
         // Low. Read prior turns before AddTurnAsync runs (further below) so the
@@ -214,6 +222,9 @@ internal sealed class UserMessageHandler(
 
         try
         {
+            // Started inside the try, so every way out of it finishes the run.
+            await turn.StartAsync(ct);
+
             var turnAttachments = ToTurnAttachments(message.Attachments);
 
             await conversationMemory.AddTurnAsync(
@@ -331,7 +342,7 @@ internal sealed class UserMessageHandler(
                 turnActivityHandedOff = true;
                 context.Items[WipConstants.DeferredKey] = true;
                 _ = NativeLlmLoopAsync(chatMessages, chatOptions, classification, message.Content, postInjectionTokenEstimate,
-                    message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                    message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, turn, sessionCt);
             }
             else
             {
@@ -379,7 +390,7 @@ internal sealed class UserMessageHandler(
                     context.Items[WipConstants.DeferredKey] = true;
                     _ = BackgroundToolLoopAsync(
                         chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
-                        message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                        message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, turn, sessionCt);
                 }
                 else
                 {
@@ -399,7 +410,7 @@ internal sealed class UserMessageHandler(
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
-                            message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                            message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, turn, sessionCt);
                     }
                     else if (modelBehavior.NudgeOnHallucinatedToolCalls
                         && (HallucinatedActionRegex.IsMatch(text) || AgentLoopRunner.CapabilityDenialRegex.IsMatch(text)))
@@ -416,7 +427,7 @@ internal sealed class UserMessageHandler(
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
-                            message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                            message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, turn, sessionCt);
                     }
                     else if (CompletionEvalTriggers.NeedsCheckWithoutTools(text, message.Content)
                         // The regexes found nothing: the decision model's completion check, which the
@@ -439,7 +450,7 @@ internal sealed class UserMessageHandler(
                         context.Items[WipConstants.DeferredKey] = true;
                         _ = BackgroundToolLoopAsync(
                             chatMessages, chatOptions, firstResponse, classification, message.Content, postInjectionTokenEstimate,
-                            message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, sessionCt);
+                            message.SessionId, turnId, replyTo, correlationId, sessionHandle.Generation, wipMessageId, turnActivity, turn, sessionCt);
                     }
                     else
                     {
@@ -469,6 +480,7 @@ internal sealed class UserMessageHandler(
                             ct);
 
                         await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, turnId, isFinal: true, ct);
+                        await turn.FinishAsync(RunOutcome.Success);
                         sessionTracker.EndSession(message.SessionId, sessionHandle.Generation);
                         turnActivity?.SetTag("rockbot.turn.status", "ok");
                         turnActivity?.SetStatus(ActivityStatusCode.Ok);
@@ -513,6 +525,8 @@ internal sealed class UserMessageHandler(
                 }
             }
 
+            // The run's outcome goes first, so the proxy reads the error reply that follows as a failure.
+            await turn.FinishAsync(RunOutcome.Error, ex.Message);
             await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, turnId, isFinal: true, ct);
             sessionTracker.EndSession(message.SessionId, sessionHandle.Generation);
             turnActivity?.SetTag("rockbot.turn.status", "error");
@@ -523,12 +537,19 @@ internal sealed class UserMessageHandler(
             HostDiagnostics.Turns.Add(1, tierTag,
                 new KeyValuePair<string, object?>("rockbot.turn.status", "error"));
         }
+        catch (OperationCanceledException) when (!turnActivityHandedOff)
+        {
+            await turn.FinishAsync(RunOutcome.Cancelled);
+            throw;
+        }
         finally
         {
             // Dispose the turn span only when this method owns it (sync paths).
             // Background paths pass it to the background task which disposes it.
             if (!turnActivityHandedOff)
             {
+                // Finishes the run as an error if no path above did; a no-op otherwise.
+                await turn.DisposeAsync();
                 // Clear any attachments staged this turn that were never drained onto a final
                 // reply (e.g. the turn threw before publishing). Idempotent: a no-op after a
                 // successful final drain. Skipped when handed off — the background method owns
@@ -552,22 +573,25 @@ internal sealed class UserMessageHandler(
         long sessionGeneration,
         string? wipMessageId,
         System.Diagnostics.Activity? turnActivity,
+        TurnLifecycle turn,
         CancellationToken ct)
     {
         var loopSw = System.Diagnostics.Stopwatch.StartNew();
         var nativeTierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", classification.Tier.ToString());
 
-        // Subscribe to fallback events so the user sees model switches in the UI.
-        var fallbackClient = registry.GetClient(classification.Tier)
-            .GetService<FallbackChatClient>();
+        // Subscribe to fallback events so the user sees model switches in the UI. Done inside the
+        // try: this loop owns the turn's run, and only the finally below finishes it.
+        FallbackChatClient? fallbackClient = null;
         void OnFallback(string from, string to, string reason) =>
             _ = PublishReplyAsync(
                 $"Switching models ({reason}) — retrying with {to}…",
                 replyTo, correlationId, sessionId, turnId, isFinal: false, ct);
-        if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
 
         try
         {
+            fallbackClient = registry.GetClient(classification.Tier).GetService<FallbackChatClient>();
+            if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
+
             await using var slot = await workSerializer.AcquireForUserAsync($"user session '{sessionId}'", ct);
 
             logger.LogInformation("Native LLM loop started for session {SessionId}", sessionId);
@@ -577,7 +601,11 @@ internal sealed class UserMessageHandler(
                 SessionId = sessionId,
                 AgentName = agent.Name,
                 CorrelationId = correlationId,
-                ReplyTo = replyTo
+                ReplyTo = replyTo,
+                Source = ReplySource.Primary,
+                EventsEnabled = turn.Enabled,
+                ThreadId = sessionId,
+                Turn = turn,
             });
 
             var lastProgressAt = DateTimeOffset.UtcNow;
@@ -590,6 +618,7 @@ internal sealed class UserMessageHandler(
                 allowTierEscalation: AllowTierEscalation,
                 onPreToolCall: async (desc, ct2) =>
                 {
+                    turn.UpdateStatus($"Checking {desc}…");
                     await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
@@ -597,6 +626,7 @@ internal sealed class UserMessageHandler(
                 {
                     if (DateTimeOffset.UtcNow - lastProgressAt < ProgressMessageThreshold)
                         return;
+                    turn.UpdateStatus(msg);
                     await PublishReplyAsync(msg, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
@@ -609,6 +639,7 @@ internal sealed class UserMessageHandler(
                 },
                 onStageProgress: async (stage, ct2) =>
                 {
+                    turn.UpdateStatus(stage);
                     await PublishReplyAsync(stage, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
@@ -655,6 +686,7 @@ internal sealed class UserMessageHandler(
             // subagents, their Phase 2 synthesis will arrive later as a separate
             // unsolicited final bubble — that's the consolidated answer.
             await PublishReplyAsync(text, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
+            await turn.FinishAsync(RunOutcome.Success);
             await ArchiveReplyAsync(userPrompt, text, nativeDiag.ToolCalls, sessionId, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
@@ -671,6 +703,8 @@ internal sealed class UserMessageHandler(
         {
             logger.LogError(ex, "Native LLM loop failed for session {SessionId}", sessionId);
 
+            // The run's outcome goes first, so the proxy reads the error reply that follows as a failure.
+            await turn.FinishAsync(RunOutcome.Error, ex.Message);
             await PublishReplyAsync(
                 $"Sorry, I ran into an error while working on your request: {ex.Message}",
                 replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
@@ -682,9 +716,16 @@ internal sealed class UserMessageHandler(
             HostDiagnostics.Turns.Add(1, nativeTierTag,
                 new KeyValuePair<string, object?>("rockbot.turn.status", "error"));
         }
+        catch (OperationCanceledException)
+        {
+            // A new message in the session, or a cancel request, stopped the loop.
+            await turn.FinishAsync(RunOutcome.Cancelled);
+            throw;
+        }
         finally
         {
             if (fallbackClient is not null) fallbackClient.OnFallback -= OnFallback;
+            await turn.DisposeAsync();
             // Clear any attachments staged this turn that were never drained — on a clean final
             // reply this is a no-op; on cancellation (user sent a new message mid-loop) it removes
             // the orphaned stage so it can't land on a later turn's reply.
@@ -710,6 +751,7 @@ internal sealed class UserMessageHandler(
         long sessionGeneration,
         string? wipMessageId,
         System.Diagnostics.Activity? turnActivity,
+        TurnLifecycle turn,
         CancellationToken ct)
     {
         var tier = classification.Tier;
@@ -717,17 +759,19 @@ internal sealed class UserMessageHandler(
         var bgTierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tier.ToString());
         var bgDiag = new LoopDiagnostics();
 
-        // Subscribe to fallback events so the user sees model switches in the UI.
-        var fallbackClient = registry.GetClient(tier)
-            .GetService<FallbackChatClient>();
+        // Subscribe to fallback events so the user sees model switches in the UI. Done inside the
+        // try: this loop owns the turn's run, and only the finally below finishes it.
+        FallbackChatClient? fallbackClient = null;
         void OnFallback(string from, string to, string reason) =>
             _ = PublishReplyAsync(
                 $"Switching models ({reason}) — retrying with {to}…",
                 replyTo, correlationId, sessionId, turnId, isFinal: false, ct);
-        if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
 
         try
         {
+            fallbackClient = registry.GetClient(tier).GetService<FallbackChatClient>();
+            if (fallbackClient is not null) fallbackClient.OnFallback += OnFallback;
+
             // Acquire the single execution slot, preempting any running scheduled
             // task. If this session itself is cancelled (new user message) while
             // waiting, the await throws OperationCanceledException and we exit.
@@ -740,7 +784,11 @@ internal sealed class UserMessageHandler(
                 SessionId = sessionId,
                 AgentName = agent.Name,
                 CorrelationId = correlationId,
-                ReplyTo = replyTo
+                ReplyTo = replyTo,
+                Source = ReplySource.Primary,
+                EventsEnabled = turn.Enabled,
+                ThreadId = sessionId,
+                Turn = turn,
             });
 
             var lastProgressAt = DateTimeOffset.UtcNow;
@@ -752,6 +800,7 @@ internal sealed class UserMessageHandler(
                 allowTierEscalation: AllowTierEscalation,
                 onPreToolCall: async (desc, ct2) =>
                 {
+                    turn.UpdateStatus($"Checking {desc}…");
                     await PublishReplyAsync($"Working on it — checking {desc}…", replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
@@ -759,6 +808,7 @@ internal sealed class UserMessageHandler(
                 {
                     if (DateTimeOffset.UtcNow - lastProgressAt < ProgressMessageThreshold)
                         return;
+                    turn.UpdateStatus(msg);
                     await PublishReplyAsync(msg, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
@@ -771,6 +821,7 @@ internal sealed class UserMessageHandler(
                 },
                 onStageProgress: async (stage, ct2) =>
                 {
+                    turn.UpdateStatus(stage);
                     await PublishReplyAsync(stage, replyTo, correlationId, sessionId, turnId, isFinal: false, ct2);
                     lastProgressAt = DateTimeOffset.UtcNow;
                 },
@@ -810,6 +861,7 @@ internal sealed class UserMessageHandler(
                 ct);
 
             await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
+            await turn.FinishAsync(RunOutcome.Success);
             await ArchiveReplyAsync(userPrompt, finalContent, bgDiag.ToolCalls, sessionId, ct);
             loopSw.Stop();
             turnActivity?.SetTag("rockbot.turn.status", "ok");
@@ -826,6 +878,8 @@ internal sealed class UserMessageHandler(
         {
             logger.LogError(ex, "Background tool loop failed for session {SessionId}", sessionId);
 
+            // The run's outcome goes first, so the proxy reads the error reply that follows as a failure.
+            await turn.FinishAsync(RunOutcome.Error, ex.Message);
             await PublishReplyAsync(
                 $"Sorry, I ran into an error while working on your request: {ex.Message}",
                 replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
@@ -837,9 +891,16 @@ internal sealed class UserMessageHandler(
             HostDiagnostics.Turns.Add(1, bgTierTag,
                 new KeyValuePair<string, object?>("rockbot.turn.status", "error"));
         }
+        catch (OperationCanceledException)
+        {
+            // A new message in the session, or a cancel request, stopped the loop.
+            await turn.FinishAsync(RunOutcome.Cancelled);
+            throw;
+        }
         finally
         {
             if (fallbackClient is not null) fallbackClient.OnFallback -= OnFallback;
+            await turn.DisposeAsync();
             // Clear any attachments staged this turn that were never drained — on a clean final
             // reply this is a no-op; on cancellation (user sent a new message mid-loop) it removes
             // the orphaned stage so it can't land on a later turn's reply.
@@ -877,7 +938,8 @@ internal sealed class UserMessageHandler(
             SessionId = sessionId,
             AgentName = agentNameHolder.DisplayName ?? agent.Name,
             IsFinal = isFinal,
-            Attachments = attachments
+            Attachments = attachments,
+            Source = ReplySource.Primary,
         };
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name, correlationId: correlationId);
         await publisher.PublishAsync(replyTo, envelope, ct);

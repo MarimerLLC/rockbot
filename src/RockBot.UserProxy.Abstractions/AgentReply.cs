@@ -45,4 +45,18 @@ public sealed record AgentReply
     /// others print a placeholder line. Serializes for free via the camelCase STJ path.
     /// </summary>
     public IReadOnlyList<AgentAttachment>? Attachments { get; init; }
+
+    /// <summary>
+    /// Structured form of a tool-progress reply: the call id, phase, arguments, result, duration
+    /// and error. <see cref="Content"/> still carries the same information as text for frontends
+    /// that don't read this. Null on every reply that isn't about a tool call.
+    /// </summary>
+    public ToolCallInfo? ToolCall { get; init; }
+
+    /// <summary>
+    /// Which part of the agent produced this reply (primary turn, subagent, worker, A2A,
+    /// scheduled, bridge). Null from older agents; frontends then fall back to guessing from
+    /// <see cref="AgentName"/> and <see cref="SessionId"/>.
+    /// </summary>
+    public ReplySource? Source { get; init; }
 }

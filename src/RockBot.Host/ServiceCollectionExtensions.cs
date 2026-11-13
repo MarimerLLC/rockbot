@@ -45,6 +45,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ILlmGateway, LlmGateway>();
         services.AddTransient<ILlmClient, LlmClient>();
         services.AddSingleton<IToolProgressNotifier, ToolProgressNotifier>();
+        // #795: structured run, task-list and subagent events for user proxies.
+        services.TryAddSingleton<IAgentEventPublisher, AgentEventPublisher>();
         // #685: refuses external changes in runs whose originating user message asked for nothing.
         services.TryAddSingleton<IConsequentialActionGate, ConsequentialActionGate>();
         // The shared decision model (Microsoft-Decision-1): second opinion for the gate and the other

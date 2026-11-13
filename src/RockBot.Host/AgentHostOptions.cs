@@ -114,6 +114,13 @@ public sealed class AgentHostOptions
     public List<TopicSubscription> Topics { get; } = [];
 
     /// <summary>
+    /// How often a user turn sends a <c>RunHeartbeat</c> to a proxy that asked for run events
+    /// (#795). The proxy reports the agent lost after about three intervals of silence. Defaults
+    /// to 15 seconds.
+    /// </summary>
+    public int RunHeartbeatIntervalSeconds { get; set; } = 15;
+
+    /// <summary>
     /// Default maximum number of tool-calling round-trips per request.
     /// Individual models may override this via <c>ModelBehavior.MaxToolIterationsOverride</c>.
     /// Defaults to 50.

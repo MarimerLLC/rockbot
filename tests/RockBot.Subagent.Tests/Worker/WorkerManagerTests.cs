@@ -106,9 +106,86 @@ public class WorkerManagerTests
         Assert.AreEqual($"worker/{result.TaskId}/email-sweep", result.ResultKey);
     }
 
+    // #795: worker lifecycle events and the active-worker registry.
+
+    [TestMethod]
+    public async Task SpawnBatchAsync_PublishesWorkerKindStartedAndFinished()
+    {
+        var events = new SubagentManagerTests.RecordingEventPublisher();
+        var manager = CreateManager(maxConcurrent: 2, runnerFactory: () => new InstantRunner(), events: events);
+
+        WorkerBatchResult batch;
+        using (RockBot.Host.CurrentToolCallContext.Set("call-5"))
+            batch = await manager.SpawnBatchAsync(
+                [new WorkerDefinition { Description = "gather A" }, new WorkerDefinition { Description = "gather B" }],
+                "session/s1", CancellationToken.None);
+
+        var started = events.Of<UserProxy.SubagentStarted>();
+        var finished = events.Of<UserProxy.SubagentFinished>();
+        Assert.AreEqual(2, started.Count);
+        Assert.AreEqual(2, finished.Count);
+        Assert.IsTrue(started.All(s => s.Kind == UserProxy.ReplySourceKind.Worker && s.ThreadId == "s1" && s.ParentToolCallId == "call-5"));
+        Assert.IsTrue(finished.All(f => f.Kind == UserProxy.ReplySourceKind.Worker && f.Outcome == UserProxy.SubagentOutcome.Success));
+        CollectionAssert.AreEquivalent(batch.Results.Select(r => r.TaskId).ToList(), finished.Select(f => f.SubagentRunId).ToList());
+        Assert.AreEqual(0, manager.ListActive().Count, "finished workers leave the registry");
+    }
+
+    [TestMethod]
+    public async Task SpawnBatchAsync_RunnerThrows_PublishesFailed()
+    {
+        var events = new SubagentManagerTests.RecordingEventPublisher();
+        var manager = CreateManager(maxConcurrent: 1, runnerFactory: () => new ThrowingRunner(), events: events);
+
+        await manager.SpawnBatchAsync([new WorkerDefinition { Description = "broken" }], "s1", CancellationToken.None);
+
+        var finished = events.Of<UserProxy.SubagentFinished>().Single();
+        Assert.AreEqual(UserProxy.SubagentOutcome.Failed, finished.Outcome);
+        StringAssert.Contains(finished.Error, "test exception");
+    }
+
+    [TestMethod]
+    public async Task ListActive_ReportsRunningWorkers()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var manager = CreateManager(maxConcurrent: 2, runnerFactory: () => new GatedRunner(release.Task));
+
+        var batch = manager.SpawnBatchAsync([new WorkerDefinition { Description = "slow" }], "session/s1", CancellationToken.None);
+        for (var i = 0; i < 200 && manager.ListActive().Count == 0; i++)
+            await Task.Delay(5);
+
+        var active = manager.ListActive().Single();
+        Assert.AreEqual("slow", active.Description);
+        Assert.AreEqual("session/s1", active.PrimarySessionId);
+
+        release.SetResult();
+        await batch;
+        Assert.AreEqual(0, manager.ListActive().Count);
+    }
+
+    [TestMethod]
+    [DataRow("timeout", "timeout")]
+    [DataRow("cancelled", "cancelled")]
+    [DataRow("exception: boom", "failed")]
+    public void ToEventOutcome_MapsFailureReasons(string reason, string expected)
+    {
+        var result = new WorkerResult { TaskId = "t", IsSuccess = false, ResultKey = "k", FailureReason = reason };
+        Assert.AreEqual(expected, WorkerManager.ToEventOutcome(result));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    private static WorkerManager CreateManager(int maxConcurrent, Func<IWorkerRunner> runnerFactory)
+    private sealed class GatedRunner(Task gate) : IWorkerRunner
+    {
+        public async Task<WorkerResult> RunAsync(string taskId, WorkerDefinition definition,
+            string primarySessionId, string batchId, TimeSpan timeout, CancellationToken ct)
+        {
+            await gate;
+            return new WorkerResult { TaskId = taskId, IsSuccess = true, ResultKey = definition.ResolveResultKey(taskId) };
+        }
+    }
+
+    private static WorkerManager CreateManager(int maxConcurrent, Func<IWorkerRunner> runnerFactory,
+        RockBot.Host.IAgentEventPublisher? events = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -120,7 +197,8 @@ public class WorkerManagerTests
         return new WorkerManager(
             provider.GetRequiredService<IServiceScopeFactory>(),
             opts,
-            NullLogger<WorkerManager>.Instance);
+            NullLogger<WorkerManager>.Instance,
+            eventPublisher: events);
     }
 
     private sealed class InstantRunner : IWorkerRunner

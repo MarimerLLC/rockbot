@@ -36,8 +36,53 @@ public sealed partial class AgentLoopRunner(
     DeferredToolActivations? deferredToolActivations = null,
     CompletionCheckClassifier? completionCheck = null,
     FollowUpGate? followUpGate = null,
-    UserLocationState? userLocation = null)
+    UserLocationState? userLocation = null,
+    IToolProgressNotifier? toolProgressNotifier = null,
+    IAgentEventPublisher? eventPublisher = null)
 {
+    /// <summary>
+    /// Reports a text-loop tool call (#795). The native path reports its own from
+    /// <see cref="RockBotFunctionInvokingChatClient"/>. Never throws.
+    /// </summary>
+    private async Task NotifyToolCallAsync(
+        string callId, string toolName, string phase, string? argsSummary = null, string? result = null,
+        long? durationMs = null, string? error = null, CancellationToken cancellationToken = default)
+    {
+        if (toolProgressNotifier is null)
+            return;
+
+        try
+        {
+            await toolProgressNotifier.OnToolCallAsync(new UserProxy.ToolCallInfo
+            {
+                ToolCallId = callId,
+                ToolCallName = toolName,
+                Phase = phase,
+                ArgsSummary = argsSummary,
+                Result = result,
+                DurationMs = durationMs,
+                Error = error,
+            }, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex, "Tool call notification failed for {Tool}", toolName);
+        }
+    }
+
+    private Task NotifyToolCallFinishedAsync(
+        string callId, string toolName, string status, string resultStr, ToolCallOutcome outcome,
+        long durationMs, CancellationToken cancellationToken)
+    {
+        var summary = resultStr is { Length: > 100 } ? resultStr[..100] + "..." : resultStr;
+        var failed = status != "ok" || ToolResultClassifier.IsError(resultStr) || outcome.Succeeded == false;
+        return NotifyToolCallAsync(callId, toolName,
+            failed ? UserProxy.ToolCallPhase.Failed : UserProxy.ToolCallPhase.Finished,
+            result: summary, durationMs: durationMs,
+            error: failed ? (outcome.Succeeded == false ? outcome.Detail : null) ?? summary : null,
+            cancellationToken: cancellationToken);
+    }
+
     // Second opinion for the completion-evaluator gate when its regexes find nothing.
     private readonly CompletionCheckClassifier _completionCheck = completionCheck ?? new CompletionCheckClassifier();
 
@@ -610,7 +655,7 @@ public sealed partial class AgentLoopRunner(
         var taskList = new AgentTaskList();
         if (useScaffolding)
         {
-            var taskListTools = new AgentTaskListTools(taskList, logger);
+            var taskListTools = new AgentTaskListTools(taskList, logger, eventPublisher);
             AppendTaskListTools(chatOptions, taskListTools);
         }
 
@@ -1591,6 +1636,8 @@ public sealed partial class AgentLoopRunner(
                     textToolActivity?.SetTag("rockbot.tool.name", toolName);
                     var toolSw = Stopwatch.StartNew();
                     var textToolStatus = "ok";
+                    // Text-parsed calls carry no id of their own (#795).
+                    var textCallId = Guid.NewGuid().ToString("N");
 
                     // Record this tool as in-flight in diagnostics so even an
                     // OperationCanceledException mid-call leaves a usable trail.
@@ -1621,7 +1668,10 @@ public sealed partial class AgentLoopRunner(
                     else
                     try
                     {
+                        await NotifyToolCallAsync(textCallId, toolName, UserProxy.ToolCallPhase.Started,
+                            argsSummary: argsJson is null or "" or "{}" ? null : argsJson, cancellationToken: cancellationToken);
                         using (ToolCallOutcomeContext.Set(textOutcome))
+                        using (CurrentToolCallContext.Set(textCallId))
                             result = await tool.InvokeAsync(args, cancellationToken);
                         toolSw.Stop();
                         textToolActivity?.SetTag("rockbot.tool.result_length", result?.ToString()?.Length ?? 0);
@@ -1672,6 +1722,9 @@ public sealed partial class AgentLoopRunner(
                             && !ToolResultClassifier.IsError(textResultStr)
                             && textOutcome.Succeeded != false,
                         rawArguments: args, outcome: textOutcome);
+                    if (textToolStatus != ConsequentialActionGatedStatus)
+                        await NotifyToolCallFinishedAsync(textCallId, toolName, textToolStatus, textResultStr,
+                            textOutcome, toolSw.ElapsedMilliseconds, cancellationToken);
 
                     // Chunking is handled by ChunkingAIFunction wrapper on the tool itself.
                     // Per-tool-result cap: text-parsed calls have no callId so the cap falls
@@ -1776,6 +1829,8 @@ public sealed partial class AgentLoopRunner(
                 toolActivity?.SetTag("rockbot.tool.name", fc.Name);
                 var toolSw = Stopwatch.StartNew();
                 var toolStatus = "ok";
+                // Some models send empty call ids (#795).
+                var nativeCallId = string.IsNullOrEmpty(fc.CallId) ? Guid.NewGuid().ToString("N") : fc.CallId;
 
                 // As the text-parsed branch does: the in-flight trail, and the tool-call count the
                 // tool-list guard reads to tell a loader's activation from an unrequested one (#712).
@@ -1805,7 +1860,10 @@ public sealed partial class AgentLoopRunner(
                 else
                 try
                 {
+                    await NotifyToolCallAsync(nativeCallId, fc.Name, UserProxy.ToolCallPhase.Started,
+                        argsSummary: fc.Arguments is { Count: > 0 } ? argsSummary : null, cancellationToken: cancellationToken);
                     using (ToolCallOutcomeContext.Set(nativeOutcome))
+                    using (CurrentToolCallContext.Set(nativeCallId))
                         result = await tool.InvokeAsync(args, cancellationToken);
                     toolSw.Stop();
                     toolActivity?.SetTag("rockbot.tool.result_length", result?.ToString()?.Length ?? 0);
@@ -1856,6 +1914,9 @@ public sealed partial class AgentLoopRunner(
                         && !ToolResultClassifier.IsError(nativeResultStr)
                         && nativeOutcome.Succeeded != false,
                     rawArguments: fc.Arguments, outcome: nativeOutcome);
+                if (toolStatus != ConsequentialActionGatedStatus)
+                    await NotifyToolCallFinishedAsync(nativeCallId, fc.Name, toolStatus, nativeResultStr,
+                        nativeOutcome, toolSw.ElapsedMilliseconds, cancellationToken);
 
                 // Per-tool-result cap (text-loop native path). Same intent as the cap
                 // applied by RockBotFunctionInvokingChatClient on the FICC path: stash

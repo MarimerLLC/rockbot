@@ -18,4 +18,15 @@ public interface IWorkerManager
         IReadOnlyList<WorkerDefinition> definitions,
         string primarySessionId,
         CancellationToken ct);
+
+    /// <summary>The workers running right now (#795).</summary>
+    IReadOnlyList<ActiveWorkerInfo> ListActive() => [];
 }
+
+/// <summary>A running worker.</summary>
+public sealed record ActiveWorkerInfo(
+    string TaskId,
+    string Description,
+    string PrimarySessionId,
+    DateTimeOffset StartedAt,
+    string? ParentToolCallId);

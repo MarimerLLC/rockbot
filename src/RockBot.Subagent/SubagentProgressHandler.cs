@@ -47,13 +47,17 @@ internal sealed class SubagentProgressHandler(
             var rawSessionId = message.PrimarySessionId.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)
                 ? message.PrimarySessionId[SessionPrefix.Length..]
                 : message.PrimarySessionId;
+            // #795: a worker's progress is labelled as a worker's, not a subagent's, and the
+            // session id is the raw one the completion replies use.
+            var isWorker = string.Equals(message.Kind, ReplySourceKind.Worker, StringComparison.Ordinal);
             var progressReply = new AgentReply
             {
                 Content = message.Message,
-                SessionId = message.PrimarySessionId,
-                AgentName = $"subagent-{message.TaskId}",
+                SessionId = rawSessionId,
+                AgentName = isWorker ? $"worker-{message.TaskId}" : $"subagent-{message.TaskId}",
                 IsFinal = false,
-                Origin = originStore.Get(rawSessionId)
+                Origin = originStore.Get(rawSessionId),
+                Source = isWorker ? ReplySource.Worker(message.TaskId) : ReplySource.Subagent(message.TaskId),
             };
             var envelope = progressReply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);

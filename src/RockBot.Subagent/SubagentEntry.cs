@@ -27,4 +27,36 @@ public sealed class SubagentEntry
     /// user message cannot make the external changes that message didn't ask for.
     /// </summary>
     public RockBot.Host.ActionGateScope? ActionGate { get; init; }
+
+    /// <summary>The id of the tool call that spawned this subagent, when known (#795).</summary>
+    public string? ParentToolCallId { get; init; }
+
+    /// <summary>Ensures exactly one <c>SubagentFinished</c> is published for this run (#795).</summary>
+    internal SubagentFinishGuard FinishGuard { get; init; } = new();
+}
+
+/// <summary>A once-flag shared by the paths that can report a subagent finished.</summary>
+internal sealed class SubagentFinishGuard
+{
+    private int _finished;
+
+    /// <summary>True for the first caller only.</summary>
+    public bool TryFinish() => Interlocked.Exchange(ref _finished, 1) == 0;
+}
+
+/// <summary>How a <see cref="SubagentRunner"/> run ended (#795).</summary>
+/// <param name="IsSuccess">The run produced its output.</param>
+/// <param name="FailureReason"><c>timeout</c>, <c>cancelled</c> or <c>exception</c> for a failed run.</param>
+/// <param name="Error">What went wrong.</param>
+public sealed record SubagentRunOutcome(bool IsSuccess, string? FailureReason = null, string? Error = null)
+{
+    /// <summary>The <see cref="RockBot.UserProxy.SubagentOutcome"/> this maps to.</summary>
+    public string EventOutcome => IsSuccess
+        ? RockBot.UserProxy.SubagentOutcome.Success
+        : FailureReason switch
+        {
+            "timeout" => RockBot.UserProxy.SubagentOutcome.Timeout,
+            "cancelled" => RockBot.UserProxy.SubagentOutcome.Cancelled,
+            _ => RockBot.UserProxy.SubagentOutcome.Failed,
+        };
 }

@@ -57,6 +57,7 @@ internal sealed class ClearContextHandler(
 
         var reply = new AgentReply
         {
+            Source = UserProxy.ReplySource.Primary,
             Content = "Context cleared — starting fresh.",
             SessionId = message.SessionId,
             AgentName = agent.Name,

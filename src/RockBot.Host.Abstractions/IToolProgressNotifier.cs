@@ -1,3 +1,5 @@
+using RockBot.UserProxy;
+
 namespace RockBot.Host;
 
 /// <summary>
@@ -11,4 +13,17 @@ public interface IToolProgressNotifier
 
     /// <summary>Called after a tool completes.</summary>
     Task OnToolInvokedAsync(string toolName, string? resultSummary, CancellationToken ct);
+
+    /// <summary>
+    /// Called when a tool call starts, finishes or fails, with its call id, duration and outcome.
+    /// The default maps onto <see cref="OnToolInvokingAsync"/> and <see cref="OnToolInvokedAsync"/>
+    /// for implementations that only know those.
+    /// </summary>
+    Task OnToolCallAsync(ToolCallInfo info, CancellationToken ct) => info.Phase switch
+    {
+        ToolCallPhase.Started => OnToolInvokingAsync(info.ToolCallName,
+            string.IsNullOrEmpty(info.ArgsSummary) ? null : $"{info.ToolCallName}({info.ArgsSummary})", ct),
+        ToolCallPhase.Failed => OnToolInvokedAsync(info.ToolCallName, $"failed: {info.Error}", ct),
+        _ => OnToolInvokedAsync(info.ToolCallName, info.Result, ct),
+    };
 }

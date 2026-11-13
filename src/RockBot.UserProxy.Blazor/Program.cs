@@ -26,6 +26,10 @@ builder.Services.AddUserProxy(opts =>
     if (builder.Configuration.GetValue<TimeSpan?>("UserProxy:ReplyTimeout") is { } replyTimeout
         && replyTimeout > TimeSpan.Zero)
         opts.DefaultReplyTimeout = replyTimeout;
+    // The longest a turn may run while the agent keeps sending heartbeats. Format: "00:30:00".
+    if (builder.Configuration.GetValue<TimeSpan?>("UserProxy:MaxTurnDuration") is { } maxTurn
+        && maxTurn > TimeSpan.Zero)
+        opts.MaxTurnDuration = maxTurn;
 });
 builder.Services.AddSingleton<IUserFrontend, BlazorUserFrontend>();
 builder.Services.AddSingleton<ChatStateService>();

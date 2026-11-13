@@ -109,6 +109,30 @@ internal sealed class StubUserFrontend : IUserFrontend
         SignInStatuses.Add(status);
         return Task.CompletedTask;
     }
+
+    public List<RunStarted> RunsStarted { get; } = [];
+    public List<RunHeartbeat> RunHeartbeats { get; } = [];
+    public List<RunFinished> RunsFinished { get; } = [];
+    public List<SubagentStarted> SubagentsStarted { get; } = [];
+    public List<SubagentFinished> SubagentsFinished { get; } = [];
+    public List<ActiveStatusResponse> WorkSnapshots { get; } = [];
+    public List<TaskListSnapshot> TaskListSnapshots { get; } = [];
+    public List<TaskListDelta> TaskListDeltas { get; } = [];
+
+    public Task OnRunStartedAsync(RunStarted run, CancellationToken cancellationToken = default) => Add(RunsStarted, run);
+    public Task OnRunHeartbeatAsync(RunHeartbeat heartbeat, CancellationToken cancellationToken = default) => Add(RunHeartbeats, heartbeat);
+    public Task OnRunFinishedAsync(RunFinished run, CancellationToken cancellationToken = default) => Add(RunsFinished, run);
+    public Task OnSubagentStartedAsync(SubagentStarted started, CancellationToken cancellationToken = default) => Add(SubagentsStarted, started);
+    public Task OnSubagentFinishedAsync(SubagentFinished finished, CancellationToken cancellationToken = default) => Add(SubagentsFinished, finished);
+    public Task OnActiveWorkSnapshotAsync(ActiveStatusResponse snapshot, CancellationToken cancellationToken = default) => Add(WorkSnapshots, snapshot);
+    public Task OnTaskListSnapshotAsync(TaskListSnapshot snapshot, CancellationToken cancellationToken = default) => Add(TaskListSnapshots, snapshot);
+    public Task OnTaskListDeltaAsync(TaskListDelta delta, CancellationToken cancellationToken = default) => Add(TaskListDeltas, delta);
+
+    private static Task Add<T>(List<T> list, T item)
+    {
+        lock (list) list.Add(item);
+        return Task.CompletedTask;
+    }
 }
 
 /// <summary>

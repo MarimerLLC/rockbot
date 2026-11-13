@@ -278,10 +278,18 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         Activity.Current?.AddEvent(new ActivityEvent("tool_selection_made",
             tags: new ActivityTagsCollection { { "tool", callContent.Name } }));
 
+        // #795: one id ties the call's started and finished/failed reports together, and names the
+        // call that spawned any subagent or worker it starts.
+        var toolCallId = string.IsNullOrEmpty(callContent.CallId) ? Guid.NewGuid().ToString("N") : callContent.CallId;
         if (_progressNotifier is not null)
         {
-            var desc = DescribeToolCall(callContent.Name, argsSummary);
-            await _progressNotifier.OnToolInvokingAsync(callContent.Name, desc, cancellationToken);
+            await _progressNotifier.OnToolCallAsync(new UserProxy.ToolCallInfo
+            {
+                ToolCallId = toolCallId,
+                ToolCallName = callContent.Name,
+                Phase = UserProxy.ToolCallPhase.Started,
+                ArgsSummary = argsSummary,
+            }, cancellationToken);
         }
 
         // Record args summary in the per-run stash registry context so that if this
@@ -321,6 +329,7 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         using var outcomeScope = ToolCallOutcomeContext.Set(outcome);
         try
         {
+            using var callIdScope = CurrentToolCallContext.Set(toolCallId);
             result = await base.InvokeFunctionAsync(context, cancellationToken);
         }
         catch (OperationCanceledException)
@@ -361,6 +370,17 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
             LoopToolCallLedgerContext.Value?.Record(
                 callContent.Name, AgentLoopRunner.TruncateLedgerArgs(argsSummary), succeeded: false,
                 rawArguments: callContent.Arguments, outcome: outcome);
+            if (_progressNotifier is not null)
+            {
+                await _progressNotifier.OnToolCallAsync(new UserProxy.ToolCallInfo
+                {
+                    ToolCallId = toolCallId,
+                    ToolCallName = callContent.Name,
+                    Phase = UserProxy.ToolCallPhase.Failed,
+                    DurationMs = sw.ElapsedMilliseconds,
+                    Error = ex.Message,
+                }, cancellationToken);
+            }
             throw;
         }
         sw.Stop();
@@ -491,7 +511,16 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         if (_progressNotifier is not null)
         {
             var summary = resultStr is { Length: > 100 } ? resultStr[..100] + "..." : resultStr;
-            await _progressNotifier.OnToolInvokedAsync(callContent.Name, summary, cancellationToken);
+            var failed = status != "ok";
+            await _progressNotifier.OnToolCallAsync(new UserProxy.ToolCallInfo
+            {
+                ToolCallId = toolCallId,
+                ToolCallName = callContent.Name,
+                Phase = failed ? UserProxy.ToolCallPhase.Failed : UserProxy.ToolCallPhase.Finished,
+                Result = summary,
+                DurationMs = sw.ElapsedMilliseconds,
+                Error = failed ? (outcome.Succeeded == false ? outcome.Detail : null) ?? summary : null,
+            }, cancellationToken);
         }
 
         return result;
@@ -744,11 +773,6 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
         return response.Text?.Trim() ?? string.Empty;
     }
 
-    private static string DescribeToolCall(string name, string? argsSummary)
-    {
-        if (string.IsNullOrEmpty(argsSummary)) return name;
-        return $"{name}({argsSummary})";
-    }
 
     /// <summary>
     /// Sits directly below FICC and enforces the current call's iteration budget at the one

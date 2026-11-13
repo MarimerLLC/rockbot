@@ -103,6 +103,7 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
 
             var reply = new AgentReply
             {
+                Source = UserProxy.ReplySource.A2A,
                 Content = content,
                 SessionId = A2AInboundSessionId,
                 AgentName = A2AInboundAgentName,

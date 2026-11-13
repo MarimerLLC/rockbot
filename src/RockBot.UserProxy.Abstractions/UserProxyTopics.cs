@@ -7,6 +7,13 @@ public static class UserProxyTopics
 {
     public const string UserMessage = "user.message";
     public const string UserResponse = "user.response";
+
+    /// <summary>
+    /// Broadcast structured events not tied to one turn (<see cref="SubagentStarted"/>,
+    /// <see cref="SubagentFinished"/>, <see cref="ActiveStatusResponse"/> snapshots, subagent
+    /// task lists), suffixed with the agent name. Older proxies don't subscribe to it.
+    /// </summary>
+    public const string UserEvent = "user.event";
     public const string CancelSession = "user.cancel";
     public const string ClearContext = "user.context.clear";
     public const string ConversationHistoryRequest = "user.history.request";

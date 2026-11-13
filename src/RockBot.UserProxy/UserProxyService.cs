@@ -23,7 +23,12 @@ public sealed class UserProxyService(
     // Per-run proxies (the CLI) mark their reply queues ephemeral so they don't outlive the process.
     private SubscriptionOptions QueueOptions => new() { Ephemeral = options.EphemeralQueues };
 
-    private readonly ConcurrentDictionary<string, (TaskCompletionSource<AgentReply> Tcs, IProgress<AgentReply>? Progress)> _pending = new();
+    private readonly ConcurrentDictionary<string, PendingTurn> _pending = new();
+
+    // Correlation ids of turns that already ended, so a run event trailing the final reply
+    // (RunFinished normally follows it) isn't passed to the frontend as a late event.
+    private readonly ConcurrentDictionary<string, byte> _endedTurns = new();
+    private const int MaxEndedTurns = 256;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ConversationHistoryResponse>> _pendingHistory = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<AgentInfoResponse>> _pendingAgentInfo = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<SaveResponseAck>> _pendingSaveResponse = new();
@@ -39,6 +44,7 @@ public sealed class UserProxyService(
     private readonly ConcurrentDictionary<string, McpSignInStatus> _settledSignIns = new();
     private ISubscription? _subscription;
     private ISubscription? _p2pSubscription;
+    private ISubscription? _eventSubscription;
     private ISubscription? _historySubscription;
     private ISubscription? _agentInfoSubscription;
     private ISubscription? _activeStatusSubscription;
@@ -87,6 +93,12 @@ public sealed class UserProxyService(
     internal string UserResponsePointToPointTopic =>
         $"{UserProxyTopics.UserResponse}.{options.AgentName}.{options.ProxyId}";
 
+    /// <summary>
+    /// Broadcast topic for structured events not tied to one turn: subagent and worker
+    /// lifecycle, active-work snapshots, subagent task lists.
+    /// </summary>
+    internal string UserEventTopic => $"{UserProxyTopics.UserEvent}.{options.AgentName}";
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -126,6 +138,7 @@ public sealed class UserProxyService(
     {
         ISubscription? broadcast = null;
         ISubscription? p2p = null;
+        ISubscription? events = null;
         try
         {
             broadcast = await subscriber.SubscribeAsync(
@@ -142,13 +155,22 @@ public sealed class UserProxyService(
                 QueueOptions,
                 ct);
 
+            events = await subscriber.SubscribeAsync(
+                UserEventTopic,
+                $"user-proxy.{options.ProxyId}.events",
+                HandleEventAsync,
+                QueueOptions,
+                ct);
+
             _subscription = broadcast;
             _p2pSubscription = p2p;
+            _eventSubscription = events;
         }
         catch
         {
             if (broadcast is not null) await broadcast.DisposeAsync();
             if (p2p is not null) await p2p.DisposeAsync();
+            if (events is not null) await events.DisposeAsync();
             throw;
         }
     }
@@ -231,7 +253,7 @@ public sealed class UserProxyService(
         foreach (var kvp in _pending)
         {
             if (_pending.TryRemove(kvp.Key, out var entry))
-                entry.Tcs.TrySetCanceled();
+                entry.Reply.TrySetCanceled();
         }
 
         foreach (var kvp in _pendingHistory)
@@ -288,6 +310,9 @@ public sealed class UserProxyService(
         if (_p2pSubscription is not null)
             await _p2pSubscription.DisposeAsync();
 
+        if (_eventSubscription is not null)
+            await _eventSubscription.DisposeAsync();
+
         if (_historySubscription is not null)
             await _historySubscription.DisposeAsync();
 
@@ -327,18 +352,40 @@ public sealed class UserProxyService(
     /// Intermediate replies (<see cref="AgentReply.IsFinal"/> = false) are reported via
     /// <paramref name="progress"/> without resolving the returned task.
     /// </summary>
-    /// <returns>The agent reply, or null if the timeout elapsed.</returns>
+    /// <returns>The agent reply, or null if the timeout elapsed (or the agent was lost or failed without a reply).</returns>
     public async Task<AgentReply?> SendAsync(
         UserMessage message,
         IProgress<AgentReply>? progress = null,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
-        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
-        var correlationId = Guid.NewGuid().ToString("N");
-        var tcs = new TaskCompletionSource<AgentReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var result = await SendTurnAsync(
+            message, new TurnOptions { Progress = progress, Timeout = timeout }, cancellationToken);
+        return result.Reply;
+    }
 
-        _pending[correlationId] = (tcs, progress);
+    /// <summary>
+    /// Sends a user message and follows the turn to its end. With an agent that sends run events
+    /// (<see cref="RunStarted"/>, <see cref="RunHeartbeat"/>, <see cref="RunFinished"/>), the turn
+    /// stays alive for as long as the agent keeps reporting, and ends as
+    /// <see cref="TurnResultOutcome.AgentLost"/> if it goes silent; with an older agent, it waits
+    /// <see cref="TurnOptions.Timeout"/> for the final reply, as <see cref="SendAsync"/> always has.
+    /// Throws <see cref="OperationCanceledException"/> when <paramref name="cancellationToken"/> is cancelled.
+    /// </summary>
+    public async Task<TurnResult> SendTurnAsync(
+        UserMessage message,
+        TurnOptions? turnOptions = null,
+        CancellationToken cancellationToken = default)
+    {
+        turnOptions ??= new TurnOptions();
+        var effectiveTimeout = turnOptions.Timeout ?? options.DefaultReplyTimeout;
+        var correlationId = string.IsNullOrWhiteSpace(turnOptions.CorrelationId)
+            ? Guid.NewGuid().ToString("N")
+            : turnOptions.CorrelationId;
+        var turn = new PendingTurn(turnOptions.Progress, turnOptions.Observer);
+
+        if (!_pending.TryAdd(correlationId, turn))
+            throw new InvalidOperationException($"A turn with correlation id '{correlationId}' is already pending.");
 
         using var activity = UserProxyDiagnostics.Source.StartActivity("UserProxy.Send");
         activity?.SetTag("rockbot.proxy.correlation_id", correlationId);
@@ -346,7 +393,8 @@ public sealed class UserProxyService(
 
         try
         {
-            var envelope = message.ToEnvelope<UserMessage>(
+            var outgoing = message with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents };
+            var envelope = outgoing.ToEnvelope<UserMessage>(
                 source: options.ProxyId,
                 correlationId: correlationId,
                 replyTo: UserResponsePointToPointTopic,
@@ -358,27 +406,172 @@ public sealed class UserProxyService(
             logger.LogDebug("Published user message {CorrelationId} to {Topic}",
                 correlationId, $"{UserProxyTopics.UserMessage}.{options.AgentName}");
 
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(effectiveTimeout);
-
-            try
-            {
-                var reply = await tcs.Task.WaitAsync(timeoutCts.Token);
-                sw.Stop();
+            var result = await WaitForTurnAsync(turn, correlationId, effectiveTimeout, turnOptions.HeartbeatTimeout,
+                turnOptions.MaxDuration ?? options.MaxTurnDuration, cancellationToken);
+            if (result.Reply is not null)
                 UserProxyDiagnostics.RoundtripDuration.Record(sw.Elapsed.TotalMilliseconds);
-                return reply;
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // Timeout — not external cancellation
-                logger.LogWarning("Reply timeout for correlation {CorrelationId} after {Timeout}",
-                    correlationId, effectiveTimeout);
-                return null;
-            }
+
+            // A run that really ended drops its trailing events. One this proxy gave up on
+            // (timed out, lost) keeps passing them to the frontend, which may still want them.
+            if (result.Outcome is not (TurnResultOutcome.TimedOut or TurnResultOutcome.AgentLost))
+                MarkTurnEnded(correlationId);
+            return result;
         }
         finally
         {
             _pending.TryRemove(correlationId, out _);
+        }
+    }
+
+    private async Task<TurnResult> WaitForTurnAsync(
+        PendingTurn turn, string correlationId, TimeSpan timeout, TimeSpan? heartbeatTimeout, TimeSpan maxDuration,
+        CancellationToken ct)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        long? finishedAt = null;
+
+        while (true)
+        {
+            // The hard cap: heartbeats show the agent is alive, not that this run will ever end.
+            var capRemaining = maxDuration - Stopwatch.GetElapsedTime(startedAt);
+            if (capRemaining <= TimeSpan.Zero && !turn.Reply.Task.IsCompleted)
+            {
+                logger.LogWarning("Turn {CorrelationId} ran past its maximum duration of {Max}", correlationId, maxDuration);
+                return new TurnResult
+                {
+                    Outcome = TurnResultOutcome.TimedOut,
+                    Error = $"The turn ran longer than {maxDuration.TotalMinutes:0.#} minutes.",
+                    CorrelationId = correlationId,
+                    RunStarted = turn.Started is not null,
+                };
+            }
+
+            // Read the signal before the state, so a change made after these checks wakes the wait.
+            var signal = turn.Signal;
+            var started = turn.Started;
+            var finished = turn.Finished;
+
+            if (turn.Reply.Task.IsCompleted)
+            {
+                var reply = await turn.Reply.Task;
+                var outcome = finished is null ? TurnResultOutcome.Success : MapRunOutcome(finished.Outcome);
+                return new TurnResult
+                {
+                    Outcome = outcome,
+                    Reply = reply,
+                    Error = outcome == TurnResultOutcome.Success ? null : finished?.Error,
+                    CorrelationId = correlationId,
+                    RunStarted = started is not null,
+                };
+            }
+
+            TimeSpan remaining;
+            if (finished is not null)
+            {
+                // The run ended before its reply arrived. A reply normally precedes RunFinished on
+                // the same queue, so wait only briefly for one.
+                finishedAt ??= Stopwatch.GetTimestamp();
+                remaining = options.RunFinishedGracePeriod - Stopwatch.GetElapsedTime(finishedAt.Value);
+                if (remaining <= TimeSpan.Zero)
+                {
+                    logger.LogDebug("Run {CorrelationId} finished as {Outcome} without a final reply",
+                        correlationId, finished.Outcome);
+                    return new TurnResult
+                    {
+                        Outcome = MapRunOutcome(finished.Outcome),
+                        Error = finished.Error,
+                        CorrelationId = correlationId,
+                        RunStarted = started is not null,
+                    };
+                }
+            }
+            else if (started is not null)
+            {
+                var limit = heartbeatTimeout ?? options.HeartbeatTimeout
+                    ?? (started.HeartbeatIntervalSeconds > 0
+                        ? TimeSpan.FromSeconds(started.HeartbeatIntervalSeconds * 3)
+                        : timeout);
+                remaining = limit - Stopwatch.GetElapsedTime(turn.LastActivity);
+                if (remaining <= TimeSpan.Zero)
+                {
+                    logger.LogWarning("Lost contact with the agent for run {CorrelationId}: nothing heard for {Limit}",
+                        correlationId, limit);
+                    return new TurnResult
+                    {
+                        Outcome = TurnResultOutcome.AgentLost,
+                        Error = $"Nothing heard from the agent for {limit.TotalSeconds:0} seconds.",
+                        CorrelationId = correlationId,
+                        RunStarted = true,
+                    };
+                }
+            }
+            else
+            {
+                remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
+                if (remaining <= TimeSpan.Zero)
+                {
+                    logger.LogWarning("Reply timeout for correlation {CorrelationId} after {Timeout}",
+                        correlationId, timeout);
+                    return new TurnResult
+                    {
+                        Outcome = TurnResultOutcome.TimedOut,
+                        CorrelationId = correlationId,
+                    };
+                }
+            }
+
+            if (capRemaining < remaining)
+                remaining = capRemaining;
+
+            try
+            {
+                await Task.WhenAny(turn.Reply.Task, signal).WaitAsync(remaining, ct);
+            }
+            catch (TimeoutException)
+            {
+                // Loop round to re-evaluate the deadline.
+            }
+        }
+    }
+
+    private static TurnResultOutcome MapRunOutcome(string outcome) => outcome switch
+    {
+        RunOutcome.Cancelled => TurnResultOutcome.Cancelled,
+        RunOutcome.Error => TurnResultOutcome.Error,
+        _ => TurnResultOutcome.Success,
+    };
+
+    private void MarkTurnEnded(string correlationId)
+    {
+        if (_endedTurns.Count >= MaxEndedTurns)
+            _endedTurns.Clear();
+        _endedTurns[correlationId] = 0;
+    }
+
+    /// <summary>
+    /// State of one turn awaiting its reply. Every message for the turn calls <see cref="Touch"/>,
+    /// which resets the heartbeat deadline and wakes the waiter.
+    /// </summary>
+    private sealed class PendingTurn(IProgress<AgentReply>? progress, ITurnObserver? observer)
+    {
+        private TaskCompletionSource _signal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private long _lastActivity = Stopwatch.GetTimestamp();
+        private volatile RunStarted? _started;
+        private volatile RunFinished? _finished;
+
+        public TaskCompletionSource<AgentReply> Reply { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public IProgress<AgentReply>? Progress => progress;
+        public ITurnObserver? Observer => observer;
+        public Task Signal => Volatile.Read(ref _signal).Task;
+        public long LastActivity => Interlocked.Read(ref _lastActivity);
+        public RunStarted? Started { get => _started; set => _started = value; }
+        public RunFinished? Finished { get => _finished; set => _finished = value; }
+
+        public void Touch()
+        {
+            Interlocked.Exchange(ref _lastActivity, Stopwatch.GetTimestamp());
+            Interlocked.Exchange(ref _signal, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
+                .TrySetResult();
         }
     }
 
@@ -428,7 +621,8 @@ public sealed class UserProxyService(
     {
         var correlationId = Guid.NewGuid().ToString("N");
 
-        var envelope = message.ToEnvelope<UserMessage>(
+        var outgoing = message with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents };
+        var envelope = outgoing.ToEnvelope<UserMessage>(
             source: options.ProxyId,
             correlationId: correlationId,
             replyTo: UserResponsePointToPointTopic,
@@ -542,6 +736,19 @@ public sealed class UserProxyService(
             return Task.FromResult(MessageResult.Ack);
         }
 
+        // Correlated run events and task lists (#795), sent because this proxy set
+        // ClientCapabilities.AgentEvents on the message.
+        if (TryHandleTurnEvent(envelope, ct))
+            return Task.FromResult(MessageResult.Ack);
+
+        // A message type from a newer agent that this proxy doesn't know: ignore it rather than
+        // mistake it for a reply. Anything else that isn't an AgentReply is still dead-lettered.
+        if (IsUnknownUserProxyType(envelope.MessageType))
+        {
+            logger.LogDebug("Ignoring unknown message type {MessageType}", envelope.MessageType);
+            return Task.FromResult(MessageResult.Ack);
+        }
+
         AgentReply? reply;
         try
         {
@@ -564,11 +771,14 @@ public sealed class UserProxyService(
         if (envelope.CorrelationId is not null &&
             _pending.TryGetValue(envelope.CorrelationId, out var entry))
         {
+            entry.Touch();
             if (reply.IsFinal)
             {
                 // Final reply: resolve the pending request
                 _pending.TryRemove(envelope.CorrelationId, out _);
-                entry.Tcs.TrySetResult(reply);
+                MarkTurnEnded(envelope.CorrelationId);
+                entry.Reply.TrySetResult(reply);
+                entry.Touch();
                 logger.LogDebug("Final reply correlated for {CorrelationId} from {Agent}",
                     envelope.CorrelationId, reply.AgentName);
             }
@@ -592,6 +802,154 @@ public sealed class UserProxyService(
             // ephemeral status so progress doesn't stack as separate chat bubbles.
             logger.LogDebug("Unsolicited progress from {Agent}, displaying as status", reply.AgentName);
             _ = frontend.DisplayStatusAsync(reply, ct);
+        }
+
+        return Task.FromResult(MessageResult.Ack);
+    }
+
+    // ── Structured agent events (#795) ─────────────────────────────────────────
+
+    /// <summary>
+    /// Handles a run event or task list arriving on a reply topic. One for a pending turn goes
+    /// to that turn; one for a turn that already ended is dropped; anything else (a turn this
+    /// proxy gave up on, or sent fire-and-forget) goes to the frontend.
+    /// </summary>
+    /// <returns>True when the envelope was one of these events.</returns>
+    private bool TryHandleTurnEvent(MessageEnvelope envelope, CancellationToken ct)
+    {
+        var type = envelope.MessageType;
+
+        if (type == typeof(RunStarted).FullName)
+        {
+            DispatchTurnEvent<RunStarted>(envelope,
+                (turn, e) => { turn.Started = e; turn.Observer?.OnRunStarted(e); },
+                e => frontend.OnRunStartedAsync(e, ct));
+            return true;
+        }
+
+        if (type == typeof(RunHeartbeat).FullName)
+        {
+            DispatchTurnEvent<RunHeartbeat>(envelope,
+                (turn, e) => turn.Observer?.OnRunHeartbeat(e),
+                e => frontend.OnRunHeartbeatAsync(e, ct));
+            return true;
+        }
+
+        if (type == typeof(RunFinished).FullName)
+        {
+            DispatchTurnEvent<RunFinished>(envelope,
+                (turn, e) => { turn.Finished = e; turn.Observer?.OnRunFinished(e); },
+                e => frontend.OnRunFinishedAsync(e, ct));
+            return true;
+        }
+
+        if (type == typeof(TaskListSnapshot).FullName)
+        {
+            DispatchTurnEvent<TaskListSnapshot>(envelope,
+                (turn, e) => turn.Observer?.OnTaskListSnapshot(e),
+                e => frontend.OnTaskListSnapshotAsync(e, ct));
+            return true;
+        }
+
+        if (type == typeof(TaskListDelta).FullName)
+        {
+            DispatchTurnEvent<TaskListDelta>(envelope,
+                (turn, e) => turn.Observer?.OnTaskListDelta(e),
+                e => frontend.OnTaskListDeltaAsync(e, ct));
+            return true;
+        }
+
+        return false;
+    }
+
+    private void DispatchTurnEvent<T>(MessageEnvelope envelope, Action<PendingTurn, T> toTurn, Func<T, Task> toFrontend)
+        where T : class
+    {
+        T? evt;
+        try
+        {
+            evt = envelope.GetPayload<T>();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to deserialize {Type}", typeof(T).Name);
+            return;
+        }
+
+        if (evt is null)
+            return;
+
+        var correlationId = envelope.CorrelationId;
+        if (correlationId is not null && _pending.TryGetValue(correlationId, out var turn))
+        {
+            try
+            {
+                toTurn(turn, evt);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Turn observer failed on {Type} for {CorrelationId}", typeof(T).Name, correlationId);
+            }
+            turn.Touch();
+            return;
+        }
+
+        if (correlationId is not null && _endedTurns.ContainsKey(correlationId))
+        {
+            logger.LogDebug("Dropping {Type} for ended turn {CorrelationId}", typeof(T).Name, correlationId);
+            return;
+        }
+
+        _ = SafeFrontendCallAsync(() => toFrontend(evt), typeof(T).Name);
+    }
+
+    private async Task SafeFrontendCallAsync(Func<Task> call, string what)
+    {
+        try
+        {
+            await call();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Frontend failed to handle {What}", what);
+        }
+    }
+
+    /// <summary>
+    /// True for a <c>RockBot.UserProxy.*</c> message type that isn't an <see cref="AgentReply"/>:
+    /// a contract added by a newer agent. Older proxies dead-lettered those, or worse, read them as
+    /// replies; this one acknowledges and ignores them.
+    /// </summary>
+    internal static bool IsUnknownUserProxyType(string? messageType) =>
+        messageType is not null
+        && messageType != typeof(AgentReply).FullName
+        && messageType.StartsWith(typeof(AgentReply).Namespace + ".", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Handles the broadcast <c>user.event.{agent}</c> topic: subagent and worker lifecycle,
+    /// active-work snapshots and subagent task lists. Unknown types are acknowledged and ignored.
+    /// </summary>
+    internal Task<MessageResult> HandleEventAsync(MessageEnvelope envelope, CancellationToken ct)
+    {
+        var type = envelope.MessageType;
+        try
+        {
+            if (type == typeof(SubagentStarted).FullName && envelope.GetPayload<SubagentStarted>() is { } started)
+                _ = SafeFrontendCallAsync(() => frontend.OnSubagentStartedAsync(started, ct), nameof(SubagentStarted));
+            else if (type == typeof(SubagentFinished).FullName && envelope.GetPayload<SubagentFinished>() is { } finished)
+                _ = SafeFrontendCallAsync(() => frontend.OnSubagentFinishedAsync(finished, ct), nameof(SubagentFinished));
+            else if (type == typeof(ActiveStatusResponse).FullName && envelope.GetPayload<ActiveStatusResponse>() is { } snapshot)
+                _ = SafeFrontendCallAsync(() => frontend.OnActiveWorkSnapshotAsync(snapshot, ct), nameof(ActiveStatusResponse));
+            else if (type == typeof(TaskListSnapshot).FullName && envelope.GetPayload<TaskListSnapshot>() is { } list)
+                _ = SafeFrontendCallAsync(() => frontend.OnTaskListSnapshotAsync(list, ct), nameof(TaskListSnapshot));
+            else if (type == typeof(TaskListDelta).FullName && envelope.GetPayload<TaskListDelta>() is { } delta)
+                _ = SafeFrontendCallAsync(() => frontend.OnTaskListDeltaAsync(delta, ct), nameof(TaskListDelta));
+            else
+                logger.LogDebug("Ignoring event of type {MessageType}", type);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to handle event {MessageType}", type);
         }
 
         return Task.FromResult(MessageResult.Ack);
@@ -896,7 +1254,18 @@ public sealed class UserProxyService(
     /// Requests a snapshot of currently active background work (subagents, processing state)
     /// from the agent. Returns null if the request times out or the agent is unavailable.
     /// </summary>
+    public Task<ActiveStatusResponse?> GetActiveStatusAsync(
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default) =>
+        GetActiveStatusAsync(sessionId: null, timeout, cancellationToken);
+
+    /// <summary>
+    /// Requests a snapshot of currently active background work, with
+    /// <see cref="ActiveStatusResponse.IsProcessing"/> reporting on <paramref name="sessionId"/>.
+    /// Returns null if the request times out or the agent is unavailable.
+    /// </summary>
     public async Task<ActiveStatusResponse?> GetActiveStatusAsync(
+        string? sessionId,
         TimeSpan? timeout = null,
         CancellationToken cancellationToken = default)
     {
@@ -910,7 +1279,7 @@ public sealed class UserProxyService(
         {
             await EnsureActiveStatusSubscribedAsync(cancellationToken);
 
-            var request = new ActiveStatusRequest();
+            var request = new ActiveStatusRequest { SessionId = sessionId };
             var envelope = request.ToEnvelope<ActiveStatusRequest>(
                 source: options.ProxyId,
                 correlationId: correlationId,

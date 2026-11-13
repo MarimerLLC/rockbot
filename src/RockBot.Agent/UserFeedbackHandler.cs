@@ -183,6 +183,7 @@ internal sealed class UserFeedbackHandler(
         // unsolicited replies directly to the frontend.
         var reply = new AgentReply
         {
+            Source = UserProxy.ReplySource.Primary,
             Content = freshResponse,
             SessionId = message.SessionId,
             AgentName = agent.Name,

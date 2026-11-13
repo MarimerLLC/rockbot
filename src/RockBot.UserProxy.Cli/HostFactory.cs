@@ -63,8 +63,13 @@ internal static class HostFactory
             // Only set where the agent's HTTP port is reachable — a CLI on a laptop generally
             // cannot see it, and leaving this unset falls back to the bus rather than failing.
             opts.AttachmentUploadUrl = builder.Configuration["UserProxy:AttachmentUploadUrl"];
+            // An explicit --timeout is a hard limit for scripts: it also caps a turn the agent
+            // keeps alive with heartbeats.
             if (settings.TimeoutSeconds is { } t)
+            {
                 opts.DefaultReplyTimeout = TimeSpan.FromSeconds(t);
+                opts.MaxTurnDuration = TimeSpan.FromSeconds(t);
+            }
         });
 
         if (useRichFrontend)

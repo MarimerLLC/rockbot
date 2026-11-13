@@ -36,8 +36,17 @@ public enum TurnOutcome
     /// <summary>Sending, or waiting for the reply, failed.</summary>
     Failed,
 
-    /// <summary>The user cancelled the turn.</summary>
+    /// <summary>
+    /// The turn was cancelled: by the user (who already stopped waiting), or by the agent, which
+    /// then shows a notice when the turn is still the one this view is waiting on.
+    /// </summary>
     Cancelled,
+
+    /// <summary>The agent started the run, then went silent for longer than its heartbeat allows.</summary>
+    AgentLost,
+
+    /// <summary>The agent reported that the run failed. <see cref="TurnEnded.Reply"/> carries any error reply it sent.</summary>
+    AgentError,
 }
 
 // ── Agent and conversation ──────────────────────────────────────────────────
@@ -93,6 +102,53 @@ public sealed record TurnEnded(string TurnId, TurnOutcome Outcome) : ChatEvent
 /// <summary>The user cancelled: stop waiting on the turn and on any form answers.</summary>
 public sealed record UserCancelled : ChatEvent;
 
+/// <summary>
+/// The agent is still working on a run (a <see cref="RunHeartbeat"/>, or the run starting).
+/// <see cref="Status"/> becomes the thinking text. Ignored when a different turn is running.
+/// </summary>
+public sealed record TurnHeartbeat(string TurnId, string? Status) : ChatEvent;
+
+/// <summary>
+/// A run this view no longer waits on finished (its turn timed out or was lost). Clears the
+/// thinking text a late heartbeat left behind, when no turn is running.
+/// </summary>
+public sealed record LateRunFinished(string TurnId, string Outcome) : ChatEvent;
+
+/// <summary>
+/// A tool call started, finished or failed. Added to the source's activity log; an entry for
+/// the same <see cref="ToolCallInfo.ToolCallId"/> is updated in place rather than appended.
+/// </summary>
+/// <param name="Content">The one-line text for the call, used as the entry and summary text.</param>
+public sealed record ToolCallReported(
+    MessageCategory Category,
+    string? AgentName,
+    ToolCallInfo ToolCall,
+    string Content) : ChatEvent
+{
+    /// <summary>Id for the activity log, if this event starts one.</summary>
+    public string MessageId { get; init; } = ChatIds.New();
+}
+
+/// <summary>A subagent or worker started: open its activity log.</summary>
+public sealed record SubagentRunStarted(SubagentStarted Started) : ChatEvent
+{
+    /// <summary>Id for the activity log, if this event starts one.</summary>
+    public string MessageId { get; init; } = ChatIds.New();
+}
+
+/// <summary>A subagent or worker finished: close its activity log and drop its task list.</summary>
+public sealed record SubagentRunFinished(SubagentFinished Finished) : ChatEvent
+{
+    /// <summary>Id for the activity log, if this event has to start one to record the outcome.</summary>
+    public string MessageId { get; init; } = ChatIds.New();
+}
+
+/// <summary>A task list was created or replaced.</summary>
+public sealed record TaskListSnapshotReceived(TaskListSnapshot Snapshot) : ChatEvent;
+
+/// <summary>One item of a task list changed.</summary>
+public sealed record TaskListDeltaReceived(TaskListDelta Delta) : ChatEvent;
+
 // ── Agent output outside a turn ─────────────────────────────────────────────
 
 /// <summary>
@@ -123,11 +179,12 @@ public sealed record ErrorReported(string Message) : ChatEvent
 
 /// <summary>
 /// The agent's own account of what's running, used to correct the front end's view after a
-/// reload or reconnect.
+/// reload or reconnect (or the empty snapshot an agent broadcasts when it starts). Uses
+/// <see cref="ActiveStatusResponse.Work"/> when present, so running workers are kept too.
 /// </summary>
 public sealed record ActiveStatusReconciled(ActiveStatusResponse Status) : ChatEvent
 {
-    /// <summary>Prefix for the ids of activity logs this event adds for running subagents.</summary>
+    /// <summary>Prefix for the ids of activity logs this event adds for running subagents and workers.</summary>
     public string IdPrefix { get; init; } = ChatIds.New();
 }
 

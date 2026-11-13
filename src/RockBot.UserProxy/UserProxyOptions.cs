@@ -43,6 +43,26 @@ public sealed class UserProxyOptions
     public TimeSpan DefaultReplyTimeout { get; set; } = TimeSpan.FromMinutes(3);
 
     /// <summary>
+    /// Once an agent has started a run (<see cref="RunStarted"/>), how long it may stay silent
+    /// before the turn is reported as lost. Null (the default) uses three of the heartbeat
+    /// intervals the agent advertised.
+    /// </summary>
+    public TimeSpan? HeartbeatTimeout { get; set; }
+
+    /// <summary>
+    /// The longest a turn may run, heartbeats or not. Heartbeats prove the agent process is alive,
+    /// not that the run is getting anywhere, so a run stuck behind other work would otherwise keep
+    /// a caller waiting forever. A turn that hits it ends as timed out. Defaults to 30 minutes.
+    /// </summary>
+    public TimeSpan MaxTurnDuration { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// How long to wait for the final reply after a <see cref="RunFinished"/> that arrived
+    /// first. Events and replies share a queue, so this is normally not waited out.
+    /// </summary>
+    public TimeSpan RunFinishedGracePeriod { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// Base URL of the agent's attachment upload endpoint (e.g.
     /// <c>http://rockbot-agent:8082</c>). When set, file uploads go over HTTP so their bytes
     /// never touch the broker; when unset — or when the endpoint cannot be reached — uploads

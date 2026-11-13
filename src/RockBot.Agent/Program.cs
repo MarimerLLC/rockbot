@@ -571,6 +571,9 @@ builder.Configuration.GetSection("AttachmentUpload").Bind(attachmentUploadOption
 builder.Services.AddSingleton(attachmentUploadOptions);
 builder.Services.AddHostedService<AttachmentUploadEndpoint>();
 
+// #795: clears user interfaces still showing subagents or workers from before a restart.
+builder.Services.AddHostedService<ActiveWorkStartupAnnouncer>();
+
 // MCP bridge (replaces external RockBot.Tools.Mcp.Bridge process)
 var mcpBridgeSection = builder.Configuration.GetSection("McpBridge");
 builder.Services.Configure<McpBridgeOptions>(mcpBridgeSection);
