@@ -16,7 +16,7 @@ internal sealed class CancelCommand : AsyncCommand<CommonSettings.Plain>
         try
         {
             var proxy = host.Services.GetRequiredService<UserProxyService>();
-            var sessionId = settings.SessionId ?? "cli-session";
+            var sessionId = settings.EffectiveSessionId;
             await proxy.CancelSessionAsync(sessionId);
             Console.Out.WriteLine($"cancel sent for session '{sessionId}'");
             return 0;

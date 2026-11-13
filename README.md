@@ -76,7 +76,7 @@ RockBot is one part of a family of projects that work together. Each runs as its
 | `RockBot.A2A.Gateway` | A2A v1 HTTP gateway — bridges external JSON-RPC clients to the RabbitMQ agent bus with API key auth, SSE streaming, and push notifications |
 | `RockBot.ServiceSearch` | Unified BM25 keyword search across A2A agents and MCP servers (`search_known_services`) |
 | `RockBot.UserProxy.Blazor` | Blazor Server chat UI with markdown rendering, conversation replay, and feedback signals |
-| `RockBot.UserProxy.Cli` | Console chat interface using Spectre.Console |
+| `RockBot.UserProxy.Cli` | Console chat interface using Spectre.Console; one-shot mode for scripts, with turn events as AG-UI JSON lines ([`docs/cli.md`](docs/cli.md)) |
 | `McpServer.OpenRouter` | Standalone MCP server exposing OpenRouter account and usage information |
 | `McpServer.TodoApp` | Standalone MCP server providing a persistent to-do list with recurrence support |
 | `ClaudeCodeProxy` | OpenAI-compatible proxy for the Anthropic Messages API — enables use of a Claude Code Max subscription as the agent LLM |
@@ -600,6 +600,7 @@ Deep-dive documentation for individual subsystems lives in [`docs/`](docs/):
 | [`docs/memory.md`](docs/memory.md) | Three-tier memory architecture, long-term storage, anti-patterns, working memory, dream passes |
 | [`docs/dream-service.md`](docs/dream-service.md) | Dream cycle passes, scheduling, directive files, LLM response contracts, configuration |
 | [`docs/blazor-ui.md`](docs/blazor-ui.md) | Blazor chat UI architecture, UserProxyService, feedback, history replay, deployment |
+| [`docs/cli.md`](docs/cli.md) | `rockbot` CLI subcommands, one-shot mode, `--output jsonl` (turn events as AG-UI JSON lines), exit codes |
 | [`docs/messaging.md`](docs/messaging.md) | MessageEnvelope, publisher/subscriber interfaces, RabbitMQ provider, topics, trust levels, trace propagation |
 | [`docs/agent-host.md`](docs/agent-host.md) | AgentHostBuilder, pipeline, identity, profile, conversation memory, session evaluation, LLM client, data volume layout |
 | [`docs/tools.md`](docs/tools.md) | Tool execution model, IToolRegistry, MCP bridge, service search, web search/browse, REST, scheduling, script execution, OpenRouter MCP |

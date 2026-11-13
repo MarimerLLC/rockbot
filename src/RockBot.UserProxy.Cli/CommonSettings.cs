@@ -50,6 +50,15 @@ public abstract class CommonSettings : CommandSettings
     [Description("Enable verbose logging")]
     public bool Verbose { get; init; }
 
+    public const string DefaultSessionId = "cli-session";
+    public const string DefaultUserId = "cli-user";
+
+    /// <summary><see cref="SessionId"/>, or <see cref="DefaultSessionId"/>.</summary>
+    public string EffectiveSessionId => SessionId ?? DefaultSessionId;
+
+    /// <summary><see cref="UserId"/>, or <see cref="DefaultUserId"/>.</summary>
+    public string EffectiveUserId => UserId ?? DefaultUserId;
+
     /// <summary>Concrete subclass for commands that need no extra options.</summary>
     public sealed class Plain : CommonSettings { }
 }

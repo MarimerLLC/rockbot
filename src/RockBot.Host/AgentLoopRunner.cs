@@ -653,11 +653,16 @@ public sealed partial class AgentLoopRunner(
         // Workers skip the task-list tools too — a leaf gather task does not need a
         // TODO list, and removing the tools shrinks the schema injection cost.
         var taskList = new AgentTaskList();
+        AgentTaskListTools? taskListTools = null;
         if (useScaffolding)
         {
-            var taskListTools = new AgentTaskListTools(taskList, logger, eventPublisher);
+            taskListTools = new AgentTaskListTools(taskList, logger, eventPublisher);
             AppendTaskListTools(chatOptions, taskListTools);
         }
+
+        // #797: the tools publish task-list events in the background. On every way out, wait for
+        // them, so the caller's final reply (same queue) can't overtake the last one.
+        await using var taskListFlush = taskListTools?.FlushOnDispose(AgentTaskListTools.PublishFlushTimeout);
 
         var originalUserRequest = ExtractOriginalUserRequest(chatMessages);
 

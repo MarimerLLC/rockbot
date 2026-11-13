@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 using RockBot.Messaging.RabbitMQ;
 
 namespace RockBot.UserProxy.Cli;
@@ -13,10 +14,15 @@ namespace RockBot.UserProxy.Cli;
 /// </summary>
 internal static class HostFactory
 {
+    /// <param name="frontend">
+    /// A frontend to use instead of the rich or plain console one, such as
+    /// <see cref="JsonLinesFrontend"/>; <paramref name="useRichFrontend"/> is then ignored.
+    /// </param>
     public static IHost Build(
         CommonSettings settings,
         bool useRichFrontend,
-        Action<HostApplicationBuilder>? configure = null)
+        Action<HostApplicationBuilder>? configure = null,
+        IUserFrontend? frontend = null)
     {
         // Pass no args — CLI flags are already parsed by Spectre and applied
         // below as in-memory config; we don't want Microsoft's CommandLine
@@ -35,6 +41,10 @@ internal static class HostFactory
         if (settings.AgentName is not null) overrides["Agent:Name"] = settings.AgentName;
         if (overrides.Count > 0)
             builder.Configuration.AddInMemoryCollection(overrides);
+
+        // Logs are diagnostics: keep them off stdout, which carries each command's result (the
+        // reply, the JSON-lines stream, history) for callers that pipe or capture it.
+        builder.Services.Configure<ConsoleLoggerOptions>(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 
         if (!settings.Verbose)
         {
@@ -72,7 +82,9 @@ internal static class HostFactory
             }
         });
 
-        if (useRichFrontend)
+        if (frontend is not null)
+            builder.Services.AddSingleton(frontend);
+        else if (useRichFrontend)
             builder.Services.AddSingleton<IUserFrontend, SpectreConsoleFrontend>();
         else
             builder.Services.AddSingleton<IUserFrontend, PlainConsoleFrontend>();
