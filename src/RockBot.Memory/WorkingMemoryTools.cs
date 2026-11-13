@@ -108,6 +108,18 @@ public sealed class WorkingMemoryTools
         }
         var tagList = ParseTags(tags);
 
+        // #803: the cached-content categories (web, tool-result, wisp-input) put an entry in the
+        // evictable budget. A deliberate save must not land there, where a later web_browse could
+        // evict it and where it would escape the saved-entry limit, so it gets a sub-category;
+        // a category search for 'web' still finds it by prefix.
+        var categoryNote = "";
+        if (category is not null && _options.EffectiveEvictableCategories.Contains(category, StringComparer.OrdinalIgnoreCase))
+        {
+            var requested = category;
+            category = $"{category}/saved";
+            categoryNote = $" Category '{requested}' is reserved for cached page/result chunks, so it was saved as '{category}' (a category search for '{requested}' still finds it).";
+        }
+
         // Phase 2 soft gate — capability-claim language is flagged as an observation
         // (write proceeds; tag added so the dream service can later evaluate promotion).
         var (gatedTags, hint) = ObservationLanguageDetector.ApplySoftGate(data, tagList);
@@ -120,7 +132,7 @@ public sealed class WorkingMemoryTools
         var evictedNote = write.EvictedKeys is { Count: > 0 } evicted
             ? $" To make room, {evicted.Count} older cached page/result chunk(s) were evicted."
             : "";
-        return $"Saved to working memory under key '{fullKey}'.{ttlNote}{evictedNote}{hint}";
+        return $"Saved to working memory under key '{fullKey}'.{ttlNote}{categoryNote}{evictedNote}{hint}";
     }
 
     [Description("Retrieve previously cached data from working memory by key. " +
@@ -142,6 +154,9 @@ public sealed class WorkingMemoryTools
         var value = entry?.Value ?? await _workingMemory.GetAsync(fullKey);
         if (value is null)
             return $"Working memory entry '{fullKey}' not found or has expired." + await BuildSubagentMissHintAsync(fullKey);
+
+        // The model read it: a cached page it keeps coming back to is the last to be evicted (#803).
+        await _workingMemory.TouchAsync(fullKey);
 
         var header = WorkingMemoryProvenance.BuildHeader(fullKey, entry, _time.GetUtcNow(), _options);
         return $"{header}\n{value}";

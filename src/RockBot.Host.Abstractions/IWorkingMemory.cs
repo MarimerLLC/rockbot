@@ -53,6 +53,14 @@ public interface IWorkingMemory
     }
 
     /// <summary>
+    /// Records that the model just read <paramref name="key"/> (through
+    /// <c>get_from_working_memory</c>). A store that evicts cached content when full keeps the
+    /// most recently read first (#803). Kept apart from <see cref="GetAsync"/> so internal
+    /// bookkeeping reads don't count. The default does nothing, for stores without eviction.
+    /// </summary>
+    Task TouchAsync(string key) => Task.CompletedTask;
+
+    /// <summary>
     /// Replaces an exact piece of text inside an existing entry's value, leaving the rest of
     /// it untouched. The entry keeps its category and tags, and its TTL restarts from now
     /// using the same window it was originally stored with.

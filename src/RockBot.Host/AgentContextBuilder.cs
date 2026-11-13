@@ -760,18 +760,7 @@ public sealed class AgentContextBuilder(
         // Working memory inventory — own namespace
         if (workingEntries.Count > 0)
         {
-            var now = DateTimeOffset.UtcNow;
-            var lines = workingEntries.Select(e =>
-            {
-                var remaining = e.ExpiresAt - now;
-                var remainingStr = remaining.TotalMinutes >= 1
-                    ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
-                    : $"{Math.Max(0, remaining.Seconds)}s";
-                var meta = new System.Text.StringBuilder($"- {e.Key}: expires in {remainingStr}");
-                if (e.Category is not null) meta.Append($", category: {e.Category}");
-                if (e.Tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", e.Tags)}");
-                return meta.ToString();
-            });
+            var lines = BuildWorkingMemoryInventoryLines(workingEntries, DateTimeOffset.UtcNow);
             var workingMemoryContext =
                 "Working memory (scratch space — use search_working_memory or get_from_working_memory to retrieve):\n" +
                 string.Join("\n", lines);
@@ -1033,6 +1022,57 @@ public sealed class AgentContextBuilder(
         }
 
         return keep;
+    }
+
+    /// <summary>
+    /// The lines of the own-namespace working-memory inventory: one per entry, except that the
+    /// pieces of one chunked page or result (<c>-chunk{n}</c> keys plus an <c>-index</c>, see
+    /// <see cref="HybridCacheWorkingMemory.ChunkGroup"/>) share a single line naming the index
+    /// and the chunk count. A namespace can hold hundreds of chunks (#803); listing each would
+    /// put thousands of tokens into every turn, and the index already lists the chunk keys.
+    /// </summary>
+    internal static List<string> BuildWorkingMemoryInventoryLines(
+        IReadOnlyList<WorkingMemoryEntry> entries, DateTimeOffset now)
+    {
+        var lines = new List<string>();
+        foreach (var group in entries.GroupBy(e => HybridCacheWorkingMemory.ChunkGroup(e.Key), StringComparer.OrdinalIgnoreCase))
+        {
+            // A plain key that happens to share a chunk group's base name stays on its own line.
+            foreach (var plain in group.Where(e => e.Key.Equals(group.Key, StringComparison.OrdinalIgnoreCase)))
+                lines.Add(InventoryLine(plain.Key, plain.ExpiresAt, plain.Category, plain.Tags, now));
+
+            var members = group.Where(e => !e.Key.Equals(group.Key, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (members.Count == 0)
+                continue;
+            if (members.Count == 1)
+            {
+                var only = members[0];
+                lines.Add(InventoryLine(only.Key, only.ExpiresAt, only.Category, only.Tags, now));
+                continue;
+            }
+
+            var index = members.FirstOrDefault(e => e.Key.EndsWith("-index", StringComparison.OrdinalIgnoreCase));
+            var chunks = members.Count - (index is null ? 0 : 1);
+            var label = index is not null
+                ? $"{index.Key} (outline of {chunks} chunk(s) {group.Key}-chunk0…)"
+                : $"{group.Key}-chunk0… ({chunks} chunk(s), no outline)";
+            var first = index ?? members[0];
+            lines.Add(InventoryLine(label, members.Min(e => e.ExpiresAt), first.Category, first.Tags, now));
+        }
+        return lines;
+    }
+
+    private static string InventoryLine(string label, DateTimeOffset expiresAt, string? category,
+        IReadOnlyList<string>? tags, DateTimeOffset now)
+    {
+        var remaining = expiresAt - now;
+        var remainingStr = remaining.TotalMinutes >= 1
+            ? $"{(int)remaining.TotalMinutes}m{remaining.Seconds:D2}s"
+            : $"{Math.Max(0, remaining.Seconds)}s";
+        var meta = new System.Text.StringBuilder($"- {label}: expires in {remainingStr}");
+        if (category is not null) meta.Append($", category: {category}");
+        if (tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", tags)}");
+        return meta.ToString();
     }
 
     // ", source=inferred" etc., so the model can tell a fact the user stated from its own guess.

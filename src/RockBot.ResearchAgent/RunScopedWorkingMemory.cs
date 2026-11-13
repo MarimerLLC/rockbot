@@ -72,6 +72,9 @@ internal sealed class RunScopedWorkingMemory : IWorkingMemory
     public Task<WorkingMemoryEntry?> GetEntryAsync(string key) =>
         InScope(key) ? _inner.GetEntryAsync(key) : Task.FromResult<WorkingMemoryEntry?>(null);
 
+    public Task TouchAsync(string key) =>
+        InScope(key) ? _inner.TouchAsync(key) : Task.CompletedTask;
+
     public Task<ContentEditResult> EditAsync(string key, string oldText, string newText, bool replaceAll = false) =>
         InScope(key)
             ? _inner.EditAsync(key, oldText, newText, replaceAll)

@@ -49,7 +49,10 @@ public sealed class WorkingMemoryOptions
     /// way to new ones, least recently read first and a whole chunk group (one page or result)
     /// at a time (#801, #803). Anything else (what the agent saved on purpose) is never
     /// evicted. <c>null</c> means
-    /// <see cref="DefaultEvictableCategories"/>; a configured list replaces the default.
+    /// <see cref="DefaultEvictableCategories"/>; a configured list replaces the default. These
+    /// entries are not persisted to disk. Configuration binding can't produce an empty list (an
+    /// empty JSON array binds as <c>null</c>), so to turn eviction off from configuration list a
+    /// category nothing uses, e.g. <c>none</c>.
     /// </summary>
     public IList<string>? EvictableCategories { get; set; }
 
