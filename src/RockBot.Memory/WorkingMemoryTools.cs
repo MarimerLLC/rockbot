@@ -112,8 +112,15 @@ public sealed class WorkingMemoryTools
         // (write proceeds; tag added so the dream service can later evaluate promotion).
         var (gatedTags, hint) = ObservationLanguageDetector.ApplySoftGate(data, tagList);
 
-        await _workingMemory.SetAsync(fullKey, data, ttl, category, gatedTags, _writer);
-        return $"Saved to working memory under key '{fullKey}'.{ttlNote}{hint}";
+        // #801: a full namespace refuses the write; say so instead of claiming it was saved.
+        var write = await _workingMemory.TrySetAsync(fullKey, data, ttl, category, gatedTags, _writer);
+        if (!write.Stored)
+            return $"Error: NOT saved — {write.Reason}. Delete entries you no longer need (delete_from_working_memory) " +
+                   "and save again, or keep the data in your reply instead.";
+        var evictedNote = write.EvictedKeys is { Count: > 0 } evicted
+            ? $" To make room, {evicted.Count} older cached page/result chunk(s) were evicted."
+            : "";
+        return $"Saved to working memory under key '{fullKey}'.{ttlNote}{evictedNote}{hint}";
     }
 
     [Description("Retrieve previously cached data from working memory by key. " +

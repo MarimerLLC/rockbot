@@ -23,6 +23,21 @@ public interface IWorkingMemory
         IReadOnlyList<string>? tags, string? writer)
         => SetAsync(key, value, ttl, category, tags);
 
+    /// <summary>
+    /// Sets or overwrites an entry and says whether it was stored. A store with a per-namespace
+    /// limit refuses a new key once the namespace is full of entries it can't evict, and reports
+    /// that here instead of dropping the write silently (#801); it also lists anything it evicted
+    /// to make room. Callers that tell the model what they stored use this. The default stores
+    /// through <see cref="SetAsync(string, string, TimeSpan?, string?, IReadOnlyList{string}?, string?)"/>
+    /// and reports success, for stores without a limit.
+    /// </summary>
+    async Task<WorkingMemoryWriteResult> TrySetAsync(string key, string value, TimeSpan? ttl = null,
+        string? category = null, IReadOnlyList<string>? tags = null, string? writer = null)
+    {
+        await SetAsync(key, value, ttl, category, tags, writer);
+        return WorkingMemoryWriteResult.Ok;
+    }
+
     /// <summary>Returns the cached value, or <c>null</c> if not found or expired.</summary>
     Task<string?> GetAsync(string key);
 

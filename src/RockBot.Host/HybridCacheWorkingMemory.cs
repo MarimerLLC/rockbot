@@ -12,7 +12,7 @@ namespace RockBot.Host;
 /// with a flat <see cref="ConcurrentDictionary{TKey,TValue}"/> side-index for key enumeration.
 /// Keys are full path strings (e.g. <c>session/abc123/emails</c>, <c>patrol/heartbeat/alert</c>).
 /// </summary>
-internal sealed class HybridCacheWorkingMemory : IWorkingMemory
+internal sealed partial class HybridCacheWorkingMemory : IWorkingMemory
 {
     private readonly IMemoryCache _cache;
     private readonly WorkingMemoryOptions _options;
@@ -78,10 +78,14 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
 
     public Task SetAsync(string key, string value, TimeSpan? ttl, string? category,
         IReadOnlyList<string>? tags, string? writer)
+        => TrySetAsync(key, value, ttl, category, tags, writer);
+
+    public Task<WorkingMemoryWriteResult> TrySetAsync(string key, string value, TimeSpan? ttl = null,
+        string? category = null, IReadOnlyList<string>? tags = null, string? writer = null)
     {
         var now = DateTimeOffset.UtcNow;
         var expiresAt = now + (ttl ?? _options.DefaultTtl);
-        return SetCoreAsync(key, value, now, expiresAt, category, tags, writer);
+        return Task.FromResult(SetCore(key, value, now, expiresAt, category, tags, writer));
     }
 
     /// <summary>
@@ -93,9 +97,12 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
     /// </summary>
     internal Task RestoreAsync(string key, string value, DateTimeOffset storedAt, DateTimeOffset expiresAt,
         string? category, IReadOnlyList<string>? tags, string? writer)
-        => SetCoreAsync(key, value, storedAt, expiresAt, category, tags, writer);
+    {
+        SetCore(key, value, storedAt, expiresAt, category, tags, writer);
+        return Task.CompletedTask;
+    }
 
-    private Task SetCoreAsync(string key, string value, DateTimeOffset storedAt, DateTimeOffset expiresAt,
+    private WorkingMemoryWriteResult SetCore(string key, string value, DateTimeOffset storedAt, DateTimeOffset expiresAt,
         string? category, IReadOnlyList<string>? tags, string? writer)
     {
         var now = DateTimeOffset.UtcNow;
@@ -106,12 +113,23 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             GetNamespace(kvp.Key).Equals(ns, StringComparison.OrdinalIgnoreCase) &&
             kvp.Value.ExpiresAt > now);
 
+        List<string>? evicted = null;
         if (!_index.ContainsKey(key) && nsCount >= _options.MaxEntriesPerNamespace)
         {
-            _logger.LogWarning(
-                "Working memory limit reached for namespace '{Namespace}' ({Max} entries); ignoring key '{Key}'",
-                ns, _options.MaxEntriesPerNamespace, key);
-            return Task.CompletedTask;
+            // #801: make room from regenerable content (page and result chunks) before refusing.
+            evicted = EvictForRoom(ns, key, now, needed: nsCount - _options.MaxEntriesPerNamespace + 1);
+            if (evicted.Count == 0)
+            {
+                _logger.LogWarning(
+                    "Working memory limit reached for namespace '{Namespace}' ({Max} entries) with nothing evictable; refusing key '{Key}'",
+                    ns, _options.MaxEntriesPerNamespace, key);
+                return WorkingMemoryWriteResult.Refused(
+                    $"working memory for '{ns}' is full ({_options.MaxEntriesPerNamespace} entries) and holds nothing that can be evicted");
+            }
+
+            _logger.LogInformation(
+                "Working memory limit reached for namespace '{Namespace}' ({Max} entries); evicted {Count} older regenerable entr(ies) for '{Key}'",
+                ns, _options.MaxEntriesPerNamespace, evicted.Count, key);
         }
 
         _index[key] = new EntryMeta(storedAt, expiresAt, category, tags ?? [], writer);
@@ -129,8 +147,60 @@ internal sealed class HybridCacheWorkingMemory : IWorkingMemory
             _ = GenerateEmbeddingAsync(key, value, category, tags);
         }
 
-        return Task.CompletedTask;
+        return evicted is { Count: > 0 } ? new WorkingMemoryWriteResult(true, null, evicted) : WorkingMemoryWriteResult.Ok;
     }
+
+    /// <summary>
+    /// Evicts the oldest regenerable entries in <paramref name="ns"/> (categories in
+    /// <see cref="WorkingMemoryOptions.EffectiveEvictableCategories"/>) until at least
+    /// <paramref name="needed"/> are gone. A whole chunk group goes at once (every chunk and the
+    /// index of one page or result), so nothing is left half there; the group
+    /// <paramref name="incomingKey"/> belongs to is never a candidate, so a page being written
+    /// can't evict its own earlier chunks. Returns the evicted keys; empty when nothing could go.
+    /// </summary>
+    private List<string> EvictForRoom(string ns, string incomingKey, DateTimeOffset now, int needed)
+    {
+        var evicted = new List<string>();
+        var evictable = _options.EffectiveEvictableCategories;
+        if (evictable.Count == 0)
+            return evicted;
+
+        var incomingGroup = ChunkGroup(incomingKey);
+        var groups = _index
+            .Where(kvp => kvp.Value.ExpiresAt > now
+                && GetNamespace(kvp.Key).Equals(ns, StringComparison.OrdinalIgnoreCase)
+                && kvp.Value.Category is { } category
+                && evictable.Contains(category, StringComparer.OrdinalIgnoreCase))
+            .GroupBy(kvp => ChunkGroup(kvp.Key), StringComparer.OrdinalIgnoreCase)
+            .Where(g => !g.Key.Equals(incomingGroup, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(g => g.Min(e => e.Value.StoredAt));
+
+        foreach (var group in groups)
+        {
+            foreach (var entry in group)
+            {
+                _index.TryRemove(entry.Key, out _);
+                _embeddings.TryRemove(entry.Key, out _);
+                _cache.Remove(CacheKey(entry.Key));
+                evicted.Add(entry.Key);
+            }
+
+            if (evicted.Count >= needed)
+                break;
+        }
+
+        return evicted;
+    }
+
+    /// <summary>
+    /// The chunk group a key belongs to: the key without a trailing <c>-chunk{n}</c> or
+    /// <c>-index</c>, the suffixes <c>web_browse</c>, the chunking wrapper and wisps give the
+    /// pieces of one page or result. Any other key is its own group.
+    /// </summary>
+    internal static string ChunkGroup(string key) => ChunkSuffix().Replace(key, string.Empty);
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"-(chunk\d+|index)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex ChunkSuffix();
 
     private async Task GenerateEmbeddingAsync(string key, string value, string? category, IReadOnlyList<string>? tags)
     {

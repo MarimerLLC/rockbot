@@ -357,7 +357,7 @@ public sealed record WorkingMemoryEntry(
 
 - **Default TTL:** 5 minutes (configurable per entry)
 - **Background TTL floor:** `save_to_working_memory` calls from subagents and workers are raised to at least `BackgroundTaskMinimumTtl` (4 hours), so findings outlive batch consolidation even when the model picks a short TTL or omits it
-- **Per-namespace limit:** 50 entries per namespace (first two key segments); configurable via `MaxEntriesPerNamespace`
+- **Per-namespace limit:** 50 entries per namespace (first two key segments); configurable via `MaxEntriesPerNamespace`. When a namespace is full, a new key first evicts the oldest regenerable content: entries in `EvictableCategories` (default `web`, `tool-result`, `wisp-input`), one whole chunk group (every chunk and the index of one page or result) at a time, never the group being written. Only when nothing is evictable is the write refused. `TrySetAsync` reports the refusal and any evictions, and `web_browse`, the chunking wrapper, wisp input and `save_to_working_memory` tell the model what wasn't stored instead of claiming success (#801).
 - **Prefix filtering:** `ListAsync(prefix)` and `SearchAsync(criteria, prefix)` filter by key prefix
 
 `FileWorkingMemory` wraps the in-memory store with disk persistence. Entries are grouped by
@@ -660,6 +660,7 @@ public sealed class WorkingMemoryOptions
     public TimeSpan DefaultTtl { get; set; } = TimeSpan.FromMinutes(5);
     public TimeSpan BackgroundTaskMinimumTtl { get; set; } = TimeSpan.FromHours(4);  // floor for subagent/worker saves
     public int MaxEntriesPerNamespace { get; set; } = 50;  // per first-two-segment namespace prefix
+    public IList<string>? EvictableCategories { get; set; }  // null = web, tool-result, wisp-input
     public string BasePath { get; set; } = "working-memory";
 }
 

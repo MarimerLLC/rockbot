@@ -161,6 +161,16 @@ internal sealed class FileWorkingMemory : IWorkingMemory, IHostedService
         await PersistGroupAsync(GetGroup(key));
     }
 
+    public async Task<WorkingMemoryWriteResult> TrySetAsync(string key, string value, TimeSpan? ttl = null,
+        string? category = null, IReadOnlyList<string>? tags = null, string? writer = null)
+    {
+        var result = await _inner.TrySetAsync(key, value, ttl, category, tags, writer);
+        // Evicted entries share the key's namespace, and so its persisted group.
+        if (result.Stored)
+            await PersistGroupAsync(GetGroup(key));
+        return result;
+    }
+
     public Task<string?> GetAsync(string key)
         => _inner.GetAsync(key);
 
