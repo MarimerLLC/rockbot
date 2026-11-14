@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Sample code: the transport half of the AG-UI reference client (#794, phase 6). It has no
+       browser dependency, so the Blazor WebAssembly sample, a MAUI app or a test can use it.
+       Not a package: it is referenced by project. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RockBot.AgUi.Client</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- Turns the trim analyzers on, so JSON that would need reflection in a trimmed browser app
+         is a build warning here. -->
+    <IsTrimmable>true</IsTrimmable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AGUI.Abstractions" Version="1.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\RockBot.UserProxy.ChatState\RockBot.UserProxy.ChatState.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RockBot.AgUi.Client.Tests" />
+  </ItemGroup>
+
+</Project>
