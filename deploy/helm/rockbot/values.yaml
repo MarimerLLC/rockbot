@@ -373,6 +373,15 @@ agui:
     # - agui-session
     # - phone
 
+  # The address clients and browsers use to reach the proxy, e.g.
+  # https://rockbot-agui.<your-tailnet>.ts.net. Only MCP sign-in needs it: the
+  # redirect URI an MCP server's authorization server sends the browser back to is
+  # {publicBaseUrl}/mcp-oauth/callback, and the server's OAuth client must accept
+  # exactly that. Empty builds it from each request, which is right for plain HTTP on
+  # the tailnet and wrong behind anything that terminates TLS (the proxy then sees
+  # http://, and the authorization server refuses the mismatch).
+  publicBaseUrl: ""
+
   # ── Generic HTTPS ingress (no Tailscale) ────────────────────────────────────
   # Mutually exclusive with tailscale.ingress.enabled; the chart fails to render if
   # both are on.

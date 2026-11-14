@@ -53,6 +53,51 @@ public sealed class AgUiOptions
     /// </summary>
     public TimeSpan ResumeReplyTimeout { get; set; } = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// How long a REST endpoint waits for the agent to answer a request (agent info, saved
+    /// responses, the sign-in list, an upload) before it answers <c>504</c>. Starting a sign-in
+    /// has its own, longer wait: <see cref="SignInStartTimeout"/>.
+    /// </summary>
+    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long <c>POST /mcp-signin/{server}/start</c> waits for the agent: its bridge has to
+    /// discover the server's authorization server, and may register a client, before it can
+    /// answer. The Blazor UI waits as long.
+    /// </summary>
+    public TimeSpan SignInStartTimeout { get; set; } = TimeSpan.FromSeconds(90);
+
+    /// <summary>
+    /// The address clients and browsers use to reach this proxy, for example
+    /// <c>https://rockbot-agui.example.ts.net</c>. Only the MCP sign-in redirect URI is built from
+    /// it. Empty (the default) builds that URI from the request, which is wrong behind an ingress
+    /// that terminates TLS: the proxy then sees plain <c>http</c>, and an authorization server
+    /// refuses a redirect URI that isn't the registered <c>https</c> one.
+    /// </summary>
+    public string? PublicBaseUrl { get; set; }
+
+    /// <summary>
+    /// <see cref="PublicBaseUrl"/> without a trailing slash, or null when it isn't set. Throws when
+    /// it is set to something that isn't an absolute http(s) URL, so a typo stops the proxy at
+    /// startup rather than breaking every sign-in later.
+    /// </summary>
+    public string? ResolvePublicBaseUrl()
+    {
+        if (string.IsNullOrWhiteSpace(PublicBaseUrl))
+            return null;
+
+        if (!Uri.TryCreate(PublicBaseUrl.Trim(), UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new InvalidOperationException(
+                $"{SectionName}:{nameof(PublicBaseUrl)} ('{PublicBaseUrl}') is not an absolute http(s) URL. " +
+                "Use the full external address, e.g. https://rockbot-agui.example.com.");
+        }
+
+        return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+    }
+
     /// <summary>True when clients may use <paramref name="threadId"/>. The match is exact.</summary>
     public bool IsThreadAllowed(string? threadId) =>
         !string.IsNullOrEmpty(threadId) && ThreadIds().Contains(threadId, StringComparer.Ordinal);

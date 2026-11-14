@@ -1,6 +1,4 @@
-using RockBot.UserProxy.Blazor.Services;
-
-namespace RockBot.UserProxy.Blazor.Tests;
+namespace RockBot.UserProxy.Tests;
 
 [TestClass]
 public sealed class AttachmentPathResolverTests
@@ -92,5 +90,57 @@ public sealed class AttachmentPathResolverTests
         Assert.AreEqual("image/jpeg", AttachmentPathResolver.GuessMime("a.JPG"));
         Assert.AreEqual("application/pdf", AttachmentPathResolver.GuessMime("a.pdf"));
         Assert.AreEqual("application/octet-stream", AttachmentPathResolver.GuessMime("a.unknown"));
+    }
+
+    [TestMethod]
+    [DataRow("chart.png")]
+    [DataRow("previews/abc12345/deck.html")]
+    [DataRow("attachments/chart.png")]
+    [DataRow("my chart (2).png")]
+    [DataRow("..chart.png", DisplayName = "dots in a name are not a traversal")]
+    public void IsSafeRelativePath_AcceptsWhatAnUploadReturns(string path)
+        => Assert.IsTrue(AttachmentPathResolver.IsSafeRelativePath(path));
+
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("")]
+    [DataRow("   ")]
+    [DataRow("../secret.png")]
+    [DataRow("previews/../../secret.png")]
+    [DataRow("previews/..")]
+    [DataRow("./chart.png")]
+    [DataRow("/etc/passwd")]
+    [DataRow("//server/share/x.png")]
+    [DataRow("previews//deck.html")]
+    [DataRow("previews/")]
+    [DataRow(@"..\secret.png")]
+    [DataRow(@"previews\deck.html")]
+    [DataRow(@"C:\Windows\win.ini")]
+    [DataRow("C:/Windows/win.ini")]
+    [DataRow("chart.png:stream")]
+    [DataRow("chart.png\0.html")]
+    [DataRow("chart\n.png")]
+    [DataRow(" chart.png")]
+    [DataRow("previews/ ../x.png")]
+    public void IsSafeRelativePath_RefusesWhatCouldLeaveTheDirectory(string? path)
+        => Assert.IsFalse(AttachmentPathResolver.IsSafeRelativePath(path));
+
+    [TestMethod]
+    public void IsSafeRelativePath_RefusesAPathTooLongToBeAFileName()
+        => Assert.IsFalse(AttachmentPathResolver.IsSafeRelativePath(new string('a', AttachmentPathResolver.MaxRelativePathLength + 1)));
+
+    [TestMethod]
+    public void Resolve_OfASafeRelativePath_StaysInsideTheBase()
+    {
+        // The lexical check and the resolver agree: what the first lets through, the second
+        // resolves under the base (when the file is there).
+        Directory.CreateDirectory(Path.Combine(_baseDir, "previews", "abc"));
+        File.WriteAllBytes(Path.Combine(_baseDir, "previews", "abc", "deck.html"), [1]);
+
+        Assert.IsTrue(AttachmentPathResolver.IsSafeRelativePath("previews/abc/deck.html"));
+        var resolved = _resolver.Resolve("previews/abc/deck.html");
+
+        Assert.IsNotNull(resolved);
+        StringAssert.StartsWith(resolved, _baseDir);
     }
 }

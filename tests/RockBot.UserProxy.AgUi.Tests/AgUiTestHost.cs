@@ -86,6 +86,141 @@ internal sealed class FakeAgent : IAsyncDisposable
     /// <summary>The history the agent returns, or null to leave history requests unanswered.</summary>
     public ConversationHistoryResponse? History { get; set; }
 
+    // ── The REST extras (phase 4). Each answer is null by default: the agent stays silent. ──
+
+    /// <summary>What the agent answers an upload with. The bytes it was sent are in <see cref="Uploads"/>.</summary>
+    public Func<AttachmentUploadRequest, AttachmentUploadResponse?>? OnUpload { get; set; }
+
+    public AgentInfoResponse? Info { get; set; }
+
+    public Func<ActiveStatusRequest, ActiveStatusResponse?>? OnStatus { get; set; }
+
+    public ListSavedResponsesResponse? Saved { get; set; }
+
+    public Func<SaveResponseRequest, SaveResponseAck?>? OnSave { get; set; }
+
+    public Func<string, GetSavedResponseResponse?>? OnGetSaved { get; set; }
+
+    public Func<string, DeleteSavedResponseAck?>? OnDeleteSaved { get; set; }
+
+    public McpSignInListResponse? SignIns { get; set; }
+
+    public Func<McpSignInStartRequest, McpSignInStartResponse?>? OnSignInStart { get; set; }
+
+    /// <summary>What the agent does with a clear-context request, after recording it.</summary>
+    public Func<FakeAgent, ClearContextRequest, Task>? OnClear { get; set; }
+
+    private readonly List<object> _received = [];
+
+    /// <summary>Every request of type <typeparamref name="T"/> the agent received on the phase 4 topics, in order.</summary>
+    public IReadOnlyList<T> Received<T>()
+    {
+        lock (_lock) return [.. _received.OfType<T>()];
+    }
+
+    public IReadOnlyList<AttachmentUploadRequest> Uploads => Received<AttachmentUploadRequest>();
+
+    /// <summary>Waits until the agent has received a <typeparamref name="T"/>, and returns the first.</summary>
+    public async Task<T> ReceivedAsync<T>()
+    {
+        var deadline = DateTime.UtcNow + NotifyStream.Patience;
+        while (true)
+        {
+            if (Received<T>() is [var first, ..])
+                return first;
+            Assert.IsTrue(DateTime.UtcNow < deadline, $"the agent never received a {typeof(T).Name}");
+            await Task.Delay(10);
+        }
+    }
+
+    private void Record(object request)
+    {
+        lock (_lock) _received.Add(request);
+    }
+
+    /// <summary>Subscribes to a request topic: records each request and publishes the answer, if any, to its reply topic.</summary>
+    private async Task AnswerAsync<TRequest, TResponse>(
+        IMessageSubscriber subscriber, string topic, Func<TRequest, TResponse?> answer)
+        where TRequest : class where TResponse : class
+    {
+        _subscriptions.Add(await subscriber.SubscribeAsync(
+            $"{topic}.{AgUiTestHost.AgentName}", $"fake-agent.{topic}",
+            async (envelope, ct) =>
+            {
+                var request = envelope.GetPayload<TRequest>()!;
+                Record(request);
+                if (answer(request) is { } response && envelope.ReplyTo is { } replyTo)
+                {
+                    await _publisher.PublishAsync(replyTo,
+                        response.ToEnvelope<TResponse>(source: AgUiTestHost.AgentName, correlationId: envelope.CorrelationId), ct);
+                }
+                return MessageResult.Ack;
+            }));
+    }
+
+    private async Task SubscribeExtrasAsync(IMessageSubscriber subscriber)
+    {
+        await AnswerAsync<AttachmentUploadRequest, AttachmentUploadResponse>(
+            subscriber, UserProxyTopics.AttachmentUploadRequest, r => OnUpload?.Invoke(r));
+        await AnswerAsync<AgentInfoRequest, AgentInfoResponse>(subscriber, UserProxyTopics.AgentInfoRequest, _ => Info);
+        await AnswerAsync<ActiveStatusRequest, ActiveStatusResponse>(
+            subscriber, UserProxyTopics.ActiveStatusRequest, r => OnStatus?.Invoke(r));
+        await AnswerAsync<ListSavedResponsesRequest, ListSavedResponsesResponse>(
+            subscriber, UserProxyTopics.ListSavedResponsesRequest, _ => Saved);
+        await AnswerAsync<SaveResponseRequest, SaveResponseAck>(
+            subscriber, UserProxyTopics.SaveResponseRequest, r => OnSave?.Invoke(r));
+        await AnswerAsync<GetSavedResponseRequest, GetSavedResponseResponse>(
+            subscriber, UserProxyTopics.GetSavedResponseRequest, r => OnGetSaved?.Invoke(r.Id));
+        await AnswerAsync<DeleteSavedResponseRequest, DeleteSavedResponseAck>(
+            subscriber, UserProxyTopics.DeleteSavedResponseRequest, r => OnDeleteSaved?.Invoke(r.Id));
+
+        // Fire-and-forget: nothing to answer.
+        await AnswerAsync<UserFeedback, object>(subscriber, UserProxyTopics.UserFeedback, _ => null);
+
+        _subscriptions.Add(await subscriber.SubscribeAsync(
+            $"{UserProxyTopics.ClearContext}.{AgUiTestHost.AgentName}", "fake-agent.clear",
+            async (envelope, _) =>
+            {
+                var request = envelope.GetPayload<ClearContextRequest>()!;
+                Record(request);
+                if (OnClear is { } onClear)
+                    await onClear(this, request);
+                return MessageResult.Ack;
+            }));
+
+        // The bridge's sign-in topic carries three message types, told apart by the envelope's type.
+        _subscriptions.Add(await subscriber.SubscribeAsync(
+            $"{UserProxyTopics.McpSignIn}.{AgUiTestHost.AgentName}", "fake-agent.mcp-signin",
+            async (envelope, ct) =>
+            {
+                object? response = null;
+                if (envelope.MessageType == typeof(McpSignInStartRequest).FullName)
+                {
+                    var start = envelope.GetPayload<McpSignInStartRequest>()!;
+                    Record(start);
+                    response = OnSignInStart?.Invoke(start);
+                }
+                else if (envelope.MessageType == typeof(McpSignInListRequest).FullName)
+                {
+                    Record(envelope.GetPayload<McpSignInListRequest>()!);
+                    response = SignIns;
+                }
+                else if (envelope.MessageType == typeof(McpSignInCallback).FullName)
+                {
+                    Record(envelope.GetPayload<McpSignInCallback>()!);
+                }
+
+                if (envelope.ReplyTo is { } replyTo)
+                {
+                    if (response is McpSignInStartResponse started)
+                        await _publisher.PublishAsync(replyTo, started.ToEnvelope<McpSignInStartResponse>(source: AgUiTestHost.AgentName, correlationId: envelope.CorrelationId), ct);
+                    else if (response is McpSignInListResponse list)
+                        await _publisher.PublishAsync(replyTo, list.ToEnvelope<McpSignInListResponse>(source: AgUiTestHost.AgentName, correlationId: envelope.CorrelationId), ct);
+                }
+                return MessageResult.Ack;
+            }));
+    }
+
     public IReadOnlyList<ReceivedMessage> Messages
     {
         get { lock (_lock) return [.. _messages]; }
@@ -144,6 +279,7 @@ internal sealed class FakeAgent : IAsyncDisposable
                 return MessageResult.Ack;
             }));
 
+        await agent.SubscribeExtrasAsync(subscriber);
         return agent;
     }
 

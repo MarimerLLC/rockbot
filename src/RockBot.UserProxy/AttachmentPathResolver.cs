@@ -1,11 +1,12 @@
-namespace RockBot.UserProxy.Blazor.Services;
+namespace RockBot.UserProxy;
 
 /// <summary>
-/// Resolves the <c>file</c> query parameter of the <c>/attachments</c> endpoint to an absolute
-/// path under the shared attachments directory, rejecting any input that escapes the base
-/// (parent-directory traversal, absolute paths pointing elsewhere). The Blazor pod co-mounts the
-/// shared PVC read-only; this is the containment boundary that keeps the endpoint from serving
-/// arbitrary files. Factored out of <c>Program.cs</c> so the boundary can be unit-tested.
+/// Resolves the file a client names on an <c>/attachments</c> endpoint (the Blazor UI's
+/// <c>file</c> query parameter, the AG-UI proxy's path) to an absolute path under the shared
+/// attachments directory, rejecting any input that escapes the base (parent-directory traversal,
+/// absolute paths pointing elsewhere). A user proxy co-mounts the shared volume read-only; this is
+/// the containment boundary that keeps its endpoint from serving arbitrary files. Shared by the
+/// proxies that serve attachments, so there is one boundary to test.
 /// </summary>
 public sealed class AttachmentPathResolver
 {
@@ -60,6 +61,38 @@ public sealed class AttachmentPathResolver
             return null;
 
         return File.Exists(candidate) ? candidate : null;
+    }
+
+    /// <summary>Longest attachment reference <see cref="IsSafeRelativePath"/> accepts.</summary>
+    public const int MaxRelativePathLength = 512;
+
+    /// <summary>
+    /// True when <paramref name="path"/> is a plain relative path that cannot leave whatever
+    /// directory it is later resolved under: the form of <see cref="AgentAttachment.Path"/> on the
+    /// wire. For an attachment reference a client hands back (on a message it sends), checked
+    /// before the reference is passed on. Purely lexical, and the same on every platform, so a
+    /// proxy on Linux refuses what an agent on Windows would misread and the reverse: no rooted
+    /// path, no drive or stream (<c>:</c>), no backslash, no <c>.</c> or <c>..</c> segment, no
+    /// empty segment, no control character.
+    /// </summary>
+    public static bool IsSafeRelativePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path.Length > MaxRelativePathLength)
+            return false;
+
+        foreach (var c in path)
+        {
+            if (c is '\\' or ':' || char.IsControl(c))
+                return false;
+        }
+
+        // A leading or doubled slash leaves an empty segment, which the loop refuses.
+        foreach (var segment in path.Split('/'))
+        {
+            if (segment.Length == 0 || segment is "." or ".." || segment != segment.Trim())
+                return false;
+        }
+        return true;
     }
 
     private string StripRedundantBaseLeaf(string relativePath)

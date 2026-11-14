@@ -190,16 +190,22 @@ internal static class McpQuestionInterrupts
     /// an interrupt, so a client working either way has what it needs from the one event.
     /// </summary>
     public static BaseEvent QuestionEvent(TurnEventMapper mapper, AgentReply reply, McpQuestionForm? form) =>
-        mapper.Custom(TurnEventMapper.CustomNames.McpQuestion, new
-        {
-            reply.SessionId,
-            reply.AgentName,
-            // The form as the agent sent it, so a field this proxy doesn't know still arrives.
-            form = ParseJson(reply.StructuredData),
-            // The same question as plain text, for a client that can't show the form.
-            text = reply.Content,
-            interrupt = form is null ? (JsonElement?)null : InterruptElement(ToInterrupt(form)),
-        });
+        mapper.Custom(TurnEventMapper.CustomNames.McpQuestion, QuestionValue(reply, form));
+
+    /// <summary>
+    /// The value of a <c>rockbot.mcp_question</c> event. Also what <c>GET /threads/{id}/questions</c>
+    /// lists, so a client reads a question the same way wherever it gets it.
+    /// </summary>
+    public static object QuestionValue(AgentReply reply, McpQuestionForm? form) => new
+    {
+        reply.SessionId,
+        reply.AgentName,
+        // The form as the agent sent it, so a field this proxy doesn't know still arrives.
+        form = ParseJson(reply.StructuredData),
+        // The same question as plain text, for a client that can't show the form.
+        text = reply.Content,
+        interrupt = form is null ? (JsonElement?)null : InterruptElement(ToInterrupt(form)),
+    };
 
     /// <summary>An interrupt in the SDK's own JSON, the shape <c>RUN_FINISHED</c> carries it in.</summary>
     public static JsonElement InterruptElement(AGUIInterrupt interrupt) =>

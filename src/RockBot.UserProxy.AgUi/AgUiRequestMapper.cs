@@ -47,6 +47,15 @@ internal static class AgUiRequestMapper
     /// <summary>The property of <c>forwardedProps.rockbot</c> naming the <see cref="QuestionMode"/>: <c>interrupt</c> or <c>custom</c>.</summary>
     public const string QuestionModeKey = "questionMode";
 
+    /// <summary>The property of <c>forwardedProps.rockbot</c> listing the message's attachments, as <c>POST /attachments</c> returned them.</summary>
+    public const string AttachmentsKey = "attachments";
+
+    /// <summary>The most files one message may carry.</summary>
+    public const int MaxAttachments = 10;
+
+    /// <summary>The longest display name an attachment reference may carry.</summary>
+    public const int MaxFileNameLength = 255;
+
     public static AgUiRunRequest Map(RunAgentInput input, AgUiOptions options, string channelName)
     {
         if (string.IsNullOrWhiteSpace(input.ThreadId))
@@ -74,8 +83,12 @@ internal static class AgUiRequestMapper
 
         // The agent owns the conversation history, so only the newest user message is sent;
         // whatever else the client replays is ignored.
+        if (!TryReadAttachments(input.ForwardedProperties, out var attachments, out var attachmentError))
+            return AgUiRunRequest.Refuse(StatusCodes.Status400BadRequest, attachmentError);
+
+        // A message may be attachments alone ("here, look at this"), as in the Blazor UI.
         var text = LastUserText(input.Messages);
-        if (string.IsNullOrWhiteSpace(text))
+        if (string.IsNullOrWhiteSpace(text) && attachments is null)
             return AgUiRunRequest.Refuse(StatusCodes.Status400BadRequest, "messages must contain a user message with text.");
 
         // Naming a question mode says the client handles question forms, whatever else it listed.
@@ -87,7 +100,8 @@ internal static class AgUiRequestMapper
         {
             Message = new UserMessage
             {
-                Content = text,
+                Content = text ?? "",
+                Attachments = attachments,
                 SessionId = input.ThreadId,
                 UserId = options.DefaultUserId,
                 ChannelName = channelName,
@@ -177,8 +191,97 @@ internal static class AgUiRequestMapper
     }
 
     /// <summary>
-    /// The text of the last user message, or null without one. Image and document parts are
-    /// dropped: attachments are not part of this endpoint yet.
+    /// Reads <c>forwardedProps.rockbot.attachments</c>: the files that go with the message, each a
+    /// reference <c>POST /attachments</c> returned (<c>path</c>, <c>mime</c>, optionally
+    /// <c>fileName</c>; anything else, such as the <c>url</c> the upload also returned, is
+    /// ignored). False with <paramref name="error"/> when the property is there and isn't that.
+    /// </summary>
+    /// <remarks>
+    /// The reference is the client's word for a file on the agent's volume, so it is held to the
+    /// form an upload produces. The path must be a plain relative one
+    /// (<see cref="AttachmentPathResolver.IsSafeRelativePath"/>): the agent resolves it under the
+    /// attachments directory with its own containment check, and this keeps a path that could
+    /// mean something else from reaching it at all. The type must be the one the file's extension
+    /// has (<see cref="AttachmentMimeTypes"/>), so a client can't have a file read as another
+    /// type than its name says. Whether the file exists is the endpoint's check, where the volume is.
+    /// </remarks>
+    internal static bool TryReadAttachments(
+        JsonElement? forwardedProps, out IReadOnlyList<AgentAttachment>? attachments, out string error)
+    {
+        attachments = null;
+        error = "";
+        if (forwardedProps is not { ValueKind: JsonValueKind.Object } props
+            || !props.TryGetProperty(ForwardedPropsKey, out var rockbot)
+            || rockbot.ValueKind != JsonValueKind.Object
+            || !rockbot.TryGetProperty(AttachmentsKey, out var declared)
+            || declared.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        var where = $"forwardedProps.{ForwardedPropsKey}.{AttachmentsKey}";
+        if (declared.ValueKind != JsonValueKind.Array)
+        {
+            error = $"{where} must be an array of attachment references.";
+            return false;
+        }
+
+        if (declared.GetArrayLength() > MaxAttachments)
+        {
+            error = $"{where} has more than {MaxAttachments} entries.";
+            return false;
+        }
+
+        var list = new List<AgentAttachment>();
+        foreach (var item in declared.EnumerateArray())
+        {
+            var path = item.ValueKind == JsonValueKind.Object ? StringProperty(item, "path") : null;
+            if (path is null)
+            {
+                error = $"Every entry of {where} needs a path, as POST /attachments returned it.";
+                return false;
+            }
+
+            if (!AttachmentPathResolver.IsSafeRelativePath(path))
+            {
+                error = $"'{path}' in {where} is not an attachment path. Use the path POST /attachments returned.";
+                return false;
+            }
+
+            var expected = AttachmentMimeTypes.FromFileName(path);
+            var mime = StringProperty(item, "mime");
+            if (expected == AttachmentMimeTypes.Unknown || !string.Equals(mime, expected, StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"The mime of '{path}' in {where} must be the type of its extension"
+                    + (expected == AttachmentMimeTypes.Unknown ? ", which is not one that can be attached." : $" ({expected}).");
+                return false;
+            }
+
+            // The display name is shown to the user and the model, never used as a path.
+            var fileName = StringProperty(item, "fileName");
+            if (fileName is { Length: > MaxFileNameLength } || fileName?.Any(char.IsControl) == true)
+            {
+                error = $"The fileName of '{path}' in {where} is not a file name.";
+                return false;
+            }
+
+            list.Add(new AgentAttachment { Mime = expected, Path = path, FileName = fileName });
+        }
+
+        attachments = list.Count > 0 ? list : null;
+        return true;
+    }
+
+    private static string? StringProperty(JsonElement item, string name) =>
+        item.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+        && value.GetString() is { Length: > 0 } text
+            ? text
+            : null;
+
+    /// <summary>
+    /// The text of the last user message, or null without one. Image and document parts of the
+    /// message itself are dropped: files go with a message as references to uploads, in
+    /// <c>forwardedProps.rockbot.attachments</c>.
     /// </summary>
     internal static string? LastUserText(IList<AGUIMessage>? messages)
     {

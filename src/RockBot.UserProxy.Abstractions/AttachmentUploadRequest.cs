@@ -25,7 +25,13 @@ public sealed record AttachmentUploadRequest
     /// <summary>Declared MIME type. Checked against both the allowlist and the extension.</summary>
     public required string Mime { get; init; }
 
-    /// <summary>File contents. Capped agent-side; see <c>AttachmentUploadOptions.MaxBytes</c>.</summary>
+    /// <summary>
+    /// Largest file the agent accepts. The agent enforces it; a client checks against the same
+    /// number so it can refuse a file before sending its bytes anywhere.
+    /// </summary>
+    public const long MaxBytes = 8L * 1024 * 1024;
+
+    /// <summary>File contents, at most <see cref="MaxBytes"/>. The agent enforces the cap.</summary>
     public required byte[] Data { get; init; }
 
     /// <summary>Session the upload belongs to, for logging and correlation.</summary>

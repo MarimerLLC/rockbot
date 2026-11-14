@@ -147,4 +147,48 @@ public sealed class AgUiKestrelTests
 
         Assert.AreEqual("agui-session", (await _agent.CancelRequested.WaitAsync(Patience)).SessionId);
     }
+
+    /// <summary>A body whose length the client doesn't announce, so only reading it shows how long it is.</summary>
+    private sealed class ChunkedContent(long length) : HttpContent
+    {
+        protected override async Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context)
+        {
+            var chunk = new byte[64 * 1024];
+            for (var sent = 0L; sent < length; sent += chunk.Length)
+                await stream.WriteAsync(chunk);
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    [TestMethod]
+    public async Task AnUploadThatHidesItsLength_IsCutOffAtTheLimit()
+    {
+        // Without a Content-Length there is nothing to refuse up front: the server itself has to
+        // stop reading at the limit, which only a real server does.
+        _agent.OnUpload = request => new AttachmentUploadResponse
+        {
+            Success = true, Attachment = new AgentAttachment { Mime = request.Mime, Path = request.FileName },
+        };
+        var content = new ChunkedContent(AttachmentUploadRequest.MaxBytes * 3);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+
+        try
+        {
+            using var response = await _client.PostAsync("/attachments?fileName=big.png", content).WaitAsync(Patience);
+            Assert.AreEqual(System.Net.HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        }
+        catch (HttpRequestException)
+        {
+            // The server answered 413 and closed the connection while the client was still
+            // sending; depending on timing the client sees the reset before the answer.
+        }
+
+        await Task.Delay(200);
+        Assert.AreEqual(0, _agent.Uploads.Count, "the agent was handed a file over the limit");
+    }
 }

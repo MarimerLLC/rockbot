@@ -136,7 +136,11 @@ internal sealed class NotifyThread
         _clock = clock;
         _logger = logger;
         // Not a run, so there is no run id; the mapper only needs one for ids nothing here uses.
-        _mapper = new TurnEventMapper(threadId, NotifyEvents.StreamName, clock) { AlwaysSnapshotState = true };
+        _mapper = new TurnEventMapper(threadId, NotifyEvents.StreamName, clock)
+        {
+            AlwaysSnapshotState = true,
+            AttachmentUrl = AttachmentLinks.Url,
+        };
     }
 
     public string ThreadId { get; }

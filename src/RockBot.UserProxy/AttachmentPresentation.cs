@@ -1,4 +1,4 @@
-namespace RockBot.UserProxy.Blazor.Services;
+namespace RockBot.UserProxy;
 
 /// <summary>How the chat shows one reply attachment.</summary>
 public enum AttachmentKind

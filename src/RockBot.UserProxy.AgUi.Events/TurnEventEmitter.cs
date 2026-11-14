@@ -24,11 +24,14 @@ public class TurnEventEmitter : ITurnObserver, IProgress<AgentReply>
     private bool _closed;
     private long _lastWrite = Stopwatch.GetTimestamp();
 
-    public TurnEventEmitter(string threadId, string runId, Action<BaseEvent> sink, TimeProvider? clock = null)
+    /// <param name="attachmentUrl">See <see cref="TurnEventMapper.AttachmentUrl"/>.</param>
+    public TurnEventEmitter(
+        string threadId, string runId, Action<BaseEvent> sink, TimeProvider? clock = null,
+        Func<AgentAttachment, string?>? attachmentUrl = null)
     {
         ArgumentNullException.ThrowIfNull(sink);
         _sink = sink;
-        _mapper = new TurnEventMapper(threadId, runId, clock);
+        _mapper = new TurnEventMapper(threadId, runId, clock) { AttachmentUrl = attachmentUrl };
     }
 
     /// <summary>The session the turn belongs to, for filtering broadcast events.</summary>
