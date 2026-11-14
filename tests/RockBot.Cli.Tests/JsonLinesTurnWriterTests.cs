@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AGUI.Abstractions;
 using RockBot.UserProxy;
+using RockBot.UserProxy.AgUi;
 using RockBot.UserProxy.Cli;
 
 namespace RockBot.Cli.Tests;

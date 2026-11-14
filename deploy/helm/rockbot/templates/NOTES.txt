@@ -18,6 +18,13 @@ NEXT STEPS
    docker build -t {{ .Values.blazor.image.repository }}:{{ .Values.blazor.image.tag }} \
      -f src/RockBot.UserProxy.Blazor/Dockerfile .
    docker push {{ .Values.blazor.image.repository }}:{{ .Values.blazor.image.tag }}
+{{- if .Values.agui.enabled }}
+
+   # AG-UI proxy
+   docker build -t {{ .Values.agui.image.repository }}:{{ .Values.agui.image.tag }} \
+     -f src/RockBot.UserProxy.AgUi/Dockerfile .
+   docker push {{ .Values.agui.image.repository }}:{{ .Values.agui.image.tag }}
+{{- end }}
 
 
 2. POPULATE THE AGENT DATA VOLUME
@@ -66,6 +73,35 @@ NEXT STEPS
    For HTTPS, set blazor.tailscale.ingress.enabled=true — read the
    switchover note in values.yaml first, the device is replaced.
 {{- end }}
+{{- if .Values.agui.enabled }}
+
+
+   ACCESS THE AG-UI API
+
+   The AG-UI proxy (docs/agui.md) has no sign-in of its own: whoever can
+   reach it can talk to the agent.
+{{- if .Values.agui.ingress.enabled }}
+
+     https://{{ .Values.agui.ingress.host }}/agui
+
+   You set agui.ingress.allowUnauthenticated=true: make sure whatever sits
+   in front of this ingress really does authenticate every request.
+{{- else if .Values.agui.tailscale.ingress.enabled }}
+
+     https://{{ .Values.agui.tailscale.hostname }}.<your-tailnet>.ts.net/agui
+
+   Private to your tailnet. The exact name appears in the ADDRESS field:
+
+     kubectl -n {{ .Values.namespace }} get ingress {{ include "rockbot.fullname" . }}-agui
+{{- else }}
+
+     http://{{ .Values.agui.tailscale.hostname }}/agui
+
+   Private to your tailnet. Check it with:
+
+     curl http://{{ .Values.agui.tailscale.hostname }}/healthz
+{{- end }}
+{{- end }}
 
 
 4. LOGS IN GRAFANA / LOKI
@@ -76,3 +112,6 @@ NEXT STEPS
      {namespace="{{ .Values.namespace }}"}
      {namespace="{{ .Values.namespace }}", app="rockbot-agent"}
      {namespace="{{ .Values.namespace }}", app="rockbot-blazor"}
+{{- if .Values.agui.enabled }}
+     {namespace="{{ .Values.namespace }}", app="rockbot-agui"}
+{{- end }}

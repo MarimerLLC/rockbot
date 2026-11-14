@@ -13,7 +13,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="AGUI.Abstractions" Version="1.0.1" />
     <PackageReference Include="Spectre.Console" Version="0.49.*" />
     <PackageReference Include="Spectre.Console.Cli" Version="0.49.*" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.*" />
@@ -22,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.UserProxy\RockBot.UserProxy.csproj" />
+    <ProjectReference Include="..\RockBot.UserProxy.AgUi.Events\RockBot.UserProxy.AgUi.Events.csproj" />
     <ProjectReference Include="..\RockBot.Messaging.RabbitMQ\RockBot.Messaging.RabbitMQ.csproj" />
   </ItemGroup>
 

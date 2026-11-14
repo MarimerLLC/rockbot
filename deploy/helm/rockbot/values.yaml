@@ -338,6 +338,83 @@ blazor:
       # annotation). Empty means a single standalone proxy Pod.
       proxyGroup: ""
 
+# ── AG-UI proxy (RockBot.UserProxy.AgUi) ─────────────────────────────────────
+# Exposes the agent over AG-UI (HTTP POST → server-sent events) for clients that
+# can't reach RabbitMQ: a Blazor WebAssembly app, a phone app, a third-party AG-UI
+# front end. See docs/agui.md.
+#
+# Off by default. The proxy has NO sign-in of its own yet: whoever can reach it can
+# talk to the agent. Expose it on the tailnet (the default below) or behind a gateway
+# that authenticates.
+agui:
+  enabled: false
+  image:
+    repository: rockylhotka/rockbot-agui
+    tag: latest
+  # Runs work on any replica: each has its own identity on the bus and receives its
+  # own replies. Leave at 1 unless you need more.
+  replicaCount: 1
+  # How long a run waits for the agent to start working on it, as a .NET TimeSpan
+  # ("00:05:00"). Empty keeps the built-in 3 minutes. Once the agent has started, the
+  # run lasts as long as the agent keeps reporting in, up to 30 minutes.
+  replyTimeout: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  # The AG-UI thread ids (RockBot session ids) clients may use; any other gets
+  # HTTP 403. Empty allows only "agui-session". Every extra thread is a separate
+  # conversation with its own history and working memory on the agent.
+  allowedThreadIds: []
+    # - agui-session
+    # - phone
+
+  # ── Generic HTTPS ingress (no Tailscale) ────────────────────────────────────
+  # Mutually exclusive with tailscale.ingress.enabled; the chart fails to render if
+  # both are on.
+  ingress:
+    enabled: false
+    className: nginx
+    host: ""            # REQUIRED when enabled — e.g. agui.example.com
+    # Guard rail: this ingress publishes an API with nothing in front of it. The chart
+    # refuses to render it unless you say here that something outside the chart — an
+    # oauth2-proxy, an authenticating gateway — is doing the gating.
+    allowUnauthenticated: false
+    # Passed through verbatim. Runs are long-lived streams, so an nginx ingress wants
+    # at least:
+    #   nginx.ingress.kubernetes.io/proxy-read-timeout: "1800"
+    #   nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    annotations: {}
+    tls:
+      enabled: true
+      secretName: rockbot-agui-tls
+
+  tailscale:
+    # Tailscale hostname — the API becomes reachable at <hostname> on your tailnet.
+    # Requires the Tailscale Kubernetes Operator to be installed.
+    hostname: rockbot-agui
+
+    # Tailscale ACL tags for this endpoint's proxy device, e.g. ["tag:agui"]. Every
+    # entry must start with "tag:". The notes on blazor.tailscale.tags above apply.
+    tags: []
+
+    ingress:
+      # false (default) — a layer-3 LoadBalancer Service: plain HTTP at
+      #   http://<hostname>, private to the tailnet.
+      # true — a layer-7 Ingress: the operator provisions a certificate and the API
+      #   is served at https://<hostname>.<your-tailnet>.ts.net. A browser app served
+      #   over HTTPS needs this, since it may not call a plain-HTTP API.
+      # The prerequisites and the switchover note on blazor.tailscale.ingress above
+      # apply here too.
+      enabled: false
+
+      # Optional ProxyGroup for HA ingress. Empty means a single standalone proxy Pod.
+      proxyGroup: ""
+
 # ── RabbitMQ ──────────────────────────────────────────────────────────────────
 rabbitmq:
   hostName: ""      # REQUIRED — hostname or k8s service name of your RabbitMQ instance

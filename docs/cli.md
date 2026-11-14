@@ -40,7 +40,8 @@ CLI option to write turn events as JSON lines
 `--output jsonl` writes every event of the turn to stdout instead, as one
 [AG-UI 1.0](https://docs.ag-ui.com/concepts/events) event object per line, serialized with the AG-UI
 .NET SDK (`AGUI.Abstractions`). It needs `--message`. Stdout then carries nothing but these lines,
-encoded as UTF-8, and stderr keeps only `error:` diagnostics and logging.
+encoded as UTF-8, and stderr keeps only `error:` diagnostics and logging. The [AG-UI proxy](agui)
+streams the same events over HTTP, from the same code.
 
 ```
 {"type":"RUN_STARTED","threadId":"cli-session","runId":"e4e7…","protocolVersion":"1.0","timestamp":1794547308650}

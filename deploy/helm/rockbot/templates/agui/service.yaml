@@ -1,0 +1,41 @@
+{{- if .Values.agui.enabled }}
+{{- $tsTags := include "rockbot.agui.tailscaleTags" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rockbot.fullname" . }}-agui
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agui
+{{- if not (or .Values.agui.tailscale.ingress.enabled .Values.agui.ingress.enabled) }}
+  annotations:
+    # Tailscale Kubernetes Operator — exposes this service on your tailnet
+    # at <hostname> (no Funnel, private to tailnet only).
+    # Requires: https://tailscale.com/kb/1236/kubernetes-operator
+    tailscale.com/hostname: {{ .Values.agui.tailscale.hostname | quote }}
+    {{- if $tsTags }}
+    # ACL identity for this endpoint. See agui.tailscale.tags in values.yaml.
+    tailscale.com/tags: {{ $tsTags | quote }}
+    {{- end }}
+{{- end }}
+spec:
+{{- if or .Values.agui.tailscale.ingress.enabled .Values.agui.ingress.enabled }}
+  # Behind an Ingress, this Service is a plain in-cluster backend. In tailnet layer-7
+  # mode the Ingress owns the Tailscale device, and a second device on this Service
+  # would compete with it for <hostname>. With the generic HTTPS ingress there may be
+  # no Tailscale operator at all, and a LoadBalancer of class tailscale would hang
+  # Pending. (The same reasoning as the Blazor Service.)
+  type: ClusterIP
+{{- else }}
+  type: LoadBalancer
+  loadBalancerClass: tailscale
+{{- end }}
+  selector:
+    app: rockbot-agui
+    {{- include "rockbot.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+{{- end }}

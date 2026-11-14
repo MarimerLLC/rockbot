@@ -43,6 +43,7 @@ Each agent is an isolated process that reacts to messages, invokes tools, calls 
 - [Knowledge graph](knowledge-graph)
 - [Blazor UI](blazor-ui)
 - [CLI](cli) — one-shot chat for scripts, turn events as AG-UI JSON lines
+- [AG-UI proxy](agui) — the agent over HTTP and server-sent events, for WASM, mobile and third-party clients
 - [NuGet release](nuget-release)
 
 ## Community

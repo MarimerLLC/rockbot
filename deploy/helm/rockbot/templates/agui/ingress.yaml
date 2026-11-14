@@ -1,0 +1,41 @@
+{{- if and .Values.agui.enabled .Values.agui.tailscale.ingress.enabled }}
+{{- $tsTags := include "rockbot.agui.tailscaleTags" . }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "rockbot.fullname" . }}-agui
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "rockbot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agui
+  {{- if or .Values.agui.tailscale.ingress.proxyGroup $tsTags }}
+  annotations:
+    {{- if .Values.agui.tailscale.ingress.proxyGroup }}
+    tailscale.com/proxy-group: {{ .Values.agui.tailscale.ingress.proxyGroup | quote }}
+    {{- end }}
+    {{- if $tsTags }}
+    # ACL identity for this endpoint. See agui.tailscale.tags in values.yaml.
+    tailscale.com/tags: {{ $tsTags | quote }}
+    {{- end }}
+  {{- end }}
+  # Deliberately absent: tailscale.com/funnel. That annotation — and only that
+  # annotation — would publish this endpoint to the public internet. Without it the
+  # Ingress is served by Tailscale Serve and stays private to the tailnet.
+spec:
+  ingressClassName: tailscale
+  tls:
+    # tls.hosts[0] sets the MagicDNS name; the operator resolves it to
+    # <hostname>.<your-tailnet>.ts.net and issues the certificate for that.
+    - hosts:
+        - {{ .Values.agui.tailscale.hostname | quote }}
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "rockbot.fullname" . }}-agui
+                port:
+                  number: 80
+{{- end }}

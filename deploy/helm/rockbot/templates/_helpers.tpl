@@ -123,3 +123,17 @@ Kubernetes side.
 {{- end }}
 {{- join "," $tags }}
 {{- end }}
+
+{{/*
+Comma-joined Tailscale tag list for the AG-UI proxy device, or "" when unset.
+Same rules and reasons as rockbot.blazor.tailscaleTags above.
+*/}}
+{{- define "rockbot.agui.tailscaleTags" -}}
+{{- $tags := .Values.agui.tailscale.tags | default list }}
+{{- range $t := $tags }}
+{{- if not (hasPrefix "tag:" $t) }}
+{{- fail (printf "agui.tailscale.tags: %q is not a valid tag — every entry must start with 'tag:' (e.g. tag:trees)" $t) }}
+{{- end }}
+{{- end }}
+{{- join "," $tags }}
+{{- end }}
