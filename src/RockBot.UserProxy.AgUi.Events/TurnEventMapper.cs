@@ -3,21 +3,21 @@ using System.Text.Json.Nodes;
 using AGUI.Abstractions;
 using RockBot.UserProxy.Rendering;
 
-namespace RockBot.UserProxy.Cli;
+namespace RockBot.UserProxy.AgUi;
 
 /// <summary>
-/// Translates one turn's RockBot bus traffic into AG-UI 1.0 events (#797). It is the same mapping
-/// the AG-UI proxy (#794, <c>design/userproxy-agui.md</c>) needs, exercised first by
-/// <c>rockbot chat --output jsonl</c>.
+/// Translates one turn's RockBot bus traffic into AG-UI 1.0 events (#797). One mapping serves
+/// both <c>rockbot chat --output jsonl</c> and the AG-UI proxy (#794,
+/// <c>design/userproxy-agui.md</c>).
 /// </summary>
 /// <remarks>
 /// Keeps the turn's state (activity ids, task lists), so it is not thread-safe: the caller
-/// serializes calls (<see cref="JsonLinesTurnWriter"/> does, under its lock). AG-UI has no field
+/// serializes calls (<see cref="TurnEventEmitter"/> does, under its lock). AG-UI has no field
 /// for some RockBot detail, such as tool-call durations and failures; that goes in the event's
 /// <c>metadata.rockbot</c> object. Subagent lifecycle events also carry the RockBot record they
 /// came from in <c>rawEvent</c>, for its kind, thread and times.
 /// </remarks>
-internal sealed class TurnEventMapper(string threadId, string runId, TimeProvider? clock = null)
+public sealed class TurnEventMapper(string threadId, string runId, TimeProvider? clock = null)
 {
     /// <summary><c>CUSTOM</c> event names this mapper emits.</summary>
     public static class CustomNames
@@ -46,7 +46,7 @@ internal sealed class TurnEventMapper(string threadId, string runId, TimeProvide
     public const string PrimaryTaskListKey = "primary";
 
     /// <summary>RockBot payloads (<c>rawEvent</c>, custom values) use the bus's camelCase JSON.</summary>
-    internal static readonly JsonSerializerOptions PayloadJson = new(JsonSerializerDefaults.Web)
+    public static readonly JsonSerializerOptions PayloadJson = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
@@ -246,9 +246,9 @@ internal sealed class TurnEventMapper(string threadId, string runId, TimeProvide
             {
                 ThreadId = threadId, RunId = runId, Outcome = new RunFinishedCancelledOutcome(),
             }),
-            TurnResultOutcome.Error => RunError(ErrorCodes.Error, ChatExitCodes.Describe(result)!),
-            TurnResultOutcome.AgentLost => RunError(ErrorCodes.AgentLost, ChatExitCodes.Describe(result)!),
-            _ => RunError(ErrorCodes.Timeout, ChatExitCodes.Describe(result)!),
+            TurnResultOutcome.Error => RunError(ErrorCodes.Error, TurnResultText.Describe(result)!),
+            TurnResultOutcome.AgentLost => RunError(ErrorCodes.AgentLost, TurnResultText.Describe(result)!),
+            _ => RunError(ErrorCodes.Timeout, TurnResultText.Describe(result)!),
         });
         return events;
     }

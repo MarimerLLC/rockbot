@@ -33,6 +33,7 @@
     <Project Path="src/RockBot.UserProxy/RockBot.UserProxy.csproj" />
     <Project Path="src/RockBot.UserProxy.Cli/RockBot.UserProxy.Cli.csproj" />
     <Project Path="src/RockBot.UserProxy.Blazor/RockBot.UserProxy.Blazor.csproj" />
+    <Project Path="src/RockBot.UserProxy.AgUi.Events/RockBot.UserProxy.AgUi.Events.csproj" />
     <Project Path="src/RockBot.UserProxy.ChatState/RockBot.UserProxy.ChatState.csproj" />
     <Project Path="src/RockBot.Memory/RockBot.Memory.csproj" />
     <Project Path="src/RockBot.Skills/RockBot.Skills.csproj" />

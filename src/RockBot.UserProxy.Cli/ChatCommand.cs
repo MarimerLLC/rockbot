@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using RockBot.UserProxy.AgUi;
 using Spectre.Console;
 using Spectre.Console.Cli;
 

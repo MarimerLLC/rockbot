@@ -1,3 +1,4 @@
+using RockBot.UserProxy.AgUi;
 using RockBot.UserProxy.Rendering;
 
 namespace RockBot.UserProxy.Cli;
@@ -24,14 +25,7 @@ internal static class ChatExitCodes
     };
 
     /// <summary>The line describing a turn that didn't succeed, or null for one that did.</summary>
-    public static string? Describe(TurnResult result) => result.Outcome switch
-    {
-        TurnResultOutcome.Success => null,
-        TurnResultOutcome.Cancelled => "the agent cancelled the turn",
-        TurnResultOutcome.Error => $"the agent reported an error{(result.Error is { Length: > 0 } e ? $": {e}" : "")}",
-        TurnResultOutcome.AgentLost => $"lost contact with the agent{(result.Error is { Length: > 0 } e ? $" ({e})" : "")}",
-        _ => "no reply received (timeout)",
-    };
+    public static string? Describe(TurnResult result) => TurnResultText.Describe(result);
 }
 
 /// <summary>
