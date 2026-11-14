@@ -478,7 +478,7 @@ The agent has *no* pod permissions. A compromised agent cannot create or access 
 - Runs `RockBot.UserProxy.AgUi` on port 8080: `POST /agui` runs a turn and streams it back as AG-UI events; REST endpoints cover attachments, saved responses, MCP sign-in and the rest.
 - Mounts the shared volume read-only, to serve reply attachments.
 - Exposed on your Tailscale network using the hostname set in `agui.tailscale.hostname` (`rockbot-agui` by default).
-- Has no sign-in of its own yet, so the chart refuses to render a public ingress for it unless `agui.ingress.allowUnauthenticated: true`.
+- Two ways to gate it, as for the Blazor UI: the network (the default: no sign-in, so keep it on the tailnet) or app auth (`agui.auth.enabled`: an OIDC bearer token from an account on the allowlist, with `agui.cors.allowedOrigins` for browser apps). The chart refuses to render a public ingress for it without `agui.auth.enabled`, unless `agui.ingress.allowUnauthenticated: true`.
 - Receives only the RabbitMQ credentials it needs, and has no volume.
 
 #### OpenRouter MCP (`rockbot-openrouter-mcp`) *(optional)*
@@ -615,7 +615,7 @@ Deep-dive documentation for individual subsystems lives in [`docs/`](docs/):
 | [`docs/dream-service.md`](docs/dream-service.md) | Dream cycle passes, scheduling, directive files, LLM response contracts, configuration |
 | [`docs/blazor-ui.md`](docs/blazor-ui.md) | Blazor chat UI architecture, UserProxyService, feedback, history replay, deployment |
 | [`docs/cli.md`](docs/cli.md) | `rockbot` CLI subcommands, one-shot mode, `--output jsonl` (turn events as AG-UI JSON lines), exit codes |
-| [`docs/agui.md`](docs/agui.md) | AG-UI proxy: `POST /agui` runs, the notify stream, MCP questions, attachments, saved responses, MCP sign-in, configuration, Helm values |
+| [`docs/agui.md`](docs/agui.md) | AG-UI proxy: `POST /agui` runs, the notify stream, MCP questions, attachments, saved responses, MCP sign-in, app auth (bearer tokens), CORS, configuration, Helm values |
 | [`docs/messaging.md`](docs/messaging.md) | MessageEnvelope, publisher/subscriber interfaces, RabbitMQ provider, topics, trust levels, trace propagation |
 | [`docs/agent-host.md`](docs/agent-host.md) | AgentHostBuilder, pipeline, identity, profile, conversation memory, session evaluation, LLM client, data volume layout |
 | [`docs/tools.md`](docs/tools.md) | Tool execution model, IToolRegistry, MCP bridge, service search, web search/browse, REST, scheduling, script execution, OpenRouter MCP |

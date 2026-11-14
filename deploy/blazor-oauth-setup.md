@@ -7,6 +7,9 @@ Sign-in is **off by default**. A deployment that leaves `blazor.auth.enabled`
 false behaves exactly as it always has: no login page, every route anonymous,
 gated only by whatever network sits in front of it (a tailnet, typically).
 
+The AG-UI proxy has app auth of its own, set up differently (no client secret, no
+redirect URI): see [`agui-auth-setup.md`](agui-auth-setup.md).
+
 ## What this is and is not
 
 It is a **doorman**. Everyone who gets in shares the same conversation with the

@@ -1,7 +1,7 @@
 # AG-UI User Proxy
 
-**Status:** Phases 1 (runs), 2 (notify stream), 3 (MCP questions) and 4 (REST extras) implemented,
-2026-11-14. Phases 5 and 6 are not started. See
+**Status:** Phases 1 (runs), 2 (notify stream), 3 (MCP questions), 4 (REST extras) and 5 (app
+auth) implemented, 2026-11-14. Phase 6 is not started. See
 [Implementation status](#implementation-status) for what was built and where it differs from this
 design; user documentation is in [`docs/agui.md`](../docs/agui.md).
 
@@ -128,7 +128,8 @@ for, which AG-UI deliberately doesn't model.
 - **Deployment.** Its own deployment and image (`rockylhotka/rockbot-agui`), under Helm values
   `agui.*` (`enabled`, `image`, `tailscale`, `ingress`, `auth`, `cors.allowedOrigins`), mirroring
   `blazor.*`. It's stateless apart from the in-memory notify buffer, so it needs no PVC beyond a
-  data-protection key ring if auth needs one.
+  data-protection key ring if auth needs one. (It doesn't; see
+  [Phase 5](#phase-5-app-auth-implemented).)
 
 ### Endpoints
 
@@ -332,7 +333,7 @@ One PR each.
    *Implemented.*
 4. **REST extras.** Attachments, feedback, saved responses, MCP sign-in, clear context, agent info.
    *Implemented.*
-5. **App auth.** Bearer tokens, the shared allowlist, CORS.
+5. **App auth.** Bearer tokens, the shared allowlist, CORS. *Implemented.*
 6. **A reference client.** Probably a small Blazor WASM app on `AGUIChatClient` and the notify
    stream; it can live in this repo as a sample.
 
@@ -654,6 +655,7 @@ Open after phase 4:
 - **Attachments and bearer tokens (phase 5).** A browser can't send an `Authorization` header from
   `<img src>` or a new tab. With app auth, `GET /attachments/…` needs another way in for those
   uses: a cookie, a short-lived signed URL, or a client that fetches the bytes and shows a blob.
+  *Closed in phase 5:* access tickets.
 - **The accepted upload types are stated twice.** The agent's `InboundAttachmentService` has the
   allowlist; the proxy only knows the wider `AttachmentMimeTypes` table, so an SVG or HTML upload
   travels to the agent to be refused. Moving the allowlist to `RockBot.UserProxy.Abstractions`
@@ -665,6 +667,127 @@ Open after phase 4:
   user message (open question 3).
 - **Replicas.** The sign-ins under way are per replica, like the notify buffer and the question
   list.
+
+### Phase 5: app auth (implemented)
+
+- **`AgUi:Auth`** (`AgUiAuthOptions`) turns app mode on. Off, nothing is registered and no
+  middleware is added: the pipeline is phase 4's.
+- **Bearer tokens** are validated by ASP.NET Core's JWT bearer handler against one OIDC issuer
+  (`Authority`, Google by default) and a list of audiences.
+- **`UserAllowlist`** and a new base class for its two lists, `UserAllowlistOptions`, moved from
+  the Blazor project to `RockBot.UserProxy`. Blazor's `AuthOptions` and the proxy's
+  `AgUiAuthOptions` both derive from the base class. Their tests moved with them.
+- **`AccessTicketService`, `AccessTicketHandler`, `POST /tickets`** and
+  `GET /t/{ticket}/attachments/{path}`: short-lived signed URLs for the requests a browser makes
+  without a script.
+- **`AgUi:Cors:AllowedOrigins`** (`AgUiCorsOptions`) adds ASP.NET Core's CORS middleware when it
+  lists any origin.
+- **`AgUiIdentity.UserId`** is the `UserId` on a `UserMessage`, a form answer and an upload.
+- **Deployment:** `agui.auth.*` and `agui.cors.allowedOrigins`, rendered as environment variables
+  on the proxy's own deployment (`AgUi__Auth__*`, `AgUi__Cors__*`), not in the shared ConfigMap.
+  The generic ingress renders with `agui.auth.enabled` or `agui.ingress.allowUnauthenticated`.
+
+Decisions:
+
+1. **The shared code went to `RockBot.UserProxy`, not a new project.** `UserAllowlist` needs
+   nothing but `System.Security.Claims`, so it brings no ASP.NET Core into that library, and both
+   proxies and both Dockerfiles already reference it (phase 4 put the attachment resolver there
+   for the same reason). The authorization handler, which does need ASP.NET Core, is not shared:
+   each proxy has its own twenty lines, and they differ (the proxy's also requires a verified
+   address, and answers with a problem body, not a redirect).
+2. **The proxy's settings are `AgUi:Auth:*`, not `Auth:*`.** The chart deploys both proxies, and
+   Blazor's `Auth__*` keys are flat. A second proxy reading `Auth:*` would either collide with
+   them or silently inherit Blazor's client id and allowlist. Under its own section, and set on
+   its own deployment, neither proxy can see the other's.
+3. **One issuer and a list of audiences, no provider registry.** Blazor's `AuthProviderRegistry`
+   exists because each provider there is a handler, a button and a callback path. Validating a
+   token needs none of that: an OIDC issuer is its address, and the discovery document gives the
+   rest. Google is the default value of `Authority`, plus one special case, its second spelling
+   of `iss`. Audiences are a list because every app has its own client id. A second issuer at the
+   same time would be a second bearer scheme; nothing else would change.
+4. **What is validated.** Signature (the issuer's JWKS, asymmetric algorithms only, so a token
+   "signed" with the public key as an HMAC secret fails), `iss`, `aud`, `exp` (one minute of
+   skew), then in authorization, on every request: `email_verified` is `true` and `email` is on
+   the allowlist. `email_verified` is **required**, where the shared allowlist (and so Blazor)
+   only refuses an explicit `false`: Blazor's provider is one the build chose, the proxy's is
+   configuration, and an issuer that lets a user claim an address without verifying it would
+   hand out allowlisted identities. `AgUi:Auth:RequireVerifiedEmail` turns that off.
+5. **`UserId` is the email address.** The agent keys nothing on `UserId`: it logs it with the
+   message and tags the turn's telemetry (`rockbot.user.id`), and multi-tenancy is a non-goal. So
+   the id is for an operator reading who sent what, and the address is what the allowlist is
+   written in. `AgUi:Auth:UserIdClaim` can name `sub` instead.
+6. **Access tickets for browser-made requests.** `<img src>`, a new tab and `EventSource` can't
+   send a header. A client with a token asks `POST /tickets` for a URL for one attachment or one
+   thread's notify stream. The ticket is a payload and an HMAC-SHA256, good for 5 minutes and
+   never past the token it was asked with, and it authenticates only a `GET` of what it names:
+   the ticket handler refuses it anywhere else, so it can't be used as a token or traded for
+   another ticket. Alternatives considered:
+   - *The token in the URL.* A URL lands in history, logs and `Referer`.
+   - *Signing the `url` in `rockbot.attachments`.* Events are replayed for 24 hours and history
+     for ever, so the signature would have to live as long: a long-lived credential in a URL.
+   - *A cookie.* It would make the API cookie-authenticated, and with it CSRF and
+     `SameSite`/third-party-cookie rules, for a client on another origin.
+7. **An attachment's ticket is in the path, and an HTML attachment's covers its directory.**
+   Phase 4 serves attachments by path so that a deck's relative links resolve. A ticket in the
+   query would be dropped from those links, so it is a path prefix
+   (`/t/{ticket}/attachments/…`), and a ticket for an HTML file in a directory is accepted for
+   files under that directory. A ticket for anything else, or for a file at the root, is for
+   that file only. The cost: the sandboxed document can read its own URL, and so its ticket. It
+   gets five minutes of read access to its own directory, which it has anyway.
+8. **The ticket key is random per process.** No PVC and no Secret: a restart refuses tickets that
+   had minutes to live, and the client asks again. Blazor needs a persisted key ring because its
+   cookies last 14 days; nothing here lasts longer than a token. `AgUi:Auth:TicketKey` (Helm:
+   `agui.auth.ticketKeyFromSecret`) gives several replicas one key.
+9. **The notify stream ends when its token expires; a run finishes.** A stream that never ends
+   must not outlive its credential, and ending it costs nothing: the client reconnects with a
+   fresh token and `Last-Event-ID`. A run is bounded by `MaxTurnDuration`, and cutting it would
+   cancel the turn (an aborted run cancels the session), so a run authorized at its start is
+   allowed to end. Taking someone off the allowlist takes a restart either way: it is
+   configuration.
+10. **Errors.** `401` with `WWW-Authenticate: Bearer` (and RFC 6750's `error="invalid_token"`
+    when a token was sent) for a missing or bad token or ticket; `403` for a valid identity that
+    isn't allowed. Both are problem-details bodies like every other refusal. Neither names an
+    address: the refused one goes to the proxy's log, where an operator needs it.
+11. **The sign-in callback needed no change.** It stays anonymous. Starting a sign-in is in the
+    authorized group, so only an allowed account can put a `state` on the tracker, and the
+    callback relays nothing else (phase 4, decision 8).
+12. **CORS.** No origins, no middleware and no headers. With origins: those origins, `GET`,
+    `POST` and `DELETE`, any request header, `Location` and `WWW-Authenticate` exposed, never
+    credentials. Request headers are not enumerated because the header allow-list protects an
+    API that acts on something the browser attaches by itself; this one acts only on the
+    `Authorization` a script sets. The middleware runs before authentication, so a preflight
+    needs no token and a `401` carries the headers.
+13. **Fail fast.** Enabled with no allowlist entry, no audience, a non-`https` authority, a bad
+    ticket key or a wildcard origin, the proxy throws at startup. The chart fails on the first
+    two at render time.
+
+Where the implementation differs from the design above:
+
+1. **ID tokens only for Google.** The design says "ID or access tokens". A Google access token is
+   opaque: validating one is a call to Google's tokeninfo or userinfo endpoint per request (or a
+   cache of them), which says nothing about which app the token was issued to unless the proxy
+   also checks `azp`. Any provider's *JWT* is accepted, access token or ID token, when its `aud`
+   is a configured audience and it carries the email claims.
+2. **`UserAllowlistOptions` is new.** The design moves "the `UserAllowlist` and options". Blazor's
+   `AuthOptions` is mostly about its own sign-in (providers, cookie lifetime, forwarded headers),
+   so only the two lists moved, as a base class.
+3. **No data-protection key ring.** The design allows a PVC "if auth needs one". It doesn't.
+4. **`POST /tickets` and `GET /t/{ticket}/attachments/{path}`** are not in the design's table.
+5. **Network mode doesn't say "tailnet only".** The proxy can't tell what network it is on. The
+   chart's guard is what stops a public ingress without auth.
+
+Open after phase 5:
+
+- **Network mode and cross-site requests.** With no app auth, a web page on any origin, opened in
+  a browser that can reach the proxy, can *send* a request it can't read: `POST /agui` doesn't
+  insist on `Content-Type: application/json`, so a form post is not preflighted. That is as it
+  was in phases 1 to 4, and app mode is not affected (no ambient credential). Requiring a JSON
+  content type, or refusing an `Origin` that isn't allowed, would close it for network mode.
+- **Revocation needs a restart.** The allowlist is read at startup.
+- **One issuer.** Accepting Google and another provider at once needs a second bearer scheme.
+- **Tickets and replicas.** Without a shared key a ticket only works on the replica that issued
+  it, like the notify buffer and the question list.
+- **No rate limit on failed tokens.** Each is a signature check; an ingress can limit them.
 
 ## Testing
 
@@ -696,6 +819,16 @@ sandbox policies), upload limits and types, and references on a run; the sign-in
 the proxy didn't issue, no state, no code, relayed once); the sign-in tracker and the attachment
 reference mapping as pure tests; and one test over a real socket for an upload that doesn't
 announce its length. The resolver's and presentation's own tests are in
+`tests/RockBot.UserProxy.Tests`.
+
+**Phase 5 tests** are in the same project, against a stand-in issuer: an RSA key made in the test
+and handed to the bearer handler as its discovery document, so nothing reaches a network. Token
+validation (audience, issuer, expiry, signature, no signature, the public key as an HMAC secret,
+unverified and missing email, the allowlist by address and by domain); every mapped endpoint
+refusing a request without a token, with a check that the list of endpoints is complete; the
+user id reaching the agent; tickets (scope, tampering, expiry, each kind on the other's door);
+the notify stream ending at expiry and a run finishing; CORS; startup validation; and the
+conformance test once with a bearer token. The allowlist's own tests are in
 `tests/RockBot.UserProxy.Tests`.
 
 - **Unit.** The `AgentReply` → event mapping and question-mode state are pure functions over
