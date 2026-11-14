@@ -20,6 +20,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\RockBot.UserProxy.AgUi\RockBot.UserProxy.AgUi.csproj" />
     <ProjectReference Include="..\..\src\RockBot.Messaging.InProcess\RockBot.Messaging.InProcess.csproj" />
+    <!-- Test-only: WellKnownSessions, to check the routing's session ids against the agent's. -->
+    <ProjectReference Include="..\..\src\RockBot.Host.Abstractions\RockBot.Host.Abstractions.csproj" />
   </ItemGroup>
 
 </Project>

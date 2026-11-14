@@ -1,3 +1,5 @@
+using RockBot.UserProxy.AgUi;
+
 namespace RockBot.UserProxy.Cli;
 
 /// <summary>
@@ -70,18 +72,9 @@ internal sealed class JsonLinesFrontend(JsonLinesTurnWriter writer) : IUserFront
     private bool IsThisSession(string? threadId) =>
         string.Equals(threadId, writer.ThreadId, StringComparison.Ordinal);
 
-    /// <summary>
-    /// For replies: <see cref="AgentReply.SessionId"/> is the raw id, except that a subagent's or
-    /// worker's tool progress keeps the agent's working-memory form, <c>session/&lt;raw id&gt;</c>.
-    /// Accept exactly those two forms of this session, and strip no more than that one prefix, so
-    /// a different session never matches.
-    /// </summary>
+    /// <summary>For replies, whose session id has two forms: see <see cref="SessionRouting.IsSessionsReply"/>.</summary>
     internal bool IsThisSessionsReply(string? sessionId) =>
-        IsThisSession(sessionId)
-        || string.Equals(sessionId, NamespacedSessionPrefix + writer.ThreadId, StringComparison.Ordinal);
-
-    /// <summary>The prefix the agent's <c>SessionIds.Raw</c> removes.</summary>
-    private const string NamespacedSessionPrefix = "session/";
+        SessionRouting.IsSessionsReply(writer.ThreadId, sessionId);
 
     private static bool IsBackgroundWork(ReplySource source) =>
         source.Kind is ReplySourceKind.Subagent or ReplySourceKind.Worker;

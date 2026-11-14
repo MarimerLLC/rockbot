@@ -69,6 +69,13 @@ public class TurnEventEmitter : ITurnObserver, IProgress<AgentReply>
     /// <summary>Emits the final reply and the terminal event, and closes the stream.</summary>
     public void Finish(TurnResult result) => Emit(m => m.Finish(result));
 
+    /// <summary>
+    /// Ends the stream of a turn the caller stopped waiting for, as
+    /// <see cref="TurnEventMapper.ReplyPending"/> describes: <c>rockbot.reply_pending</c>, then
+    /// <c>RUN_FINISHED</c>.
+    /// </summary>
+    public void FinishReplyPending(TurnResult result) => Emit(m => m.ReplyPending(result));
+
     /// <summary>How long the stream must be quiet after the turn ends before it closes.</summary>
     public static readonly TimeSpan DefaultSettleQuiet = TimeSpan.FromMilliseconds(250);
 

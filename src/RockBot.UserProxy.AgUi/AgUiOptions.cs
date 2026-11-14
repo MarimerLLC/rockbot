@@ -23,20 +23,36 @@ public sealed class AgUiOptions
     public string DefaultUserId { get; set; } = "agui-user";
 
     /// <summary>
-    /// How often an idle run stream gets an SSE comment, so proxies and mobile networks don't
-    /// drop it while the agent works.
+    /// How often an idle run or notify stream gets an SSE comment, so proxies and mobile networks
+    /// don't drop it while nothing is happening.
     /// </summary>
     public TimeSpan KeepAliveInterval { get; set; } = TimeSpan.FromSeconds(15);
 
-    /// <summary>True when clients may use <paramref name="threadId"/>. The match is exact.</summary>
-    public bool IsThreadAllowed(string? threadId)
-    {
-        if (string.IsNullOrEmpty(threadId))
-            return false;
+    /// <summary>
+    /// How many notify events the proxy keeps for each thread, so a client that reconnects with
+    /// <c>Last-Event-ID</c> gets what it missed. Zero keeps none: every reconnect that missed
+    /// something is told to resync.
+    /// </summary>
+    public int NotifyBufferSize { get; set; } = 200;
 
-        var configured = AllowedThreadIds.Where(id => !string.IsNullOrWhiteSpace(id)).ToList();
-        return configured.Count == 0
-            ? string.Equals(threadId, DefaultThreadId, StringComparison.Ordinal)
-            : configured.Contains(threadId, StringComparer.Ordinal);
+    /// <summary>How long a notify event is kept for replay. Zero or less keeps events until <see cref="NotifyBufferSize"/> pushes them out.</summary>
+    public TimeSpan NotifyBufferAge { get; set; } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// How many notify events may wait for one connected client. A client that falls further
+    /// behind is disconnected, and gets what it missed when it reconnects. Never less than a
+    /// whole buffer, which a reconnecting client is handed at once.
+    /// </summary>
+    public int NotifySubscriberQueueSize { get; set; } = 256;
+
+    /// <summary>True when clients may use <paramref name="threadId"/>. The match is exact.</summary>
+    public bool IsThreadAllowed(string? threadId) =>
+        !string.IsNullOrEmpty(threadId) && ThreadIds().Contains(threadId, StringComparer.Ordinal);
+
+    /// <summary>The thread ids clients may use: the configured ones, or <see cref="DefaultThreadId"/> when none are.</summary>
+    public IReadOnlyList<string> ThreadIds()
+    {
+        var configured = AllowedThreadIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).ToList();
+        return configured.Count == 0 ? [DefaultThreadId] : configured;
     }
 }

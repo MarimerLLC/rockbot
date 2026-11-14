@@ -16,13 +16,15 @@ and talks to the agent on the same `user.*` topics. Its user interface runs some
 reaches it over HTTP.
 
 ```
-client ──POST /agui──► RockBot.UserProxy.AgUi ──RabbitMQ──► agent
-       ◄──── SSE ─────                        ◄───────────
+client ──POST /agui─────────► RockBot.UserProxy.AgUi ──RabbitMQ──► agent
+       ◄──── SSE (a run) ────                        ◄───────────
+       ◄──── SSE (notify) ───
 ```
 
-This page describes what is built so far: runs, cancelling, and history. Output nobody asked for
-(subagent results, scheduled tasks), MCP question forms, attachments, sign-in and CORS come in later
-phases of [#794](https://github.com/MarimerLLC/rockbot/issues/794). The full design is in
+This page describes what is built so far: runs, the notify stream for output nobody asked for
+(subagent results, scheduled tasks, late replies), cancelling, and history. Answering MCP question
+forms, attachments, sign-in and CORS come in later phases of
+[#794](https://github.com/MarimerLLC/rockbot/issues/794). The full design is in
 [`design/userproxy-agui.md`](https://github.com/MarimerLLC/rockbot/blob/main/design/userproxy-agui.md).
 
 > **The proxy has no sign-in of its own yet.** Whoever can reach it can talk to the agent as its
@@ -34,6 +36,7 @@ phases of [#794](https://github.com/MarimerLLC/rockbot/issues/794). The full des
 | Endpoint | Does |
 |---|---|
 | `POST /agui` | Runs one turn. The body is an AG-UI `RunAgentInput`; the response is the run's event stream. |
+| `GET /agui/notify?threadId=` | The thread's unsolicited output, as a stream of AG-UI events that stays open. |
 | `POST /threads/{id}/cancel` | Asks the agent to stop the thread's work. Answers `202`. |
 | `GET /threads/{id}/messages` | The thread's conversation history, as one `MESSAGES_SNAPSHOT` event in JSON. |
 | `GET /healthz` | `200` while the proxy is subscribed on the message bus, `503` otherwise. |
@@ -93,15 +96,22 @@ code; the [CLI page](cli#json-lines---output-jsonl) lists every event and its fi
   `STATE_SNAPSHOT` / `STATE_DELTA`.
 - A reply's attachments are listed in `CUSTOM rockbot.attachments`, by path. The proxy can't serve
   their bytes yet.
-- Subagent and worker events (`SUBAGENT_*`, their progress and their results) are not in the
-  stream yet. They belong to the notify stream of a later phase.
+- Subagent and worker events (`SUBAGENT_*`, their progress and their results) are not in a run's
+  stream. They are on the [notify stream](#the-notify-stream-get-aguinotify), with everything
+  else that isn't the run's own reply.
 - A cancelled run ends with `RUN_FINISHED` and `outcome.type: "cancelled"`.
+- **A run the proxy stops waiting for is not an error.** When the agent doesn't start the run within
+  `UserProxy:ReplyTimeout`, or the run passes `UserProxy:MaxTurnDuration`, the agent may still be
+  working. The run then ends with `CUSTOM rockbot.reply_pending` (its value has `runId`,
+  `runStarted` and a `message`) followed by a plain `RUN_FINISHED`, and the reply arrives later on
+  the notify stream. A client without a notify stream finds the reply in the thread's history. Here
+  the proxy differs from `rockbot chat --output jsonl`, which ends such a turn with `RUN_ERROR` and
+  code `timeout`.
 - `RUN_ERROR.code` is one of:
 
   | Code | Meaning |
   |---|---|
   | `error` | The agent reported that the turn failed. |
-  | `timeout` | The agent never started the run, or the run passed its maximum duration. The agent may still be working. |
   | `agent_lost` | The run started, then the agent went silent. |
   | `client_error` | The proxy itself failed, for example it could not publish to the bus. |
   | `proxy_stopping` | The proxy is shutting down (a rollout). The agent finishes the turn; read the reply from the thread's history. |
@@ -118,6 +128,110 @@ before any event is sent:
 | `403` | The `threadId` is not allowed. |
 | `409` | A run with this `runId` is still in progress. |
 | `503` | The proxy is not connected to the message bus. |
+
+### The notify stream: `GET /agui/notify`
+
+AG-UI has no way for a server to send something the client didn't ask for, and RockBot produces
+plenty: subagent results, scheduled-task output, inbound A2A notifications, question forms, the
+late reply of a run that timed out. The notify stream carries all of it. Keep one open for as long
+as the app is in use:
+
+```bash
+curl -N 'http://rockbot-agui/agui/notify?threadId=agui-session'
+```
+
+```
+id: 5f0c2a9e-0
+data: {"type":"CUSTOM","name":"rockbot.connected","value":{"threadId":"agui-session"},"timestamp":1794547308650}
+
+id: 5f0c2a9e-1
+data: {"type":"SUBAGENT_STARTED","subagentRunId":"t1","name":"subagent","description":"Research the vendors",…}
+
+id: 5f0c2a9e-2
+data: {"type":"ACTIVITY_SNAPSHOT","messageId":"notify-progress-t1","activityType":"rockbot.progress","content":{"agentName":"subagent-t1","text":"Reading the price list"},"replace":true,"subagentRunId":"t1",…}
+
+id: 5f0c2a9e-3
+data: {"type":"TEXT_MESSAGE_START","messageId":"8d1e…","role":"assistant","name":"RockBot",…}
+```
+
+Each `data:` line is one AG-UI event, in the same JSON a run uses, so a client needs one parser for
+both. The stream is not a run, though: it has no `RUN_STARTED` and no `RUN_FINISHED`, and it never
+ends by itself. It ends when the client closes it, when the proxy stops (a rollout), or when the
+client falls too far behind (see [Reconnecting](#reconnecting)). Like a run, an idle stream gets a
+`: keepalive` comment every 15 seconds.
+
+`400` without `threadId`, and `403` for a thread that isn't allowed.
+
+#### What arrives
+
+| What happened | Events |
+|---|---|
+| A reply nobody is waiting for: a scheduled task's output, the agent's answer after a subagent finished, an A2A result, a late reply | `TEXT_MESSAGE_START` / `CONTENT` / `END`, `CUSTOM rockbot.attachments` when it has any, then `CUSTOM rockbot.origin` with `messageId`, `origin` (`channel`, `promptSummary`, `startedAt`, `sessionId`) and `source` |
+| An MCP server's question, as a form | `CUSTOM rockbot.mcp_question`: `form` (the [`McpQuestionForm`](https://github.com/MarimerLLC/rockbot/blob/main/src/RockBot.UserProxy.Abstractions/McpQuestionForm.cs)), `text` (the same question as plain text), `sessionId`, `agentName`. Only a thread whose runs declared `InteractiveForms` gets forms. The proxy has no way to answer one yet. |
+| A question changed state (answered, declined, expired, rejected…) | `CUSTOM rockbot.mcp_question_status`: `sessionId`, `questionId`, `state`, `answeredBy`, `reason` |
+| Progress from a subagent, a worker, a remote agent, or a run that timed out | `ACTIVITY_SNAPSHOT`, one activity per source (`messageId` is `notify-progress-<task id>`, or `notify-progress-<agent name>`), each snapshot replacing the last; `TOOL_CALL_*` for tool calls |
+| A subagent finished and handed in its result | `ACTIVITY_SNAPSHOT` for its activity with `content.done: true`, then its result as a text message with `subagentRunId` and `rockbot.origin`, as above. The agent's own answer about the result follows later as a separate message. |
+| A subagent or worker started or finished | `SUBAGENT_STARTED`, then `SUBAGENT_FINISHED` or `SUBAGENT_ERROR` |
+| A subagent's task list changed | `STATE_SNAPSHOT`: `{"taskLists": {"<task id>": [...]}}` with every list of the thread's running background work. Always a whole snapshot, never `STATE_DELTA`. A finished subagent's list is removed. |
+| The agent is still working on a run that ended with `rockbot.reply_pending` | `CUSTOM rockbot.agent_run_started`, `rockbot.heartbeat` and `rockbot.run_finished` (`outcome`, `error`), each with the run's `runId` |
+| An MCP server needs a sign-in, or one finished | `CUSTOM rockbot.mcp_signin_status`: `serverName`, `state`, `signInId`, `message` |
+| The agent's display name changed | `CUSTOM rockbot.agent_name`: `agentName` |
+| The agent (re)started and reports its running background work | `CUSTOM rockbot.active_work`: `work`, the thread's running subagents and workers. Empty after a restart: clear any indicator still showing. |
+| The proxy has an error to show outside a run | `CUSTOM rockbot.error`: `message` |
+| The stream itself | `CUSTOM rockbot.connected` and `CUSTOM rockbot.resync`, see below |
+
+The task-list state on this stream is the stream's own document. Keep it apart from the state a run
+sends: each describes different lists, and a snapshot from one doesn't replace the other's.
+
+**Which thread gets what.** An event goes to the stream of the thread (session) it belongs to. Three
+kinds of session belong to no one conversation and go to every thread, as the Blazor UI shows them
+to everyone: `scheduled` (your scheduled tasks), `scheduled-system` (system jobs) and `a2a-inbound`
+(notifications from other agents). So does everything that has no session: the agent's name,
+sign-in statuses, active work and errors. Traffic for other clients' sessions, such as
+`blazor-session`, is not sent.
+
+A run's own events are only in the run's stream, never here as well.
+
+#### Reconnecting
+
+Every event has an `id`. Treat it as an opaque string. When the connection drops, reconnect and
+send the last id you received in the `Last-Event-ID` header, which a browser's `EventSource` does
+by itself. A client that can't set headers can send it as the `lastEventId` query parameter instead.
+
+```bash
+curl -N 'http://rockbot-agui/agui/notify?threadId=agui-session' -H 'Last-Event-ID: 5f0c2a9e-3'
+```
+
+The proxy keeps the latest events of each allowed thread (200 events, for up to 24 hours), whether or
+not anyone is connected. What a connection starts with depends on the id:
+
+| You send | The stream starts with |
+|---|---|
+| No id | `CUSTOM rockbot.connected`. Its `id` is the stream's position now, so you have an id to reconnect with before anything else arrives. Fetch `GET /threads/{id}/messages` **after** this event to load what happened earlier. |
+| An id the buffer still reaches | Every event after it, in order, then live events. Nothing is skipped and nothing is repeated. |
+| An id older than the buffer | `CUSTOM rockbot.resync` with `reason: "expired"`, then live events. |
+| An id this proxy didn't issue | `CUSTOM rockbot.resync` with `reason: "unknown"`, then live events. |
+
+On `rockbot.resync` you have missed events that can't be replayed: refetch
+`GET /threads/{id}/messages`, clear any progress indicators, and carry on from the resync event's
+`id`.
+
+The part of an id before the dash identifies the proxy process. It changes when the proxy restarts,
+and each replica has its own. An id from before a restart, or from another replica, is "unknown"
+even if its number looks valid, so it is never mistaken for a position in the new sequence. The
+buffer is in memory and per replica, which is why the chart runs one replica.
+
+What history can't give back after a resync:
+
+- **Origins.** History has each message's text, time, agent name and attachments, but not the
+  `rockbot.origin` detail (which channel and prompt started the work).
+- **Scheduled-task and inbound A2A output.** It was never part of the thread's conversation, so it
+  isn't in the thread's history.
+- **Progress and status events.** They describe a moment that has passed.
+
+A client that reads too slowly is disconnected rather than allowed to hold up the others: once 256
+events are waiting for it, the proxy ends its stream (the connection may be reset rather than closed
+cleanly). Reconnect with the last id you processed, as after any other drop.
 
 ### Cancelling
 
@@ -166,11 +280,14 @@ secrets.
 | `RabbitMq:HostName`, `Port`, `UserName`, `Password`, `VirtualHost` | | The broker, as for every RockBot process |
 | `Agent:Name` | `RockBot` | The agent to talk to |
 | `UserProxy:ProxyId` | `agui-<machine name>` | This proxy's identity on the bus. It must be unique per replica; in Kubernetes the machine name is the pod name. |
-| `UserProxy:ReplyTimeout` | `00:03:00` | How long a run waits for the agent to start it. Also the wait for a history request. |
-| `UserProxy:MaxTurnDuration` | `00:30:00` | The longest a run may last while the agent keeps sending heartbeats |
+| `UserProxy:ReplyTimeout` | `00:03:00` | How long a run waits for the agent to start it, before it ends with `rockbot.reply_pending`. Also the wait for a history request. |
+| `UserProxy:MaxTurnDuration` | `00:30:00` | The longest a run may last while the agent keeps sending heartbeats. After that it ends with `rockbot.reply_pending`. |
 | `AgUi:AllowedThreadIds` | `["agui-session"]` | The thread ids clients may use. Others get `403`. Setting any replaces the default. |
 | `AgUi:DefaultUserId` | `agui-user` | The user id sent to the agent for every caller |
-| `AgUi:KeepAliveInterval` | `00:00:15` | How often an idle run stream gets an SSE comment. Zero or less turns it off. |
+| `AgUi:KeepAliveInterval` | `00:00:15` | How often an idle run or notify stream gets an SSE comment. Zero or less turns it off. |
+| `AgUi:NotifyBufferSize` | `200` | How many notify events are kept for each thread, for replay after a reconnect. Zero keeps none. |
+| `AgUi:NotifyBufferAge` | `1.00:00:00` | How long a notify event is kept for replay. Zero or less sets no age limit. |
+| `AgUi:NotifySubscriberQueueSize` | `256` | How many notify events may wait for one connected client before it is disconnected. Never less than `NotifyBufferSize` + 1. |
 
 Every thread is a separate session on the agent, with its own history and working memory, so the
 list of allowed thread ids is short on purpose. By default all clients share `agui-session`, the
@@ -208,7 +325,7 @@ agui:
 |---|---|---|
 | `agui.enabled` | `false` | Deploy the proxy |
 | `agui.image.repository`, `agui.image.tag` | `rockylhotka/rockbot-agui`, `latest` | The image |
-| `agui.replicaCount` | `1` | Replicas. Each has its own identity on the bus, so a run works on any of them. |
+| `agui.replicaCount` | `1` | Replicas. Each has its own identity on the bus, so a run works on any of them. Each also has its own notify buffer, so with more than one a reconnect that lands on another replica is told to resync. |
 | `agui.replyTimeout` | `""` | `UserProxy:ReplyTimeout`; empty keeps 3 minutes |
 | `agui.allowedThreadIds` | `[]` | `AgUi:AllowedThreadIds` |
 | `agui.tailscale.hostname`, `.tags`, `.ingress.enabled`, `.ingress.proxyGroup` | `rockbot-agui`, … | Tailnet exposure, as for `blazor.tailscale` |
@@ -219,9 +336,14 @@ By default the Service is a Tailscale LoadBalancer, private to the tailnet. Beca
 sign-in, the chart refuses to render the ordinary HTTPS ingress unless
 `agui.ingress.allowUnauthenticated` is `true`, which states that something outside the chart
 authenticates requests. An ingress in front of the proxy must not buffer responses and needs a read
-timeout longer than a run; `values.yaml` shows the nginx annotations.
+timeout longer than a run; `values.yaml` shows the nginx annotations. The notify stream stays open
+indefinitely, with a comment every 15 seconds, so an idle timeout shorter than that would cut it.
 
-The pod needs no volume. Its queues on the broker are ephemeral: they are deleted when the pod
+The chart has no values for the notify buffer. To change it, set the `AgUi__NotifyBufferSize`,
+`AgUi__NotifyBufferAge` or `AgUi__NotifySubscriberQueueSize` environment variables on the deployment.
+
+The pod needs no volume. The notify buffer is in memory, so it is empty after a restart and
+clients are told to resync. Its queues on the broker are ephemeral: they are deleted when the pod
 stops, and the broker expires them if it crashes.
 
 ## Using a client
@@ -236,3 +358,7 @@ var response = await chat.GetResponseAsync(
 ```
 
 Set the conversation id to an allowed thread id. A client that makes up its own thread id gets `403`.
+
+`AGUIChatClient` only runs turns. For the notify stream use any server-sent events client, for
+example `System.Net.ServerSentEvents.SseParser` in .NET or `EventSource` in a browser, and read
+each event's `data` as an AG-UI event with the SDK's `AGUIJsonSerializerContext.Default.BaseEvent`.
