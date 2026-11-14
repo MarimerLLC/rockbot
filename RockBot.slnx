@@ -11,6 +11,11 @@
     <Project Path="src/McpServer.OpenRouter/McpServer.OpenRouter.csproj" />
 <Project Path="src/McpServer.TodoApp/McpServer.TodoApp.csproj" />
   </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/RockBot.AgUi.Client/RockBot.AgUi.Client.csproj" />
+    <Project Path="samples/RockBot.AgUi.DevHost/RockBot.AgUi.DevHost.csproj" />
+    <Project Path="samples/RockBot.AgUi.WasmClient/RockBot.AgUi.WasmClient.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/RockBot.Host.Abstractions/RockBot.Host.Abstractions.csproj" />
     <Project Path="src/RockBot.Host/RockBot.Host.csproj" />
@@ -79,6 +84,7 @@
     <Project Path="tests/RockBot.UserProxy.Blazor.Tests/RockBot.UserProxy.Blazor.Tests.csproj" />
     <Project Path="tests/RockBot.UserProxy.AgUi.Tests/RockBot.UserProxy.AgUi.Tests.csproj" />
     <Project Path="tests/RockBot.UserProxy.ChatState.Tests/RockBot.UserProxy.ChatState.Tests.csproj" />
+    <Project Path="tests/RockBot.AgUi.Client.Tests/RockBot.AgUi.Client.Tests.csproj" />
     <Project Path="tests/RockBot.A2A.IntegrationTests/RockBot.A2A.IntegrationTests.csproj" />
     <Project Path="tests/RockBot.A2A.Gateway.Tests/RockBot.A2A.Gateway.Tests.csproj" />
     <Project Path="tests/RockBot.Observation.Tests/RockBot.Observation.Tests.csproj" />

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+
+  <!-- Sample code: a small standalone Blazor WebAssembly client for the AG-UI proxy (#794,
+       phase 6). A reference for client authors, not a replacement for the Blazor Server UI. It is
+       static files once published: not packed, not containerized, not in the Helm chart. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RockBot.AgUi.WasmClient</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.*" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.*" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The transport (no browser dependency) and, through it, the shared chat state. The bus
+         client (RockBot.UserProxy) and RockBot.UserProxy.AgUi.Events are not referenced: they
+         bring the message bus, which has no place in a browser. -->
+    <ProjectReference Include="..\RockBot.AgUi.Client\RockBot.AgUi.Client.csproj" />
+  </ItemGroup>
+
+</Project>

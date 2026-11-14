@@ -1,0 +1,175 @@
+:root {
+    --bg: #f6f7f9;
+    --panel: #fff;
+    --line: #d9dde3;
+    --text: #1f2430;
+    --muted: #667085;
+    --accent: #2f6fed;
+    --error: #b42318;
+    color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text);
+    background: var(--bg);
+}
+
+.loading { padding: 2rem; color: var(--muted); }
+
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    inset: auto 0 0 0;
+    padding: .6rem 1rem;
+    background: #fff4ce;
+    border-top: 1px solid #e0c060;
+    z-index: 10;
+}
+
+.top {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem;
+    padding: .5rem 1rem;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+}
+
+.top h1 { margin: 0; font-size: 1.1rem; }
+.top h1 small, .plan h2 small { color: var(--muted); font-weight: normal; }
+.spacer { flex: 1; }
+.where, .who { color: var(--muted); font-size: .8rem; }
+
+.pill {
+    padding: .1rem .55rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: .8rem;
+    background: var(--bg);
+}
+
+.conn-connected { border-color: #7fc49b; background: #e9f7ee; }
+.conn-reconnecting, .conn-connecting { border-color: #e0c060; background: #fff8e1; }
+.conn-stopped { border-color: #e5a29b; background: #fdecea; }
+.working { border-color: #9db8f5; background: #eaf0fe; }
+
+.banner, .signin { margin: 1rem; padding: .6rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.banner { border-color: #e0c060; background: #fff8e1; }
+
+.messages { max-width: 52rem; margin: 0 auto; padding: 1rem 1rem 9rem; }
+
+.message {
+    margin: .6rem 0;
+    padding: .55rem .8rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    overflow-wrap: anywhere;
+}
+
+.message.user { margin-left: 20%; background: #eaf0fe; border-color: #c5d5fb; }
+.message.error { border-color: #e5a29b; background: #fdecea; color: var(--error); }
+.message.log { background: transparent; border-style: dashed; color: var(--muted); font-size: .9rem; }
+.message.other { border-left: 4px solid #9db8f5; }
+.message.question { border-color: var(--accent); }
+
+.text { white-space: pre-wrap; }
+.from { display: flex; align-items: center; gap: .5rem; font-size: .8rem; color: var(--muted); }
+.source { font-weight: 600; color: var(--text); }
+.badge { padding: 0 .4rem; border-radius: 4px; background: #eef1f5; }
+.preview { color: var(--muted); }
+
+.markdown p { margin: .35rem 0; }
+.markdown h3, .markdown h4, .markdown h5 { margin: .6rem 0 .2rem; }
+.markdown pre { padding: .6rem; overflow-x: auto; background: #f1f3f6; border-radius: 6px; }
+.markdown code { font-family: ui-monospace, Consolas, monospace; font-size: .9em; }
+.markdown blockquote { margin: .35rem 0; padding: .1rem .7rem; border-left: 3px solid var(--line); color: var(--muted); font-size: .9rem; }
+
+.activity summary { cursor: pointer; }
+.activity ul { margin: .4rem 0 0; padding-left: 1.2rem; }
+.activity li.failed { color: var(--error); }
+.detail { color: var(--muted); }
+
+.attachments { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
+.attachments img { max-width: 16rem; max-height: 16rem; border: 1px solid var(--line); border-radius: 6px; display: block; }
+.file { padding: .2rem .5rem; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+
+.thinking { color: var(--muted); }
+
+.spinner {
+    display: inline-block;
+    width: .8em;
+    height: .8em;
+    margin-right: .3em;
+    border: 2px solid var(--line);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    vertical-align: -.1em;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.plans {
+    position: fixed;
+    top: 4rem;
+    right: 1rem;
+    width: 15rem;
+    max-height: 60vh;
+    overflow: auto;
+    padding: .5rem .8rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    font-size: .9rem;
+}
+
+.plan h2 { margin: .2rem 0; font-size: .95rem; }
+.plan ul { margin: 0 0 .4rem; padding-left: 1.1rem; }
+.plan li.completed { text-decoration: line-through; color: var(--muted); }
+.plan li.in_progress { font-weight: 600; }
+
+@media (max-width: 80rem) {
+    .plans { position: static; width: auto; max-width: 52rem; margin: 0 auto 9rem; }
+    .messages { padding-bottom: 1rem; }
+}
+
+.question .ask { margin: .3rem 0 .6rem; font-weight: 600; white-space: pre-wrap; }
+.field { display: grid; grid-template-columns: 10rem 1fr; gap: .2rem .6rem; align-items: center; margin: .35rem 0; }
+.field small { grid-column: 2; color: var(--muted); }
+.field input[type=text], .field input[type=number], .field input[type=email], .field input[type=url],
+.field input[type=date], .field input[type=datetime-local], .field select { padding: .3rem .4rem; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+.field input[type=checkbox] { justify-self: start; }
+.options { display: flex; flex-wrap: wrap; gap: .2rem .8rem; }
+.buttons { display: flex; gap: .5rem; align-items: center; margin-top: .6rem; }
+.settled { color: var(--muted); margin: 0; }
+.error { color: var(--error); }
+
+.composer {
+    position: fixed;
+    inset: auto 0 0 0;
+    padding: .6rem 1rem;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+}
+
+.composer form { display: flex; gap: .5rem; align-items: center; max-width: 52rem; margin: 0 auto; }
+.composer .input { flex: 1; padding: .5rem .7rem; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+.pending { display: flex; flex-wrap: wrap; gap: .4rem; max-width: 52rem; margin: 0 auto .4rem; }
+
+.attach { padding: .4rem .7rem; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; background: var(--bg); }
+.attach input { display: none; }
+
+button { font: inherit; padding: .4rem .8rem; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+button.send { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.cancel { border-color: #e5a29b; color: var(--error); }
+button.link { padding: 0; border: 0; background: none; color: var(--accent); text-decoration: underline; font-size: inherit; }
