@@ -78,14 +78,22 @@ NEXT STEPS
 
    ACCESS THE AG-UI API
 
-   The AG-UI proxy (docs/agui.md) has no sign-in of its own: whoever can
-   reach it can talk to the agent.
+{{- if (default dict .Values.agui.auth).enabled }}
+   The AG-UI proxy (docs/agui.md) is in app mode: every request needs an
+   OIDC token (Authorization: Bearer) from an account on agui.auth's
+   allowlist. The pod needs outbound HTTPS to the token issuer.
+{{- else }}
+   The AG-UI proxy (docs/agui.md) asks nobody who they are: whoever can
+   reach it can talk to the agent. Set agui.auth.enabled for app auth.
+{{- end }}
 {{- if .Values.agui.ingress.enabled }}
 
      https://{{ .Values.agui.ingress.host }}/agui
+{{- if not (default dict .Values.agui.auth).enabled }}
 
    You set agui.ingress.allowUnauthenticated=true: make sure whatever sits
    in front of this ingress really does authenticate every request.
+{{- end }}
 {{- else if .Values.agui.tailscale.ingress.enabled }}
 
      https://{{ .Values.agui.tailscale.hostname }}.<your-tailnet>.ts.net/agui

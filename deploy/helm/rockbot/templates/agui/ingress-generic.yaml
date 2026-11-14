@@ -3,8 +3,8 @@
 {{- fail "agui.ingress.enabled and agui.tailscale.ingress.enabled are mutually exclusive — two Ingresses pointing at one Service with different ingressClassNames is not a supported configuration. Pick the tailnet path or the public HTTPS path." }}
 {{- end }}
 {{- $host := required "agui.ingress.host is required when agui.ingress.enabled=true" .Values.agui.ingress.host }}
-{{- if not .Values.agui.ingress.allowUnauthenticated }}
-{{- fail "agui.ingress.enabled=true would publish the AG-UI API with no gate in front of it: the proxy has no sign-in of its own yet, and anyone who can reach it can talk to the agent. Keep it on the tailnet, or set agui.ingress.allowUnauthenticated=true if something outside this chart (an oauth2-proxy, an authenticating gateway) is doing the gating." }}
+{{- if and (not (default dict .Values.agui.auth).enabled) (not .Values.agui.ingress.allowUnauthenticated) }}
+{{- fail "agui.ingress.enabled=true with agui.auth.enabled=false would publish the AG-UI API with no gate in front of it: anyone who can reach it can talk to the agent. Enable agui.auth, or set agui.ingress.allowUnauthenticated=true if something outside this chart (an oauth2-proxy, an authenticating gateway) is doing the gating." }}
 {{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress

@@ -343,9 +343,12 @@ blazor:
 # can't reach RabbitMQ: a Blazor WebAssembly app, a phone app, a third-party AG-UI
 # front end. See docs/agui.md.
 #
-# Off by default. The proxy has NO sign-in of its own yet: whoever can reach it can
-# talk to the agent. Expose it on the tailnet (the default below) or behind a gateway
-# that authenticates.
+# Off by default. Two ways to gate it, as for the Blazor UI:
+#   - network (the default): the proxy asks nobody who they are, so whoever can reach
+#     it can talk to the agent. Keep it on the tailnet (the default below) or behind a
+#     gateway that authenticates.
+#   - app (auth.enabled below): every request needs an OIDC token from an account on
+#     the allowlist. This is what a public ingress needs.
 agui:
   enabled: false
   image:
@@ -382,6 +385,58 @@ agui:
   # http://, and the authorization server refuses the mismatch).
   publicBaseUrl: ""
 
+  # ── App auth: bearer tokens ─────────────────────────────────────────────────
+  # With enabled: false (the default) nothing changes: no request is asked for a
+  # token. With enabled: true every endpoint except /healthz and the MCP sign-in
+  # redirect needs "Authorization: Bearer <OIDC ID token>" from an account on the
+  # allowlist. See docs/agui.md ("App auth") and deploy/agui-auth-setup.md.
+  #
+  # These are the proxy's own settings. Nothing here is shared with blazor.auth: the
+  # two have different client ids, and may have different allowlists.
+  #
+  # The proxy only VALIDATES tokens, so there is no client secret. It does need
+  # outbound HTTPS to the authority, to fetch the keys tokens are signed with.
+  auth:
+    enabled: false
+
+    # The OIDC issuer whose tokens are accepted. Empty means Google
+    # (https://accounts.google.com). Must be https.
+    authority: ""
+
+    # REQUIRED when enabled: the client id of every app allowed to call the API
+    # (the token's "aud"). A web app, an Android app and an iOS app each have their
+    # own, so this is a list. Without one, a token Google issued to ANY app would be
+    # accepted; the chart refuses to render and the proxy refuses to start.
+    audiences: []
+      # - 1234567890-abcdef.apps.googleusercontent.com
+
+    # WHO GETS IN. At least one entry across the two lists is REQUIRED when enabled.
+    # Same rules as blazor.auth: allowedEmails matches the whole address,
+    # case-insensitively; allowedDomains matches the part after the final "@",
+    # exactly. The address must also be one the provider says is verified.
+    allowedEmails: []
+      # - someone@example.com
+    allowedDomains: []
+      # - example.com
+
+    # Access tickets (POST /tickets: short-lived signed URLs for <img src> and
+    # EventSource, which can't send a bearer token) are signed with a key the pod
+    # makes up at startup. That is right for one replica: a restart only invalidates
+    # tickets that live five minutes anyway, and nothing has to be stored. Set this
+    # to true ONLY with replicaCount > 1, so the replicas accept each other's
+    # tickets; the key then comes from secrets.agui.ticketKey (or, with
+    # secrets.create=false, the key AgUi__Auth__TicketKey of your own Secret).
+    ticketKeyFromSecret: false
+
+  # ── CORS ────────────────────────────────────────────────────────────────────
+  # The browser origins that may call the API: scheme://host[:port], no path, no
+  # wildcard. Needed for a web app served from another origin than the proxy. Empty
+  # (the default) sends no CORS headers, so only same-origin pages and non-browser
+  # clients (a phone app, curl) can use the API.
+  cors:
+    allowedOrigins: []
+      # - https://app.example.com
+
   # ── Generic HTTPS ingress (no Tailscale) ────────────────────────────────────
   # Mutually exclusive with tailscale.ingress.enabled; the chart fails to render if
   # both are on.
@@ -389,9 +444,10 @@ agui:
     enabled: false
     className: nginx
     host: ""            # REQUIRED when enabled — e.g. agui.example.com
-    # Guard rail: this ingress publishes an API with nothing in front of it. The chart
-    # refuses to render it unless you say here that something outside the chart — an
-    # oauth2-proxy, an authenticating gateway — is doing the gating.
+    # Guard rail: enabling this ingress without auth.enabled publishes the API with
+    # nothing in front of it. The chart refuses to render that combination unless you
+    # say here that something outside the chart — an oauth2-proxy, an authenticating
+    # gateway — is doing the gating.
     allowUnauthenticated: false
     # Passed through verbatim. Runs are long-lived streams, so an nginx ingress wants
     # at least:
@@ -669,6 +725,13 @@ secrets:
   auth:
     google:
       clientSecret: ""
+
+  # ── AG-UI proxy (only used when agui.auth.ticketKeyFromSecret=true) ────────
+  # The key access tickets are signed with: base64 of at least 32 random bytes
+  # (openssl rand -base64 32). App auth itself needs no secret: the proxy only
+  # validates tokens, so there is no client secret for it.
+  agui:
+    ticketKey: ""
 
   llm:
     # Three-tier LLM configuration. Balanced is REQUIRED.

@@ -1,4 +1,15 @@
 {{- if .Values.agui.enabled }}
+{{- /* `default dict`, so a --reuse-values upgrade from a release without these blocks still renders. */}}
+{{- $auth := default dict .Values.agui.auth }}
+{{- $cors := default dict .Values.agui.cors }}
+{{- if $auth.enabled }}
+{{- if and (not $auth.allowedEmails) (not $auth.allowedDomains) }}
+{{- fail "agui.auth.enabled=true with both agui.auth.allowedEmails and agui.auth.allowedDomains empty. An empty allowlist lets nobody in, and is never read as \"everyone at the provider\" — set at least one entry. (The proxy also refuses to start in this state; failing here saves you a CrashLoopBackOff.)" }}
+{{- end }}
+{{- if not $auth.audiences }}
+{{- fail "agui.auth.enabled=true with agui.auth.audiences empty. List the OAuth client id of every app allowed to call the API: without an audience, a token the provider issued to any other app would be accepted. (The proxy also refuses to start in this state.)" }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -85,6 +96,42 @@ spec:
             {{- range $i, $threadId := .Values.agui.allowedThreadIds }}
             - name: AgUi__AllowedThreadIds__{{ $i }}
               value: {{ $threadId | quote }}
+            {{- end }}
+            # App auth (bearer tokens). The proxy's own keys, under AgUi__Auth__: the Blazor
+            # UI's Auth__* keys in the ConfigMap are not read here, and these are not read
+            # there. Always emitted, so switching it off in values switches it off in the pod.
+            - name: AgUi__Auth__Enabled
+              value: {{ $auth.enabled | default false | quote }}
+            {{- if $auth.enabled }}
+            {{- with $auth.authority }}
+            - name: AgUi__Auth__Authority
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $i, $audience := $auth.audiences }}
+            - name: AgUi__Auth__Audiences__{{ $i }}
+              value: {{ $audience | quote }}
+            {{- end }}
+            {{- range $i, $email := $auth.allowedEmails }}
+            - name: AgUi__Auth__AllowedEmails__{{ $i }}
+              value: {{ $email | quote }}
+            {{- end }}
+            {{- range $i, $domain := $auth.allowedDomains }}
+            - name: AgUi__Auth__AllowedDomains__{{ $i }}
+              value: {{ $domain | quote }}
+            {{- end }}
+            {{- if $auth.ticketKeyFromSecret }}
+            # One ticket-signing key for every replica. Without it each pod makes its own.
+            - name: AgUi__Auth__TicketKey
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rockbot.secretName" . }}
+                  key: AgUi__Auth__TicketKey
+            {{- end }}
+            {{- end }}
+            {{- range $i, $origin := $cors.allowedOrigins }}
+            # A browser origin that may call the API.
+            - name: AgUi__Cors__AllowedOrigins__{{ $i }}
+              value: {{ $origin | quote }}
             {{- end }}
           # /healthz answers 200 only while the proxy holds its subscriptions on the bus.
           # Liveness is lenient (5 minutes): a proxy that starts before the broker is up
