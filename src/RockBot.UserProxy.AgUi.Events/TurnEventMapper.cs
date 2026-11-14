@@ -43,6 +43,9 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
         public const string AgentName = "rockbot.agent_name";
         public const string Error = "rockbot.error";
         public const string ActiveWork = "rockbot.active_work";
+
+        /// <summary>The thread's conversation context was cleared: drop what is shown of it.</summary>
+        public const string ContextCleared = "rockbot.context_cleared";
         public const string Connected = "rockbot.connected";
         public const string Resync = "rockbot.resync";
     }
@@ -92,6 +95,13 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
     /// refer to a list the consumer was never given.
     /// </summary>
     public bool AlwaysSnapshotState { get; init; }
+
+    /// <summary>
+    /// Where a consumer can fetch an attachment's bytes, for a host that serves them (the AG-UI
+    /// proxy). When set, each entry of <c>rockbot.attachments</c> also has a <c>url</c>. The CLI
+    /// serves nothing and leaves it unset, so its entries are the attachment alone.
+    /// </summary>
+    public Func<AgentAttachment, string?>? AttachmentUrl { get; init; }
 
     public BaseEvent RunStarted() => Stamp(new RunStartedEvent
     {
@@ -375,9 +385,18 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
             Stamp(new TextMessageEndEvent { MessageId = messageId, SubagentRunId = subagentRunId }),
         };
         if (reply.Attachments is { Count: > 0 } attachments)
-            events.Add(Custom(CustomNames.Attachments, new { messageId, attachments }));
+            events.Add(Custom(CustomNames.Attachments, new { messageId, attachments = WithUrls(attachments) }));
         return (messageId, events);
     }
+
+    /// <summary>
+    /// The attachments as the events and history list them: each as it is on the bus, plus a
+    /// <c>url</c> when this host serves attachment bytes (<see cref="AttachmentUrl"/>).
+    /// </summary>
+    public object WithUrls(IReadOnlyList<AgentAttachment> attachments) =>
+        AttachmentUrl is not { } url
+            ? attachments
+            : attachments.Select(a => new { a.Mime, a.Path, a.FileName, Url = url(a) }).ToList();
 
     /// <summary>A <c>CUSTOM</c> event whose value is <paramref name="value"/> as camelCase JSON.</summary>
     public BaseEvent Custom(string name, object value, DateTimeOffset? at = null) =>
