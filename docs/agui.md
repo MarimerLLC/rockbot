@@ -23,17 +23,20 @@ client ──POST /agui─────────► RockBot.UserProxy.AgUi ─
 
 This page describes what is built so far: runs, the notify stream for output nobody asked for
 (subagent results, scheduled tasks, late replies), MCP questions (as AG-UI interrupts or as
-RockBot's own events), cancelling, history, and the plain REST endpoints for everything else a
+RockBot's own events), cancelling, history, the plain REST endpoints for everything else a
 RockBot client does (attachments, feedback, saved responses, MCP sign-in, clearing the context,
-agent info). The proxy's own sign-in and CORS come in later phases of
+agent info), and who may call it: [app auth](#app-auth) with bearer tokens, and [CORS](#cors) for
+browser apps. A reference client is the remaining phase of
 [#794](https://github.com/MarimerLLC/rockbot/issues/794). The full design is in
 [`design/userproxy-agui.md`](https://github.com/MarimerLLC/rockbot/blob/main/design/userproxy-agui.md).
 
-> **The proxy has no sign-in of its own yet.** Whoever can reach it can do everything on this
-> page: talk to the agent as its user, read the thread's history, the saved responses and every
-> file in the attachments directory, upload files, and start MCP sign-ins. Run it on a private
-> network such as a tailnet, or behind a gateway that authenticates. It sends no CORS headers
-> either, so a browser app on another origin can't call it directly yet.
+> **By default the proxy asks nobody who they are** ("network mode"). Whoever can reach it can do
+> everything on this page: talk to the agent as its user, read the thread's history, the saved
+> responses and every file in the attachments directory, upload files, and start MCP sign-ins.
+> Run it on a private network such as a tailnet, or turn on [app auth](#app-auth), which is what
+> an API reachable from the internet needs. A browser app on another origin can't call it until
+> you list its [origin](#cors): the proxy sends no CORS headers for other origins and
+> [refuses their requests](#the-origin-check).
 
 ## Endpoints
 
@@ -53,14 +56,20 @@ agent info). The proxy's own sign-in and CORS come in later phases of
 | `GET /mcp-signin`, `POST /mcp-signin/{server}/start` | Signing in to an OAuth-protected MCP server. See [MCP sign-in](#mcp-sign-in). |
 | `GET /mcp-oauth/callback` | Where an authorization server sends the browser back. Not called by a client. |
 | `GET /agent` | The agent's name, version and current work. See [Agent info](#agent-info-get-agent). |
+| `POST /tickets` | A short-lived URL for an attachment or the notify stream, for a browser request that can't send a token. See [Access tickets](#access-tickets-post-tickets). |
 | `GET /healthz` | `200` while the proxy is subscribed on the message bus, `503` otherwise. |
 
 The REST endpoints answer in JSON with camelCase names, the same shapes the events use. A refusal
 is a problem-details body (`application/problem+json`) whose `detail` says what was wrong. Three
-statuses mean the same everywhere: `403` for a thread that isn't allowed, `503` when the proxy is
+statuses mean the same everywhere: `403` for a thread that isn't allowed (and for a browser
+request from an [origin that isn't allowed](#the-origin-check)), `503` when the proxy is
 not connected to the message bus, and `504` when the agent didn't answer within
 `AgUi:RequestTimeout`. An endpoint that takes a `threadId` lets you leave it out when the proxy
 allows only one thread.
+
+With [app auth](#app-auth) on, every endpoint except `GET /healthz` and `GET /mcp-oauth/callback`
+also answers `401` to a request without a valid token and `403` to an account that isn't allowed.
+The examples on this page leave the `Authorization` header out.
 
 ### A run: `POST /agui`
 
@@ -853,6 +862,10 @@ What keeps that safe:
 The sign-ins the proxy has started are kept in memory. If the proxy restarts between steps 2 and 4,
 or the redirect lands on another replica, the user sees the "start again" page.
 
+With [app auth](#app-auth) on, starting a sign-in (step 2) needs a token like every other call, so
+only an allowed account can put a `state` on the proxy's list. The callback itself stays open, and
+relays nothing whose `state` isn't on that list.
+
 ### Clearing the context: `POST /threads/{id}/clear`
 
 ```bash
@@ -896,6 +909,229 @@ thread's turn right now (`isProcessing`), and the thread's running subagents and
 so it can show a busy indicator without having seen the events that started them. After that the
 notify stream keeps it current (`SUBAGENT_*`, `rockbot.agent_name`, `rockbot.active_work`).
 
+## App auth
+
+The proxy has two modes, like the [Blazor UI](blazor-ui):
+
+- **Network** (the default). No app auth. The network in front of the proxy is the gate.
+- **App** (`AgUi:Auth:Enabled`). Every request carries an OIDC ID token, and the proxy lets in
+  only the accounts on its allowlist.
+
+Like Blazor's sign-in, this is a doorman and not a tenancy model: everyone who gets in talks to
+the same agent, with one history and one memory.
+
+### How a request is authenticated
+
+```bash
+curl http://rockbot-agui/threads/agui-session/messages -H "Authorization: Bearer $ID_TOKEN"
+```
+
+The token is a signed JWT from the configured issuer, Google by default. The proxy checks, for
+every request:
+
+| Check | Against |
+|---|---|
+| Signature | The issuer's published keys (`{authority}/.well-known/openid-configuration`, then its JWKS). Asymmetric algorithms only. |
+| `iss` | The issuer the discovery document names. For Google, `accounts.google.com` without the scheme is accepted too, since Google issues both spellings. |
+| `aud` | `AgUi:Auth:Audiences`: the client ids of the apps allowed to call. A token Google issued to any other app is refused. |
+| `exp` | The clock, with `AgUi:Auth:ClockSkew` (1 minute) of tolerance. |
+| `email_verified` | Must be `true`. A token without the claim is refused (`AgUi:Auth:RequireVerifiedEmail`). |
+| `email` | The allowlist: `AgUi:Auth:AllowedEmails` (the whole address, case-insensitive) or `AgUi:Auth:AllowedDomains` (the part after the last `@`, exactly). |
+
+What comes back when a check fails:
+
+| Status | When | Body and headers |
+|---|---|---|
+| `401` | No token, or one that fails any of the first four checks. | `WWW-Authenticate: Bearer`, with `error="invalid_token"` and a short `error_description` when a token was sent. A problem-details body. The reason in detail is in the proxy's log, not in the response. |
+| `403` | A valid token for an account that isn't on the allowlist, or whose address isn't verified. | A problem-details body that says only that the account is not allowed. It never names the account or anything on the allowlist. The proxy logs the address, so an operator can see who to add. |
+
+The proxy fetches the issuer's keys itself, so **the pod needs outbound HTTPS to the issuer**
+(`accounts.google.com` and `www.googleapis.com` for Google). It caches them and fetches again when
+a token names a key it doesn't know.
+
+**ID tokens, not access tokens.** A Google access token is an opaque string, not a JWT, and
+checking one means asking Google about it on every request. The proxy doesn't do that. Any OIDC
+provider's JWT works, ID token or access token, as long as its `aud` is one of the configured
+audiences and it carries `email` and `email_verified`.
+
+**The allowlist is checked on every request**, not once per sign-in, and it is read at startup:
+taking someone off it takes a restart (a `helm upgrade` does one).
+
+### Getting a token
+
+The proxy never asks anyone to sign in and has no login page. The app does that, with Google's
+own libraries, and sends what it gets.
+
+- **A browser or WebAssembly app.** Use Google Identity Services. Create a **Web application**
+  OAuth client whose *Authorized JavaScript origins* list the app's origin, call
+  `google.accounts.id.initialize({ client_id, callback })`, and send the `credential` the callback
+  receives as the bearer token. A Blazor WebAssembly app can use
+  `Microsoft.AspNetCore.Components.WebAssembly.Authentication` with authority
+  `https://accounts.google.com` instead; take the **ID token** from it, not the access token.
+- **An Android or iOS app.** Use Credential Manager (Android) or Google Sign-In (iOS) and ask for
+  an ID token. Its `aud` is the client id you ask with, so that id goes in `AgUi:Auth:Audiences`.
+- **A .NET client.** Put the token on the `HttpClient`:
+
+  ```csharp
+  httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", idToken);
+  var chat = new AGUIChatClient(new AGUIChatClientOptions(httpClient, "https://agui.example.com/agui"));
+  ```
+
+There is **no client secret** anywhere: the proxy only validates tokens.
+[`deploy/agui-auth-setup.md`](https://github.com/MarimerLLC/rockbot/blob/main/deploy/agui-auth-setup.md)
+has the Google console steps.
+
+A Google ID token lasts an hour. Get a new one before it runs out (Google Identity Services and
+the mobile libraries do this without asking the user again), and expect `401` when one has.
+
+### Token expiry and open streams
+
+- **The notify stream ends when the token it was opened with expires.** The proxy closes it; the
+  client reconnects with a fresh token and `Last-Event-ID`, and misses nothing (see
+  [Reconnecting](#reconnecting)). A stream is never open longer than its credential is good.
+- **A run is allowed to finish.** A run is authorized when it starts and lasts at most
+  `UserProxy:MaxTurnDuration` (30 minutes). Cutting it at expiry would cancel the turn on the
+  agent, since a dropped run is a cancel, so the proxy doesn't.
+
+### What the agent sees
+
+The agent gets a user id with each message. In app mode it is the caller's email address, in
+lower case; in network mode it is `AgUi:DefaultUserId`. The agent keys nothing on it: it is one
+agent with one memory for everyone the proxy lets in. The id is written to the agent's log and to
+the turn's telemetry (`rockbot.user.id`), which is what it is for: seeing who sent a message.
+Set `AgUi:Auth:UserIdClaim` to `sub` to send the provider's opaque account id instead.
+
+### Access tickets: `POST /tickets`
+
+Two requests can't carry an `Authorization` header, because the browser makes them, not a script:
+
+- an attachment in `<img src>`, in a link, or opened in a new tab;
+- the notify stream opened with `EventSource`, which has no way to set headers.
+
+For those, ask for a **ticket**: a URL that works by itself, for one resource, for a few minutes.
+
+```bash
+curl -X POST http://rockbot-agui/tickets -H "Authorization: Bearer $ID_TOKEN" \
+  -H 'Content-Type: application/json' -d '{ "kind": "attachment", "path": "previews/ab12cd34/deck.html" }'
+```
+
+```json
+{ "url": "/t/v1.eyJrIjoiYSIs….Q0x5…/attachments/previews/ab12cd34/deck.html",
+  "ticket": "v1.eyJrIjoiYSIs….Q0x5…", "expiresAt": "2026-11-14T09:35:00+00:00" }
+```
+
+| Body | Ticket for |
+|---|---|
+| `{"kind": "attachment", "path": "…"}` | That attachment. `path` is the attachment's `path`, as `rockbot.attachments`, history or `POST /attachments` gave it. |
+| `{"kind": "notify", "threadId": "…"}` | That thread's notify stream. The `url` is `/agui/notify?threadId=…&ticket=…`; add `&lastEventId=…` when reconnecting. |
+
+`url` is relative to the proxy. Use it at once, as the `src` of an image, the `href` of a link, or
+the URL of an `EventSource`. What a ticket is and isn't:
+
+- **Short-lived.** `AgUi:Auth:TicketLifetime`, 5 minutes, and never beyond the expiry of the token
+  it was asked with. It can be used any number of times until then.
+- **For one thing.** A ticket is good for `GET` on the resource it names and is not a credential
+  anywhere else: not on another endpoint, not for another attachment or thread, not as a bearer
+  token, and not to get another ticket.
+- **An HTML attachment's ticket also covers the files beside it.** A deck at
+  `previews/ab12cd34/deck.html` loads `slide1.png` from its own directory by a relative link. The
+  ticket is in the path of the URL, so the browser's request for the image carries it too, and it
+  is accepted for anything under `previews/ab12cd34/`. Only HTML attachments in a directory get
+  this; an image's ticket is for the image.
+- **A stream opened with one ends when the token would have.** `EventSource` then reports an
+  error. Reconnecting with the same URL fails with `401`, and `EventSource` doesn't retry after
+  that: ask for a new ticket and open a new `EventSource`, with `lastEventId` in the query.
+- **Not stored.** The ticket is signed with a key the proxy makes at startup, so a restart
+  refuses the tickets in flight. Ask again. (With more than one replica, give them one key:
+  `AgUi:Auth:TicketKey`.)
+
+A ticketed attachment is served with `Referrer-Policy: no-referrer` and `Cache-Control: private,
+no-store`, on top of the headers every attachment has, so the URL doesn't travel to sites the
+document links to.
+
+Why not put the token in the URL, or sign the `url` in events? A URL ends up in browser history,
+proxy logs and `Referer` headers, so nothing long-lived belongs in one. And events are replayed
+from the notify buffer for a day and from history indefinitely: a signed URL inside one would
+have to stay valid as long.
+
+A client that fetches with a script doesn't need tickets. `fetch` with the header, then
+`URL.createObjectURL(await response.blob())`, shows an image; a fetch-based SSE reader (what
+`AGUIChatClient` and most AG-UI clients use) can send the header on the notify stream.
+
+In network mode `POST /tickets` answers with the plain URL (`{"url": "/attachments/…"}`) and no
+ticket, so a client written for app mode works against a proxy without it.
+
+## CORS
+
+A browser app served from another origin than the proxy can call it only if the proxy names that
+origin. List the origins in `AgUi:Cors:AllowedOrigins` (Helm: `agui.cors.allowedOrigins`):
+
+```yaml
+agui:
+  cors:
+    allowedOrigins:
+      - https://app.example.com
+      - http://localhost:5173       # a dev server
+```
+
+- **None configured (the default): no CORS headers at all.** Only pages served from the proxy's
+  own origin and non-browser clients (a phone app, `curl`, a server) can use the API. A request
+  from any other origin is refused; see [The origin check](#the-origin-check).
+- An origin is `scheme://host[:port]`, with no path. There is no wildcard, and `*` stops the
+  proxy at startup.
+- Allowed origins may use `GET`, `POST` and `DELETE`, send any request header (`Authorization`,
+  `Content-Type`, `Last-Event-ID` and whatever a client library adds), and read the `Location`
+  and `WWW-Authenticate` response headers. Preflight requests are answered without a token and
+  cached by the browser for 10 minutes.
+- The event streams (`POST /agui`, `GET /agui/notify`) carry the headers like any other response,
+  and so do `401` and `403`, so the app can read why it was refused.
+- The proxy never sends `Access-Control-Allow-Credentials`: it has no cookies. Use
+  `fetch(url, { headers: { Authorization: … } })`, not `credentials: "include"`.
+
+### The origin check
+
+CORS headers only decide which pages may *read* a response. A browser still *sends* some
+cross-site requests without asking first: a form post, a `text/plain` or multipart body, a `POST`
+with no body. In network mode nothing else asks who is calling, so without a check any web page,
+open in a browser that can reach the proxy, could start a run, cancel one, clear the context or
+upload a file.
+
+So the proxy checks the `Origin` header itself, **in both modes and whether or not any CORS origin
+is configured**. A request to a client endpoint that names an origin is answered `403` (a
+problem-details body, before anything else looks at the request) unless the origin is:
+
+- one of `AgUi:Cors:AllowedOrigins`; or
+- the proxy's own: the origin of `AgUi:PublicBaseUrl` when that is set, or any origin whose host
+  and port are the request's `Host` header. The scheme isn't compared in the second case, because
+  behind an ingress that terminates TLS the browser says `https` and the proxy sees `http`.
+
+What that means in practice:
+
+| Request | Result |
+|---|---|
+| No `Origin` header: `curl`, a phone app, a server, a link or new tab, an `<img>` | Passes, as before. |
+| A page served from the proxy's own address | Passes. |
+| A page on a listed origin | Passes, with CORS headers. |
+| A page on any other origin, any method | `403`. |
+| `Origin: null`: a sandboxed document (an HTML attachment is served sandboxed), a `file://` page, a request sent with `Referrer-Policy: no-referrer` | `403`. `null` can't be listed. |
+
+`GET /healthz` and `GET /mcp-oauth/callback` are not checked. If an ingress rewrites the `Host`
+header, a page served from the proxy's own address is refused until you set `AgUi:PublicBaseUrl`.
+A script in an HTML attachment can load images beside it, but not module scripts or fonts, which
+a browser fetches with `Origin: null`.
+
+What the check doesn't cover:
+
+- **It is not authentication.** A program that isn't a browser sends whatever `Origin` it likes,
+  or none. In network mode the network is still the gate.
+- **A browser that doesn't send `Origin` on a cross-site `POST`.** Every current browser does. A
+  few from before 2020 don't.
+- **DNS rebinding.** A page that points its own hostname at the proxy's address is same-origin as
+  far as the browser, and this check, can tell. Set `AllowedHosts` (ASP.NET Core's host filter;
+  environment variable `AllowedHosts`, for example `rockbot-agui;rockbot-agui.example.ts.net`) so
+  the proxy only answers to its real names, or use app auth, where a page without a token gets
+  nothing either way.
+
 ## Configuration
 
 Standard .NET configuration: `appsettings.json`, environment variables (`AgUi__DefaultUserId`), user
@@ -909,7 +1145,22 @@ secrets.
 | `UserProxy:ReplyTimeout` | `00:03:00` | How long a run waits for the agent to start it, before it ends with `rockbot.reply_pending`. Also the wait for a history request, and for the agent to acknowledge an answer sent with `resume`. |
 | `UserProxy:MaxTurnDuration` | `00:30:00` | The longest a run may last while the agent keeps sending heartbeats. After that it ends with `rockbot.reply_pending`. |
 | `AgUi:AllowedThreadIds` | `["agui-session"]` | The thread ids clients may use. Others get `403`. Setting any replaces the default. |
-| `AgUi:DefaultUserId` | `agui-user` | The user id sent to the agent for every caller |
+| `AgUi:DefaultUserId` | `agui-user` | The user id sent to the agent for every caller in network mode. In app mode it is the caller's own; see [What the agent sees](#what-the-agent-sees). |
+| `AgUi:Auth:Enabled` | `false` | [App auth](#app-auth). `true` requires a bearer token on every client endpoint. |
+| `AgUi:Auth:Authority` | `https://accounts.google.com` | The OIDC issuer whose tokens are accepted. Must be `https`. |
+| `AgUi:Auth:Audiences` | | **Required with auth on.** The client ids (`aud`) of the apps allowed to call. |
+| `AgUi:Auth:AllowedEmails`, `AgUi:Auth:AllowedDomains` | | **One entry required with auth on.** Who gets in. |
+| `AgUi:Auth:ValidIssuers` | | Issuers accepted besides the one the authority's discovery document names. Rarely needed. |
+| `AgUi:Auth:RequireVerifiedEmail` | `true` | Refuse a token that doesn't say `email_verified: true`. |
+| `AgUi:Auth:UserIdClaim` | `email` | The claim sent to the agent as the user id. |
+| `AgUi:Auth:ClockSkew` | `00:01:00` | Tolerance when checking a token's lifetime. |
+| `AgUi:Auth:TicketLifetime` | `00:05:00` | How long an [access ticket](#access-tickets-post-tickets) is good for. At most one hour. |
+| `AgUi:Auth:TicketKey` | | Base64 of at least 32 bytes: the key tickets are signed with. Empty makes a random key at startup. Only needed so several replicas accept each other's tickets. |
+| `AgUi:Cors:AllowedOrigins` | | The browser origins that may call the API. See [CORS](#cors). |
+
+With `AgUi:Auth:Enabled` on, a configuration that can't work stops the proxy at startup instead of
+leaving it open or locked: no allowlist entry, no audience, an authority that isn't `https`, a
+ticket key that is too short. The message names every setting that is wrong.
 | `AgUi:KeepAliveInterval` | `00:00:15` | How often an idle run or notify stream gets an SSE comment. Zero or less turns it off. |
 | `AgUi:ResumeReplyTimeout` | `00:05:00` | How long a run with `resume` waits for the agent's reply after the agent accepted an answer, before it ends with `rockbot.reply_pending`. |
 | `AgUi:RequestTimeout` | `00:00:30` | How long a REST endpoint waits for the agent's answer (agent info, saved responses, the sign-in list, an upload) before it answers `504`. |
@@ -954,6 +1205,37 @@ agui:
       enabled: false            # true: https://rockbot-agui.<tailnet>.ts.net
 ```
 
+That is network mode, private to the tailnet. For an API on the internet, with app auth:
+
+```yaml
+agui:
+  enabled: true
+  publicBaseUrl: "https://agui.example.com"
+  auth:
+    enabled: true
+    audiences:
+      - 1234567890-abcdef.apps.googleusercontent.com      # the web app's client id
+      - 1234567890-ghijkl.apps.googleusercontent.com      # the Android app's
+    allowedEmails:
+      - someone@example.com
+    allowedDomains: []
+  cors:
+    allowedOrigins:
+      - https://app.example.com
+  ingress:
+    enabled: true
+    className: nginx
+    host: agui.example.com
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-buffering: "off"
+      nginx.ingress.kubernetes.io/proxy-body-size: "9m"
+    tls:
+      enabled: true
+      secretName: rockbot-agui-tls
+```
+
 | Value | Default | Use |
 |---|---|---|
 | `agui.enabled` | `false` | Deploy the proxy |
@@ -965,19 +1247,34 @@ agui:
 | `agent.attachmentUpload.enabled` | `true` | The agent's own value. When on, the proxy gets `UserProxy:AttachmentUploadUrl` and uploads go to the agent over HTTP instead of through RabbitMQ. |
 | `agui.tailscale.hostname`, `.tags`, `.ingress.enabled`, `.ingress.proxyGroup` | `rockbot-agui`, … | Tailnet exposure, as for `blazor.tailscale` |
 | `agui.ingress.enabled`, `.className`, `.host`, `.annotations`, `.tls` | off | An ordinary HTTPS ingress |
-| `agui.ingress.allowUnauthenticated` | `false` | Required to be `true` for that ingress to render |
+| `agui.ingress.allowUnauthenticated` | `false` | Lets that ingress render without `agui.auth.enabled` |
+| `agui.auth.enabled` | `false` | [App auth](#app-auth) |
+| `agui.auth.authority` | `""` | `AgUi:Auth:Authority`; empty is Google |
+| `agui.auth.audiences` | `[]` | `AgUi:Auth:Audiences`. Required with auth on. |
+| `agui.auth.allowedEmails`, `agui.auth.allowedDomains` | `[]` | The allowlist. One entry required with auth on. |
+| `agui.auth.ticketKeyFromSecret`, `secrets.agui.ticketKey` | `false`, `""` | One ticket-signing key for several replicas. Leave off with one replica. |
+| `agui.cors.allowedOrigins` | `[]` | `AgUi:Cors:AllowedOrigins`. See [CORS](#cors). |
 
-By default the Service is a Tailscale LoadBalancer, private to the tailnet. Because the proxy has no
-sign-in, the chart refuses to render the ordinary HTTPS ingress unless
-`agui.ingress.allowUnauthenticated` is `true`, which states that something outside the chart
-authenticates requests. An ingress in front of the proxy must not buffer responses and needs a read
-timeout longer than a run; `values.yaml` shows the nginx annotations. The notify stream stays open
-indefinitely, with a comment every 15 seconds, so an idle timeout shorter than that would cut it.
+These are the proxy's own settings and share nothing with `blazor.auth`: the two proxies read
+different configuration keys (`AgUi:Auth:*` and `Auth:*`), have different client ids, and can have
+different allowlists. App auth needs no Secret, because the proxy only validates tokens.
 
-The chart has no values for the notify buffer or the timeouts other than `replyTimeout`. To change
-them, set the `AgUi__NotifyBufferSize`, `AgUi__NotifyBufferAge`, `AgUi__NotifySubscriberQueueSize`,
-`AgUi__ResumeReplyTimeout`, `AgUi__RequestTimeout` or `AgUi__SignInStartTimeout` environment
-variables on the deployment.
+By default the Service is a Tailscale LoadBalancer, private to the tailnet, and that is the gate.
+The chart refuses to render the ordinary HTTPS ingress unless something gates it: either
+`agui.auth.enabled`, or `agui.ingress.allowUnauthenticated: true`, which states that something
+outside the chart authenticates requests. It also refuses `agui.auth.enabled` with an empty
+allowlist or no audience, as the proxy itself does at startup.
+
+An ingress in front of the proxy must not buffer responses and needs a read timeout longer than a
+run; `values.yaml` shows the nginx annotations. The notify stream stays open indefinitely, with a
+comment every 15 seconds, so an idle timeout shorter than that would cut it. With app auth, the
+pod also needs to reach the token issuer over HTTPS: allow it in any egress NetworkPolicy.
+
+The chart has no values for the notify buffer, the timeouts other than `replyTimeout`, or the less
+common auth settings. To change them, set the `AgUi__NotifyBufferSize`, `AgUi__NotifyBufferAge`,
+`AgUi__NotifySubscriberQueueSize`, `AgUi__ResumeReplyTimeout`, `AgUi__RequestTimeout`,
+`AgUi__SignInStartTimeout`, `AgUi__Auth__RequireVerifiedEmail`, `AgUi__Auth__UserIdClaim` or
+`AgUi__Auth__TicketLifetime` environment variables on the deployment.
 
 The pod mounts the chart's shared volume (the one the agent writes attachments to) **read-only**
 at `/rockbot/shared`, to serve `GET /attachments/{path}`. It writes nothing there: an upload goes
@@ -1033,3 +1330,8 @@ response = await chat.GetResponseAsync(messages, options);   // the run that res
 `AGUIChatClient` only runs turns. For the notify stream use any server-sent events client, for
 example `System.Net.ServerSentEvents.SseParser` in .NET or `EventSource` in a browser, and read
 each event's `data` as an AG-UI event with the SDK's `AGUIJsonSerializerContext.Default.BaseEvent`.
+
+With [app auth](#app-auth) on, the client sends whatever its `HttpClient` sends, so put the token
+there (`DefaultRequestHeaders.Authorization`, or a `DelegatingHandler` that refreshes it). In a
+browser, `EventSource` can't send the header: open the notify stream with a
+[ticket](#access-tickets-post-tickets), or read it with `fetch`.

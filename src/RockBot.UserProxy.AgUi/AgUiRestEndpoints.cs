@@ -44,6 +44,14 @@ internal static class AgUiRestEndpoints
         api.MapPost(AttachmentLinks.Route, UploadAttachmentAsync);
         api.MapGet(AttachmentLinks.Route + "/{**path}", ServeAttachment);
 
+        // App mode only: the same attachment by a URL that carries an access ticket, for the
+        // requests a browser makes without a script (<img src>, a new tab) and so without an
+        // Authorization header. AccessTicketHandler authenticates it; the ticket is in the path
+        // rather than the query so that an HTML attachment's relative links carry it too.
+        api.MapPost("/tickets", IssueTicket);
+        if (api.ServiceProvider.GetRequiredService<AgUiOptions>().Auth.Enabled)
+            api.MapGet(AccessTicketHandler.PathPrefix + "{ticket}" + AttachmentLinks.Route + "/{**path}", ServeAttachment);
+
         api.MapPost("/feedback", FeedbackAsync);
 
         api.MapGet("/saved", ListSavedAsync);
@@ -164,7 +172,8 @@ internal static class AgUiRestEndpoints
         var response = await proxy.UploadAttachmentAsync(
             new AttachmentUploadRequest
             {
-                FileName = fileName, Mime = expected, Data = data, SessionId = thread, UserId = options.DefaultUserId,
+                FileName = fileName, Mime = expected, Data = data, SessionId = thread,
+                UserId = AgUiIdentity.UserId(context.User, options),
             },
             options.RequestTimeout, ct);
 
@@ -195,17 +204,94 @@ internal static class AgUiRestEndpoints
     /// confined to an opaque origin by a <c>sandbox</c> policy, so opened in a browser it can't
     /// reach anything else served from this host.
     /// </remarks>
-    private static IResult ServeAttachment(string? path, HttpContext context, AttachmentPathResolver resolver)
+    private static async Task<IResult> ServeAttachment(string? path, HttpContext context, AttachmentPathResolver resolver)
     {
+        // A ticket is for one attachment (or one HTML document's directory). Checked here against
+        // the very path that is resolved below, whatever the URL looked like before routing.
+        if (AccessTicketHandler.GrantOf(context) is { } grant && !grant.CoversAttachment(path))
+        {
+            await AgUiAuth.ChallengeAsync(context, "invalid_token", "The access ticket is not for this resource.");
+            return Results.Empty;
+        }
+
         if (resolver.Resolve(path) is not { } resolved)
             return AgUiEndpoints.Refusal(StatusCodes.Status404NotFound, "There is no such attachment.");
 
         var mime = AttachmentPathResolver.GuessMime(resolved);
         context.Response.Headers.XContentTypeOptions = "nosniff";
+        if (AccessTicketHandler.GrantOf(context) is not null)
+        {
+            // The URL is a credential for a few minutes: keep it out of the Referer header of
+            // anything the document loads or links to, and out of shared caches.
+            context.Response.Headers["Referrer-Policy"] = "no-referrer";
+            context.Response.Headers.CacheControl = "private, no-store";
+        }
         if (AttachmentPresentation.ContentSecurityPolicyFor(mime) is { } csp)
             context.Response.Headers.ContentSecurityPolicy = csp;
 
         return Results.File(resolved, AttachmentPresentation.ContentTypeFor(mime));
+    }
+
+    /// <summary>
+    /// <c>POST /tickets</c>: a URL for one of the two requests a browser makes by itself, and so
+    /// without an <c>Authorization</c> header. The body is
+    /// <c>{"kind": "attachment", "path": "previews/ab12/deck.html"}</c> (the attachment's
+    /// <c>path</c>) or <c>{"kind": "notify", "threadId": "..."}</c>. Answers
+    /// <c>{"url", "ticket", "expiresAt"}</c>: <c>url</c> is relative to the proxy, and good for
+    /// <c>GET</c> until <c>expiresAt</c>.
+    /// </summary>
+    /// <remarks>
+    /// In network mode there is nothing to carry, and the answer is the plain URL with no ticket,
+    /// so a client written for app mode works unchanged against a proxy without it.
+    /// See <see cref="AccessTicketService"/>.
+    /// </remarks>
+    private static async Task<IResult> IssueTicket(
+        HttpContext context, AgUiOptions options, AccessTicketService tickets, CancellationToken ct)
+    {
+        var (body, invalid) = await ReadObjectAsync(context, ct);
+        if (invalid is not null)
+            return invalid;
+
+        AccessTicketKind kind;
+        string scope;
+        switch (Str(body, "kind"))
+        {
+            case "attachment":
+                if (Str(body, "path") is not { } path || !AttachmentPathResolver.IsSafeRelativePath(path))
+                {
+                    return AgUiEndpoints.Refusal(StatusCodes.Status400BadRequest,
+                        "path is required: the attachment's path, as rockbot.attachments or POST /attachments gave it.");
+                }
+                (kind, scope) = (AccessTicketKind.Attachment, path);
+                break;
+
+            case "notify":
+                if (ResolveThread(Str(body, "threadId"), options, out var thread) is { } refusal)
+                    return refusal;
+                (kind, scope) = (AccessTicketKind.Notify, thread);
+                break;
+
+            default:
+                return AgUiEndpoints.Refusal(StatusCodes.Status400BadRequest, "kind must be \"attachment\" or \"notify\".");
+        }
+
+        var plain = kind == AccessTicketKind.Attachment
+            ? AttachmentLinks.Url(scope)
+            : $"{AccessTicketHandler.NotifyPath}?threadId={Uri.EscapeDataString(scope)}";
+        if (!options.Auth.Enabled)
+            return Json(new { url = plain });
+
+        // Only a caller with a token of its own gets here: a ticket authenticates nothing but
+        // the GET it was issued for, so one can't be traded for another.
+        if (UserAllowlist.GetEmail(context.User) is not { } email || AgUiIdentity.Expires(context.User) is not { } tokenExpires)
+            return AgUiEndpoints.Refusal(StatusCodes.Status403Forbidden, "This account is not allowed to use this API.");
+
+        var (ticket, expiresAt) = tickets.Issue(kind, scope, email, tokenExpires, options.Auth.TicketLifetime);
+        var url = kind == AccessTicketKind.Attachment
+            ? $"{AccessTicketHandler.PathPrefix}{ticket}{plain}"
+            : $"{plain}&{AccessTicketHandler.QueryParameter}={ticket}";
+        context.Response.Headers.CacheControl = "no-store";
+        return Json(new { url, ticket, expiresAt });
     }
 
     /// <summary>

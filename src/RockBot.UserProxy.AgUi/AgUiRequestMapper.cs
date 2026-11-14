@@ -56,7 +56,7 @@ internal static class AgUiRequestMapper
     /// <summary>The longest display name an attachment reference may carry.</summary>
     public const int MaxFileNameLength = 255;
 
-    public static AgUiRunRequest Map(RunAgentInput input, AgUiOptions options, string channelName)
+    public static AgUiRunRequest Map(RunAgentInput input, AgUiOptions options, string channelName, string? userId = null)
     {
         if (string.IsNullOrWhiteSpace(input.ThreadId))
             return AgUiRunRequest.Refuse(StatusCodes.Status400BadRequest, "threadId is required.");
@@ -103,7 +103,7 @@ internal static class AgUiRequestMapper
                 Content = text ?? "",
                 Attachments = attachments,
                 SessionId = input.ThreadId,
-                UserId = options.DefaultUserId,
+                UserId = userId ?? options.DefaultUserId,
                 ChannelName = channelName,
                 ClientCapabilities = capabilities,
             },

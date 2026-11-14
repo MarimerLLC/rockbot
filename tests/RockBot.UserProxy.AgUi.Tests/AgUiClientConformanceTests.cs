@@ -52,6 +52,36 @@ public sealed class AgUiClientConformanceTests
         Assert.AreEqual(Thread, received.Message.SessionId);
     }
 
+    /// <summary>
+    /// App mode (#794, phase 5): the SDK's client has no auth of its own; it sends whatever its
+    /// <see cref="HttpClient"/> does, so a bearer token on that is all it takes.
+    /// </summary>
+    [TestMethod]
+    public async Task ChatClient_WithABearerToken_RunsATurnAgainstAProxyInAppMode()
+    {
+        using var issuer = new TestIssuer();
+        await using var host = new AgUiTestHost(TestIssuer.Settings()) { ConfigureServices = issuer.Register };
+        using var http = host.CreateClient();
+        await using var agent = await FakeAgent.StartAsync(host);
+        var endpoint = new Uri(http.BaseAddress!, "agui").ToString();
+
+        // Without the token the client fails, and nothing reaches the agent.
+        using (var anonymous = new AGUIChatClient(new AGUIChatClientOptions(http, endpoint)))
+        {
+            await Assert.ThrowsAsync<HttpRequestException>(() => anonymous.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, "Hello")], new ChatOptions { ConversationId = Thread }));
+            Assert.AreEqual(0, agent.Messages.Count);
+        }
+
+        http.DefaultRequestHeaders.Authorization = issuer.Bearer();
+        using var chat = new AGUIChatClient(new AGUIChatClientOptions(http, endpoint));
+        var response = await chat.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Hello with a token")], new ChatOptions { ConversationId = Thread });
+
+        StringAssert.Contains(response.Text, "Echo: Hello with a token");
+        Assert.AreEqual(TestIssuer.AllowedEmail, agent.Messages.Single().Message.UserId);
+    }
+
     [TestMethod]
     public async Task ChatClient_ReadsARunWithProgressToolCallsAndState()
     {

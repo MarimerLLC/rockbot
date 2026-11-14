@@ -1,7 +1,6 @@
 using System.Security.Claims;
-using RockBot.UserProxy.Blazor.Auth;
 
-namespace RockBot.UserProxy.Blazor.Tests;
+namespace RockBot.UserProxy.Tests;
 
 [TestClass]
 public class UserAllowlistTests

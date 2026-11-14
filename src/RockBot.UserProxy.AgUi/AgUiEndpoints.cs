@@ -34,9 +34,17 @@ internal static class AgUiEndpoints
 
     public static IEndpointRouteBuilder MapAgUi(this IEndpointRouteBuilder app)
     {
-        // Everything a client calls is in this one group, so that app auth (phase 5) is a single
-        // RequireAuthorization() here. Until then whoever can reach the proxy is allowed in.
+        var options = app.ServiceProvider.GetRequiredService<AgUiOptions>();
+
+        // Everything a client calls is in this one group, so app auth is one line: in app mode
+        // every endpoint in it needs a caller on the allowlist (a bearer token, or for the two
+        // requests a browser makes by itself, an access ticket). In network mode nothing is
+        // required and whoever can reach the proxy is allowed in.
         var api = app.MapGroup("");
+        if (options.Auth.Enabled)
+            api.RequireAuthorization();
+        // In both modes, a request to any of them that names an Origin must name an allowed one.
+        api.WithMetadata(new OriginCheckedMetadata());
         api.MapPost("/agui", RunAsync);
         api.MapGet("/agui/notify", NotifyAsync);
         api.MapPost("/threads/{id}/cancel", CancelAsync);
@@ -95,7 +103,8 @@ internal static class AgUiEndpoints
             return;
         }
 
-        var request = AgUiRequestMapper.Map(input, options, proxyOptions.ResolveChannelName());
+        var userId = AgUiIdentity.UserId(context.User, options);
+        var request = AgUiRequestMapper.Map(input, options, proxyOptions.ResolveChannelName(), userId);
         if (request.IsRefused)
         {
             await RefuseAsync(context, request.ErrorStatus, request.Error ?? "The request was refused.");
@@ -150,7 +159,7 @@ internal static class AgUiEndpoints
                 else
                 {
                     var resuming = new ResumeRun(proxy, questions, run, emitter, events.Writer, logger,
-                        options.DefaultUserId, proxyOptions.DefaultReplyTimeout, options.ResumeReplyTimeout);
+                        userId, proxyOptions.DefaultReplyTimeout, options.ResumeReplyTimeout);
                     await StreamRunAsync(context, options, events, logger, input.RunId, stopping,
                         (stop, clientGone) => resuming.RunAsync(resume, stop, clientGone));
                 }
@@ -340,6 +349,13 @@ internal static class AgUiEndpoints
             return;
         }
 
+        // A ticket is for one thread's stream: the one this request is about to open.
+        if (AccessTicketHandler.GrantOf(context) is { } grant && !grant.CoversNotify(threadId))
+        {
+            await AgUiAuth.ChallengeAsync(context, "invalid_token", "The access ticket is not for this resource.");
+            return;
+        }
+
         var lastEventId = context.Request.Headers["Last-Event-ID"].ToString();
         if (string.IsNullOrEmpty(lastEventId))
             lastEventId = context.Request.Query["lastEventId"].ToString();
@@ -351,9 +367,24 @@ internal static class AgUiEndpoints
             return;
         }
 
+        // App mode: the stream ends when the caller's token does (for a ticket, the token it was
+        // issued for), so a stream is never open longer than its credential is good. The client
+        // reconnects with a fresh token and Last-Event-ID, and misses nothing. A run is different:
+        // it is bounded (UserProxy:MaxTurnDuration) and cutting it would cancel the turn, so a
+        // run that was authorized when it started is allowed to finish.
+        using var expired = new CancellationTokenSource();
+        if (AgUiIdentity.Expires(context.User) is { } expires)
+        {
+            var left = expires + options.Auth.ClockSkew - (context.RequestServices.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow();
+            if (left <= TimeSpan.Zero)
+                expired.Cancel();
+            else if (left < TimeSpan.FromDays(30))
+                expired.CancelAfter(left);
+        }
+
         var response = StartEventStream(context);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(
-            context.RequestAborted, lifetime.ApplicationStopping, subscription.Dropped);
+            context.RequestAborted, lifetime.ApplicationStopping, subscription.Dropped, expired.Token);
         try
         {
             await PumpAsync(subscription.Reader, response, options.KeepAliveInterval,
@@ -370,6 +401,8 @@ internal static class AgUiEndpoints
 
         if (subscription.IsDropped)
             logger.LogInformation("Ended a notify stream of thread {ThreadId}: the client fell too far behind", threadId);
+        else if (expired.IsCancellationRequested)
+            logger.LogDebug("Ended a notify stream of thread {ThreadId}: the caller's token expired", threadId);
     }
 
     /// <summary>Sets the response up as an unbuffered event stream.</summary>
@@ -508,7 +541,7 @@ internal static class AgUiEndpoints
         await proxy.SendMcpAnswerAsync(new McpQuestionAnswer
         {
             SessionId = threadId,
-            UserId = options.DefaultUserId,
+            UserId = AgUiIdentity.UserId(context.User, options),
             QuestionId = id,
             Answers = answers,
             Decline = decline,

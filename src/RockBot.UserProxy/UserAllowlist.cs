@@ -1,11 +1,30 @@
 using System.Security.Claims;
 
-namespace RockBot.UserProxy.Blazor.Auth;
+namespace RockBot.UserProxy;
+
+/// <summary>
+/// The allowlist's configuration: who gets in. A user proxy's own auth options derive from this
+/// (the Blazor UI's <c>Auth</c> section, the AG-UI proxy's <c>AgUi:Auth</c>), so each binds the
+/// two lists from its own section and both feed one <see cref="UserAllowlist"/>.
+/// </summary>
+public class UserAllowlistOptions
+{
+    /// <summary>Exact email addresses allowed in. Compared case-insensitively.</summary>
+    public IList<string> AllowedEmails { get; set; } = new List<string>();
+
+    /// <summary>
+    /// Email domains allowed in, e.g. <c>example.com</c>. Matched against the part after the final
+    /// <c>@</c>, exactly — never as a suffix, so <c>evil-example.com</c> does not satisfy
+    /// <c>example.com</c>.
+    /// </summary>
+    public IList<string> AllowedDomains { get; set; } = new List<string>();
+}
 
 /// <summary>
 /// Decides whether a signed-in identity is allowed in, by matching its email claim against the
 /// configured allowlist. Deliberately a pure class with no dependency on ASP.NET plumbing beyond
-/// <see cref="ClaimsPrincipal"/>, so every rule below is directly testable.
+/// <see cref="ClaimsPrincipal"/>, so every rule below is directly testable. Shared by the user
+/// proxies that have a sign-in of their own: the Blazor UI and the AG-UI proxy.
 /// </summary>
 public sealed class UserAllowlist
 {
@@ -19,8 +38,8 @@ public sealed class UserAllowlist
         _domains = Normalize(allowedDomains, trimLeadingAt: true);
     }
 
-    /// <summary>Convenience overload binding directly to <see cref="AuthOptions"/>.</summary>
-    public UserAllowlist(AuthOptions options)
+    /// <summary>Convenience overload binding directly to a proxy's auth options.</summary>
+    public UserAllowlist(UserAllowlistOptions options)
         : this(options.AllowedEmails, options.AllowedDomains)
     {
     }

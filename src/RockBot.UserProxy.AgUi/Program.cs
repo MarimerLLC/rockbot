@@ -35,6 +35,10 @@ builder.Configuration.GetSection(AgUiOptions.SectionName).Bind(agUiOptions);
 // authorization server. Fail here instead.
 agUiOptions.ResolvePublicBaseUrl();
 builder.Services.AddSingleton(agUiOptions);
+
+// App auth (bearer tokens and the allowlist) and CORS, both off unless configured. Enabled with a
+// configuration that can't work, this throws rather than serving an open API.
+builder.Services.AddAgUiAccess(agUiOptions);
 builder.Services.AddSingleton<AgUiRunRegistry>();
 
 // Everything that isn't a run's own traffic goes through the frontend to the notify stream.
@@ -50,9 +54,12 @@ builder.Services.AddSingleton(sp => new McpSignInTracker(sp.GetService<TimeProvi
 
 var app = builder.Build();
 
-// No authentication and no CORS yet (#794, phase 5): the proxy is for a private network such as a
-// tailnet, where whoever can reach the port is allowed in. See docs/agui.md. MapAgUi keeps every
-// endpoint but /healthz and the MCP sign-in redirect in one group for that phase to lock.
+// Network mode (the default): whoever can reach the port is allowed in, so the proxy belongs on
+// a private network such as a tailnet; the only check is that a browser request comes from an
+// allowed origin, so a page on some other site can't drive it. App mode (AgUi:Auth:Enabled):
+// every endpoint but /healthz and the MCP sign-in redirect needs a bearer token from an account
+// on the allowlist. See docs/agui.md.
+app.UseAgUiAccess(agUiOptions);
 app.MapAgUi();
 
 app.Run();
