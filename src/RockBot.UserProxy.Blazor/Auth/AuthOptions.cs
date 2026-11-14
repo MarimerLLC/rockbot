@@ -7,7 +7,7 @@ namespace RockBot.UserProxy.Blazor.Auth;
 /// Defaults are "off": a deployment that sets nothing behaves exactly as it did before sign-in
 /// existed, gated only by whatever the network in front of it provides (a tailnet, typically).
 /// </remarks>
-public sealed class AuthOptions
+public sealed class AuthOptions : UserAllowlistOptions
 {
     /// <summary>Configuration section name.</summary>
     public const string SectionName = "Auth";
@@ -38,15 +38,8 @@ public sealed class AuthOptions
     /// </summary>
     public bool TrustForwardedHeaders { get; set; }
 
-    /// <summary>Exact email addresses allowed in. Compared case-insensitively.</summary>
-    public IList<string> AllowedEmails { get; set; } = new List<string>();
-
-    /// <summary>
-    /// Email domains allowed in, e.g. <c>example.com</c>. Matched against the part after the final
-    /// <c>@</c>, exactly — never as a suffix, so <c>evil-example.com</c> does not satisfy
-    /// <c>example.com</c>.
-    /// </summary>
-    public IList<string> AllowedDomains { get; set; } = new List<string>();
+    // AllowedEmails and AllowedDomains, the allowlist itself, are inherited: the AG-UI proxy binds
+    // the same two lists from its own section, and both proxies feed one UserAllowlist.
 
     /// <summary>
     /// Configured identity providers, keyed by provider name (<c>Google</c> today). A provider is
