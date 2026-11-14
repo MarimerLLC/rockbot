@@ -33,6 +33,8 @@ builder.Services.AddSingleton<AgUiRunRegistry>();
 
 // Everything that isn't a run's own traffic goes through the frontend to the notify stream.
 builder.Services.AddSingleton(sp => new NotifyHub(agUiOptions, logger: sp.GetRequiredService<ILogger<NotifyHub>>()));
+builder.Services.AddSingleton(sp => new McpQuestionRegistry(
+    agUiOptions, sp.GetRequiredService<NotifyHub>(), sp.GetService<TimeProvider>()));
 builder.Services.AddSingleton<IUserFrontend, AgUiUserFrontend>();
 
 var app = builder.Build();

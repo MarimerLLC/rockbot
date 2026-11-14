@@ -72,16 +72,128 @@ public sealed class AgUiRequestMapperTests
     }
 
     [TestMethod]
-    public void Resume_IsNotSupportedYet()
+    public void Resume_BecomesOneAnswerPerEntry_AndSendsNoMessage()
     {
         var request = Map("""
-            {"threadId":"agui-session","runId":"r1","messages":[{"id":"1","role":"user","content":"hi"}],
-             "resume":[{"interruptId":"q1","status":"resolved","payload":{"answer":"yes"}}]}
+            {"threadId":"agui-session","runId":"r1","messages":[{"id":"1","role":"user","content":"replayed history"}],
+             "resume":[{"interruptId":"q1","status":"resolved","payload":{"tz":"Europe/Brussels","count":2}},
+                       {"interruptId":"q2","status":"cancelled","payload":{"ignored":true}}]}
             """);
 
-        Assert.IsNull(request.Message);
+        Assert.IsFalse(request.IsRefused, request.Error);
+        Assert.IsNull(request.Message, "a resume run answers interrupts; the replayed messages are not new input");
+        Assert.AreEqual(QuestionMode.Interrupt, request.QuestionMode);
+        Assert.AreEqual(2, request.Resume!.Count);
+
+        Assert.AreEqual("q1", request.Resume[0].QuestionId);
+        Assert.IsFalse(request.Resume[0].Decline);
+        using var answers = JsonDocument.Parse(request.Resume[0].Answers!);
+        Assert.AreEqual("Europe/Brussels", answers.RootElement.GetProperty("tz").GetString());
+        Assert.AreEqual(2, answers.RootElement.GetProperty("count").GetInt32());
+
+        Assert.AreEqual(new AgUiResumeEntry("q2", Decline: true, Answers: null), request.Resume[1]);
+    }
+
+    [TestMethod]
+    public void Resume_NeedsNoUserMessage()
+    {
+        var request = Map("""{"threadId":"agui-session","runId":"r1","messages":[],"resume":[{"interruptId":"q1","status":"cancelled"}]}""");
+
+        Assert.IsFalse(request.IsRefused, request.Error);
+        Assert.AreEqual(1, request.Resume!.Count);
+    }
+
+    [TestMethod]
+    [DataRow("""[{"interruptId":"","status":"resolved","payload":{}}]""", "interruptId", DisplayName = "no interrupt id")]
+    [DataRow("""[{"interruptId":"q1","status":"approved","payload":{}}]""", "status", DisplayName = "an unknown status")]
+    [DataRow("""[{"interruptId":"q1","status":"resolved"}]""", "payload", DisplayName = "resolved without a payload")]
+    [DataRow("""[{"interruptId":"q1","status":"resolved","payload":[1]}]""", "payload", DisplayName = "a payload that is not an object")]
+    [DataRow("""[{"interruptId":"q1","status":"resolved","payload":{}},{"interruptId":"q1","status":"cancelled"}]""", "more than once", DisplayName = "one interrupt twice")]
+    public void MalformedResume_IsRefused(string resume, string says)
+    {
+        var request = Map($$"""{"threadId":"agui-session","runId":"r1","messages":[],"resume":{{resume}}}""");
+
         Assert.AreEqual(400, request.ErrorStatus);
-        StringAssert.Contains(request.Error, "not supported");
+        Assert.IsNull(request.Resume);
+        StringAssert.Contains(request.Error, says);
+    }
+
+    [TestMethod]
+    public void AnEmptyResume_IsARunWithNewInput()
+    {
+        var request = Map("""{"threadId":"agui-session","runId":"r1","messages":[{"id":"1","role":"user","content":"hi"}],"resume":[]}""");
+
+        Assert.IsNull(request.Resume);
+        Assert.AreEqual("hi", request.Message?.Content);
+    }
+
+    // ── Question mode ────────────────────────────────────────────────────────
+
+    private static AgUiRunRequest MapWithProps(string rockbot) => Map(
+        """{"threadId":"agui-session","runId":"r1","messages":[{"id":"1","role":"user","content":"hi"}],"forwardedProps":{"rockbot":"""
+        + rockbot + "}}");
+
+    [TestMethod]
+    public void WithoutForms_ThereIsNoQuestionMode()
+    {
+        var request = Map("""{"threadId":"agui-session","runId":"r1","messages":[{"id":"1","role":"user","content":"hi"}]}""");
+
+        Assert.AreEqual(QuestionMode.None, request.QuestionMode);
+        Assert.IsFalse(request.Message!.ClientCapabilities.HasFlag(ClientCapabilities.InteractiveForms));
+    }
+
+    [TestMethod]
+    public void DeclaringInteractiveForms_WithoutAMode_IsInterruptMode()
+    {
+        var request = MapWithProps("""{"capabilities":["MarkdownBasic","InteractiveForms"]}""");
+
+        Assert.AreEqual(QuestionMode.Interrupt, request.QuestionMode);
+        Assert.IsTrue(request.Message!.ClientCapabilities.HasFlag(ClientCapabilities.InteractiveForms));
+    }
+
+    [TestMethod]
+    [DataRow("interrupt", nameof(QuestionMode.Interrupt))]
+    [DataRow("custom", nameof(QuestionMode.Custom))]
+    [DataRow("Custom", nameof(QuestionMode.Custom))]
+    public void NamingAMode_SetsIt_AndDeclaresInteractiveForms(string name, string expected)
+    {
+        var request = MapWithProps($$"""{"questionMode":"{{name}}"}""");
+
+        Assert.AreEqual(Enum.Parse<QuestionMode>(expected), request.QuestionMode);
+        // Added to the default capabilities, which leave forms out.
+        Assert.AreEqual(ClientCapabilityPresets.AgUi | ClientCapabilities.InteractiveForms, request.Message!.ClientCapabilities);
+    }
+
+    [TestMethod]
+    public void NamingAMode_AddsInteractiveFormsToWhatTheClientListed()
+    {
+        var request = MapWithProps("""{"questionMode":"custom","capabilities":["MarkdownBasic"]}""");
+
+        Assert.AreEqual(QuestionMode.Custom, request.QuestionMode);
+        Assert.AreEqual(
+            ClientCapabilities.Text | ClientCapabilities.MarkdownBasic | ClientCapabilities.InteractiveForms,
+            request.Message!.ClientCapabilities);
+    }
+
+    [TestMethod]
+    [DataRow("\"popup\"")]
+    [DataRow("7")]
+    [DataRow("[\"interrupt\"]")]
+    public void AnUnknownMode_IsRefused(string value)
+    {
+        var request = MapWithProps($$"""{"questionMode":{{value}}}""");
+
+        Assert.AreEqual(400, request.ErrorStatus);
+        StringAssert.Contains(request.Error, "questionMode");
+    }
+
+    [TestMethod]
+    public void ANullMode_IsNoMode()
+    {
+        var request = MapWithProps("""{"questionMode":null}""");
+
+        Assert.IsFalse(request.IsRefused);
+        Assert.AreEqual(QuestionMode.None, request.QuestionMode);
     }
 
     [TestMethod]

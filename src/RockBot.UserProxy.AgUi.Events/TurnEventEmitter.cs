@@ -67,14 +67,16 @@ public class TurnEventEmitter : ITurnObserver, IProgress<AgentReply>
     public void UnsolicitedReply(AgentReply reply) => Emit(m => m.UnsolicitedReply(reply));
 
     /// <summary>Emits the final reply and the terminal event, and closes the stream.</summary>
-    public void Finish(TurnResult result) => Emit(m => m.Finish(result));
+    public void Finish(TurnResult result, IReadOnlyList<AGUIInterrupt>? interrupts = null) =>
+        Emit(m => m.Finish(result, interrupts));
 
     /// <summary>
     /// Ends the stream of a turn the caller stopped waiting for, as
     /// <see cref="TurnEventMapper.ReplyPending"/> describes: <c>rockbot.reply_pending</c>, then
     /// <c>RUN_FINISHED</c>.
     /// </summary>
-    public void FinishReplyPending(TurnResult result) => Emit(m => m.ReplyPending(result));
+    public void FinishReplyPending(TurnResult result, IReadOnlyList<AGUIInterrupt>? interrupts = null) =>
+        Emit(m => m.ReplyPending(result, interrupts));
 
     /// <summary>How long the stream must be quiet after the turn ends before it closes.</summary>
     public static readonly TimeSpan DefaultSettleQuiet = TimeSpan.FromMilliseconds(250);
@@ -108,7 +110,11 @@ public class TurnEventEmitter : ITurnObserver, IProgress<AgentReply>
     /// <summary>Ends the stream with <c>RUN_ERROR</c> (emitting <c>RUN_STARTED</c> first if it never was).</summary>
     public void Fail(string code, string message) => Emit(m => [m.RunError(code, message)]);
 
-    private void Emit(Func<TurnEventMapper, IEnumerable<BaseEvent>> map)
+    /// <summary>
+    /// Maps and emits events under the emitter's lock, for a host with events of its own (the
+    /// AG-UI proxy's MCP questions). Dropped once the stream is closed, like everything else.
+    /// </summary>
+    public void Emit(Func<TurnEventMapper, IEnumerable<BaseEvent>> map)
     {
         lock (_lock)
         {

@@ -14,19 +14,40 @@ namespace RockBot.UserProxy.AgUi;
 /// Called on the bus's message-handling thread, and not awaited, so every method finishes
 /// synchronously, does no I/O and never throws. <see cref="NotifyHub"/> only queues.
 /// </remarks>
-internal sealed class AgUiUserFrontend(NotifyHub hub, ILogger<AgUiUserFrontend> logger) : IUserFrontend
+internal sealed class AgUiUserFrontend(NotifyHub hub, McpQuestionRegistry questions, ILogger<AgUiUserFrontend> logger) : IUserFrontend
 {
     // ── Replies: routed by session ───────────────────────────────────────────
 
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default) =>
-        Publish(nameof(DisplayReplyAsync), () => hub.PublishToSession(reply.SessionId, m => NotifyEvents.Reply(m, reply)));
+        Publish(nameof(DisplayReplyAsync), () =>
+        {
+            // An MCP question's form. The bridge broadcasts it, so it arrives here even while a
+            // run is open on its thread; the registry puts it in that run or on the notify stream.
+            if (McpQuestionInterrupts.IsForm(reply))
+            {
+                questions.OnForm(reply);
+                return;
+            }
+
+            // The reply to a form answer goes to the run that resumed the question, if one is
+            // waiting for it, and only otherwise to the notify stream: never both.
+            if (questions.TryRouteFollowUp(reply))
+                return;
+
+            hub.PublishToSession(reply.SessionId, m => NotifyEvents.Reply(m, reply));
+        });
 
     public Task DisplayStatusAsync(AgentReply reply, CancellationToken cancellationToken = default) =>
         Publish(nameof(DisplayStatusAsync), () => hub.PublishToSession(reply.SessionId, m => NotifyEvents.Status(m, reply)));
 
     public Task OnMcpQuestionStatusAsync(McpQuestionStatus status, CancellationToken cancellationToken = default) =>
-        Publish(nameof(OnMcpQuestionStatusAsync),
-            () => hub.PublishToSession(status.SessionId, m => [NotifyEvents.McpQuestionStatus(m, status)]));
+        Publish(nameof(OnMcpQuestionStatusAsync), () =>
+        {
+            // Every client that shows the form has to close or reopen it, so the status is always
+            // on the notify stream; a run that resumed the question hears of it as well.
+            questions.OnStatus(status);
+            hub.PublishToSession(status.SessionId, m => [NotifyEvents.McpQuestionStatus(m, status)]);
+        });
 
     // ── Structured events: they carry the raw thread id ──────────────────────
 

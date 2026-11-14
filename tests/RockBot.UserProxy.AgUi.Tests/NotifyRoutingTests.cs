@@ -25,7 +25,7 @@ public sealed class NotifyRoutingTests
         var options = new AgUiOptions();
         options.AllowedThreadIds.AddRange([Phone, Laptop]);
         _hub = new NotifyHub(options, epoch: "e1");
-        _frontend = new AgUiUserFrontend(_hub, NullLogger<AgUiUserFrontend>.Instance);
+        _frontend = new AgUiUserFrontend(_hub, new McpQuestionRegistry(options, _hub), NullLogger<AgUiUserFrontend>.Instance);
         _phone = _hub.Subscribe(Phone, "e1-0")!;
         _laptop = _hub.Subscribe(Laptop, "e1-0")!;
     }
@@ -248,6 +248,10 @@ public sealed class NotifyRoutingTests
         Assert.AreEqual("The scheduler asks: Which time zone?", value.GetProperty("text").GetString());
         Assert.AreEqual("q1", value.GetProperty("form").GetProperty("questionId").GetString());
         Assert.AreEqual("tz", value.GetProperty("form").GetProperty("fields")[0].GetProperty("name").GetString());
+        // The same question as an AG-UI interrupt, for a client that resumes it with a run.
+        Assert.AreEqual("q1", value.GetProperty("interrupt").GetProperty("id").GetString());
+        Assert.AreEqual("input_required", value.GetProperty("interrupt").GetProperty("reason").GetString());
+        Assert.AreEqual(0, Drain(_laptop).Count, "a question belongs to its own thread");
     }
 
     [TestMethod]
@@ -261,6 +265,7 @@ public sealed class NotifyRoutingTests
         var value = Drain(_phone).Single().GetProperty("value");
         Assert.AreEqual("Which time zone?", value.GetProperty("text").GetString());
         Assert.IsFalse(value.TryGetProperty("form", out _));
+        Assert.IsFalse(value.TryGetProperty("interrupt", out _));
     }
 
     [TestMethod]

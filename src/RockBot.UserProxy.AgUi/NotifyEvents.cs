@@ -1,4 +1,3 @@
-using System.Text.Json;
 using AGUI.Abstractions;
 
 namespace RockBot.UserProxy.AgUi;
@@ -14,28 +13,10 @@ internal static class NotifyEvents
     public const string StreamName = "notify";
 
     /// <summary>
-    /// A final reply nobody is waiting for. A handed-back MCP question becomes
-    /// <c>rockbot.mcp_question</c> with its form; anything else is a text message followed by
-    /// <c>rockbot.origin</c>.
+    /// A final reply nobody is waiting for: a text message followed by <c>rockbot.origin</c>. (An
+    /// MCP question's form doesn't come this way; see <see cref="McpQuestionRegistry.OnForm"/>.)
     /// </summary>
-    public static IEnumerable<BaseEvent> Reply(TurnEventMapper mapper, AgentReply reply)
-    {
-        if (!string.Equals(reply.ContentType, McpQuestionForm.ContentType, StringComparison.OrdinalIgnoreCase))
-            return mapper.UnsolicitedReply(reply);
-
-        return
-        [
-            mapper.Custom(TurnEventMapper.CustomNames.McpQuestion, new
-            {
-                reply.SessionId,
-                reply.AgentName,
-                // The form as the agent sent it, so a field this proxy doesn't know still arrives.
-                form = ParseJson(reply.StructuredData),
-                // The same question as plain text, for a client that can't show the form.
-                text = reply.Content,
-            }),
-        ];
-    }
+    public static IEnumerable<BaseEvent> Reply(TurnEventMapper mapper, AgentReply reply) => mapper.UnsolicitedReply(reply);
 
     /// <summary>
     /// A non-final reply nobody is waiting for: progress from a subagent, a worker, a remote agent
@@ -112,19 +93,4 @@ internal static class NotifyEvents
                 .Where(w => string.Equals(w.ThreadId, mapper.ThreadId, StringComparison.Ordinal))
                 .ToList(),
         });
-
-    private static JsonElement? ParseJson(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-            return null;
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            return document.RootElement.Clone();
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
 }

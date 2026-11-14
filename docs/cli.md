@@ -73,7 +73,7 @@ epoch. The `runId` is the turn's correlation id on the bus.
 | `SUBAGENT_STARTED`, `SUBAGENT_FINISHED`, `SUBAGENT_ERROR` | A subagent or worker this session spawned. `name` is `subagent` or `worker`. `SUBAGENT_ERROR.code` is `failed`, `cancelled` or `timeout`. |
 | `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`, `TEXT_MESSAGE_END` | A reply, as one content chunk. The turn's own reply comes right before the last line. |
 | `CUSTOM rockbot.attachments` | Attachments on that reply (`value.messageId`, `value.attachments`) |
-| `CUSTOM rockbot.origin` | Follows a reply that isn't this turn's own, such as a subagent result (`value.messageId`, `value.origin`, `value.source`) |
+| `CUSTOM rockbot.origin` | Follows a reply that isn't this turn's own, such as a subagent result (`value.messageId`, `value.origin`, `value.source`, and `value.followsQuestionId` on the reply to an MCP form answer) |
 | `RUN_FINISHED` | The turn succeeded, or was cancelled (`outcome.type: "cancelled"`) |
 | `RUN_ERROR` | The turn failed. `code` is `error`, `timeout`, `agent_lost`, `attachment_failed` or `client_error`. |
 

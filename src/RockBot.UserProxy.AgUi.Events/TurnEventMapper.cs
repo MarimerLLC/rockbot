@@ -31,10 +31,14 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
         /// <summary>A run ended without its reply; the reply will arrive on the notify stream.</summary>
         public const string ReplyPending = "rockbot.reply_pending";
 
-        // The rest are only on the AG-UI proxy's notify stream (#794).
-        public const string RunFinished = "rockbot.run_finished";
+        // The rest are only emitted by the AG-UI proxy (#794).
+
+        /// <summary>An MCP server's question as a form: on the notify stream, or in a run.</summary>
         public const string McpQuestion = "rockbot.mcp_question";
         public const string McpQuestionStatus = "rockbot.mcp_question_status";
+
+        // Only on the proxy's notify stream.
+        public const string RunFinished = "rockbot.run_finished";
         public const string McpSignInStatus = "rockbot.mcp_signin_status";
         public const string AgentName = "rockbot.agent_name";
         public const string Error = "rockbot.error";
@@ -51,6 +55,17 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
         public const string AgentLost = "agent_lost";
         public const string AttachmentFailed = "attachment_failed";
         public const string ClientError = "client_error";
+
+        // The AG-UI proxy's interrupt protocol (#794).
+
+        /// <summary>New input was sent while the thread has interrupts to answer.</summary>
+        public const string InterruptsPending = "interrupts_pending";
+
+        /// <summary>A run's <c>resume</c> doesn't answer every open interrupt.</summary>
+        public const string ResumeIncomplete = "resume_incomplete";
+
+        /// <summary>The agent refused an answer; the interrupt is still open and can be answered again.</summary>
+        public const string InterruptRejected = "interrupt_rejected";
     }
 
     /// <summary>The <c>ACTIVITY_SNAPSHOT</c> activity type for progress text.</summary>
@@ -282,15 +297,18 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
     public IReadOnlyList<BaseEvent> UnsolicitedReply(AgentReply reply)
     {
         var (messageId, events) = TextMessage(reply);
-        events.Add(Custom(CustomNames.Origin, new { messageId, reply.Origin, reply.Source }));
+        // followsQuestionId: set on the agent's reply to a form answer, so a consumer can pair them.
+        events.Add(Custom(CustomNames.Origin, new { messageId, reply.Origin, reply.Source, reply.FollowsQuestionId }));
         return events;
     }
 
     /// <summary>
     /// The turn's end: its final reply when one arrived, then <c>RUN_FINISHED</c> or
-    /// <c>RUN_ERROR</c>.
+    /// <c>RUN_ERROR</c>. A successful run that leaves <paramref name="interrupts"/> open ends with
+    /// AG-UI's interrupt outcome instead of plain success: the client answers them with a run
+    /// that carries <c>resume</c>.
     /// </summary>
-    public IReadOnlyList<BaseEvent> Finish(TurnResult result)
+    public IReadOnlyList<BaseEvent> Finish(TurnResult result, IReadOnlyList<AGUIInterrupt>? interrupts = null)
     {
         var events = new List<BaseEvent>();
         if (result.Reply is { } reply)
@@ -298,7 +316,7 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
 
         events.Add(result.Outcome switch
         {
-            TurnResultOutcome.Success => Stamp(new RunFinishedEvent { ThreadId = threadId, RunId = runId }),
+            TurnResultOutcome.Success => RunFinished(interrupts),
             TurnResultOutcome.Cancelled => Stamp(new RunFinishedEvent
             {
                 ThreadId = threadId, RunId = runId, Outcome = new RunFinishedCancelledOutcome(),
@@ -312,11 +330,12 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
 
     /// <summary>
     /// The end of a run the proxy stopped waiting for while the agent may still be working: a
-    /// <c>rockbot.reply_pending</c> event, then a plain <c>RUN_FINISHED</c>. The reply, if one
-    /// comes, is delivered some other way (the AG-UI proxy's notify stream). Only for a host that
-    /// has such a way; <see cref="Finish"/> reports the same turn as <c>RUN_ERROR</c>.
+    /// <c>rockbot.reply_pending</c> event, then <c>RUN_FINISHED</c> (plain, or with the interrupt
+    /// outcome when <paramref name="interrupts"/> are open). The reply, if one comes, is delivered
+    /// some other way (the AG-UI proxy's notify stream). Only for a host that has such a way;
+    /// <see cref="Finish"/> reports the same turn as <c>RUN_ERROR</c>.
     /// </summary>
-    public IReadOnlyList<BaseEvent> ReplyPending(TurnResult result) =>
+    public IReadOnlyList<BaseEvent> ReplyPending(TurnResult result, IReadOnlyList<AGUIInterrupt>? interrupts = null) =>
     [
         Custom(CustomNames.ReplyPending, new
         {
@@ -324,8 +343,17 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
             result.RunStarted,
             message = result.Error is { Length: > 0 } error ? error : TurnResultText.Describe(result),
         }),
-        Stamp(new RunFinishedEvent { ThreadId = threadId, RunId = runId }),
+        RunFinished(interrupts),
     ];
+
+    /// <summary><c>RUN_FINISHED</c>: plain success, or the interrupt outcome when something is left to answer.</summary>
+    private BaseEvent RunFinished(IReadOnlyList<AGUIInterrupt>? interrupts) => Stamp(new RunFinishedEvent
+    {
+        ThreadId = threadId,
+        RunId = runId,
+        // The outcome needs at least one interrupt. None is an ordinary success: an absent outcome.
+        Outcome = interrupts is { Count: > 0 } ? new RunFinishedInterruptOutcome { Interrupts = [.. interrupts] } : null,
+    });
 
     public BaseEvent RunError(string code, string message) =>
         Stamp(new RunErrorEvent { Code = code, Message = message });

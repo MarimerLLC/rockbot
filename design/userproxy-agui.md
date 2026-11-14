@@ -1,7 +1,7 @@
 # AG-UI User Proxy
 
-**Status:** Phases 1 (runs) and 2 (notify stream) implemented, 2026-11-14. Phases 3 to 6 are not
-started. See
+**Status:** Phases 1 (runs), 2 (notify stream) and 3 (MCP questions) implemented, 2026-11-14.
+Phases 4 to 6 are not started. See
 [Implementation status](#implementation-status) for what was built and where it differs from this
 design; user documentation is in [`docs/agui.md`](../docs/agui.md).
 
@@ -251,6 +251,10 @@ offers both models, chosen per request in `forwardedProps.rockbot.questionMode`:
 mode, so the client can resubmit; in custom mode it's an `rockbot.mcp_question_status` event, as in
 Blazor.
 
+How the capability and the mode interact, which mode governs a form that arrives between requests,
+and what a proxy restart does to open questions were left open here; see
+[Phase 3](#phase-3-mcp-questions-implemented).
+
 ### Capabilities
 
 AG-UI has no capability negotiation, so the client declares its own in
@@ -325,6 +329,7 @@ One PR each.
    /threads/{id}/messages`, network-mode auth, Helm chart, Dockerfile. *Implemented.*
 2. **Notify stream.** Routing frontend, ring buffer, `Last-Event-ID`, resync. *Implemented.*
 3. **MCP questions.** Both modes, with `responseSchema` built from `McpQuestionField`.
+   *Implemented.*
 4. **REST extras.** Attachments, feedback, saved responses, MCP sign-in, clear context, agent info.
 5. **App auth.** Bearer tokens, the shared allowlist, CORS.
 6. **A reference client.** Probably a small Blazor WASM app on `AGUIChatClient` and the notify
@@ -448,6 +453,9 @@ Where the implementation differs from the design above:
 4. **A dropped client's connection may be reset.** The proxy stops in the middle of a write, so the
    stream doesn't end cleanly. The client treats it like any other drop.
 
+MCP question forms, which were only events on the notify stream in phase 2, are phase 3's subject
+(below).
+
 Open after phase 2:
 
 - **A late reply doesn't say which run it answers.** `IUserFrontend.DisplayReplyAsync` gets the
@@ -460,6 +468,96 @@ Open after phase 2:
   lost. The Blazor UI has the same window. It is a few instructions wide.
 - **Notify state and run state are separate documents.** Both use `STATE_SNAPSHOT`. A client has to
   keep them apart (see `docs/agui.md`).
+
+### Phase 3: MCP questions (implemented)
+
+- **`McpQuestionRegistry`** is the proxy's question state: for each allowed thread, the questions
+  shown as forms and not yet settled, and the runs open on it. It decides where a form goes,
+  whether new input is blocked, what a `resume` must cover, and which run gets the reply to an
+  answer. `AgUiUserFrontend` feeds it forms, statuses and follow-up replies.
+- **`McpQuestionInterrupts`** turns an `McpQuestionForm` into an `AGUIInterrupt` (`id`, `reason`,
+  `message`, `expiresAt`, a `responseSchema` built from the fields, and the form in
+  `metadata.rockbot`) and builds the `rockbot.mcp_question` event.
+- **`ResumeRun`** is a run with `resume`: one `McpQuestionAnswer` per entry, then the statuses and
+  follow-up replies of those questions, streamed until each is settled.
+- **`POST /questions/{id}/answer`** answers or declines a question over REST.
+- **`TurnEventMapper.Finish` / `ReplyPending`** (shared library) take the interrupts a run ends
+  with. `rockbot.origin` carries `followsQuestionId`.
+
+Decisions:
+
+1. **`interrupt` is the default mode** (open question 2), for a client that takes forms at all.
+2. **Forms are opt-in, and naming a mode opts in.** The agent only sends forms to a session that
+   declared `InteractiveForms`, which the default capabilities leave out. A request gets forms by
+   listing `InteractiveForms` (mode `interrupt` unless it says otherwise) or by setting
+   `questionMode`, which adds `InteractiveForms` to its capabilities. A request that does neither
+   has no question mode: questions come as text, it never ends with an interrupt, and it is never
+   blocked. That keeps a generic AG-UI client that doesn't implement interrupts (they are new in
+   1.0) from being locked out of a thread by an interrupt it can't answer, and keeps a client
+   without forms from being blocked by another client's question on a shared thread.
+3. **The mode belongs to the request; there is no thread-level mode.** A form that arrives while a
+   run is open is handled by that run in its mode; one that arrives with no run open goes to the
+   notify stream; the next request's own mode decides whether it is blocked. `rockbot.mcp_question`
+   is the same event everywhere and carries both the form and the interrupt, so no state is needed
+   to say which a client wants. Either way of answering works for any question.
+4. **Blocked input is `RUN_ERROR`, not an HTTP error.** Phase 1 refuses what it can see in the
+   request with HTTP. An open interrupt is a state of the conversation that the spec expects a
+   client to handle: a generic client shows a run's error to its user, where it may treat an HTTP
+   failure as a transport problem and retry. So blocked input (`interrupts_pending`) and a `resume`
+   that leaves an interrupt out (`resume_incomplete`) are runs that fail. Before the error the run
+   lists the open questions as `rockbot.mcp_question` events, so a client that lost them (a reload)
+   can still answer and is not locked out until they expire. A *malformed* `resume` is still `400`,
+   and two runs resuming one interrupt is `409`, like a duplicate run id.
+5. **A run carries all of the thread's open questions**, not only those that arrived during it.
+   In practice they are the same, since an interrupt-mode run can't start while questions are open.
+   A run that ends with `rockbot.reply_pending` carries them too. A run that fails or is cancelled
+   has no `RUN_FINISHED` to carry them, so the questions it held go to the notify stream.
+6. **A resume run's end.** Per answered question: `rejected` ends the run with `RUN_ERROR`
+   (`interrupt_rejected`); `answered` or `declined` by the user waits for the reply with
+   `FollowsQuestionId`; any other state (`unavailable`, `expired`, `cancelled`, `interrupted`, or
+   answered by the agent's own `mcp_answer`) settles it with no reply. Two bounds: no status within
+   `UserProxy:ReplyTimeout` is `RUN_ERROR` `agent_lost` (the interrupt stays open); no reply within
+   `AgUi:ResumeReplyTimeout` (5 minutes) ends the run with `rockbot.reply_pending`, and the reply
+   then goes to the notify stream.
+7. **Aborting a resume run cancels nothing.** The answers are already sent, and cancelling the
+   session would stop the work they released. A run with new input still cancels on abort.
+8. **No duplicates.** A reply with `FollowsQuestionId` goes to the run that resumed the question
+   if it still waits for it, else to the notify stream, decided under the lock that ends a run. A
+   form is shown in a run or on the notify stream, never both. Statuses are the exception: always
+   on the notify stream, because every client that shows the form has to close it, and also in the
+   resume run.
+9. **Nothing is persisted.** The agent owns a question; the registry is a cache built from the
+   bus. After a restart it is empty: new input is not blocked, and an answer to a question the
+   proxy doesn't know (a `resume` entry or the answer endpoint) is passed to the agent, which
+   reports `unavailable` if it doesn't exist. A question also drops out of the registry at its
+   `ExpiresAt`, so a missed status can't block a thread for good.
+
+Where the implementation differs from the design above:
+
+1. **A resume run ignores `messages`.** The design doesn't say. A client replays the conversation
+   with every request, so a user message there says nothing about new input.
+2. **`resume` may name a question the proxy doesn't know** (decision 9). "Must address every open
+   interrupt" is checked against what the proxy knows to be open.
+3. **The `rockbot.mcp_question` event has an `interrupt` property**, in both modes.
+4. **Expired and unavailable questions end a resume run normally**, with their status event. The
+   design lists them with `rejected` as ways a question settles; only `rejected` is an error.
+
+Open after phase 3:
+
+- **An answer with no reply can't be told from a slow one.** When an answer goes on to a background
+  task or a waiting subagent, `McpQuestionAnswerHandler` publishes nothing more, so a resume run
+  waits out `AgUi:ResumeReplyTimeout`. A status or flag from the agent ("no reply follows") would
+  let it end at once.
+- **A new notify connection isn't told the open questions.** It gets them by replay
+  (`Last-Event-ID`) or, in interrupt mode, in the refused run. A client that reloads in custom mode
+  and is beyond the buffer doesn't see a still-open form. Listing them after `rockbot.connected`,
+  or a `GET /threads/{id}/questions`, would close that.
+- **Shared threads.** The agent keeps one capability set per session, from the last message. A
+  client without forms and one with forms on the same thread flip it back and forth.
+- **Replicas.** Each replica routes follow-up replies by its own runs, so with more than one the
+  reply is in the resume run on one replica and on the others' notify streams.
+- **Progress of the agent's follow-up turn** (its tool calls after an answer) is uncorrelated and
+  goes to the notify stream, not into the resume run.
 
 ## Testing
 
@@ -478,6 +576,12 @@ subscribers, and publishers racing reconnecting subscribers) and the routing as 
 notify endpoint through the test host, with the fake agent publishing on the broadcast topics; and
 one test over a real socket for a client that stops reading.
 
+**Phase 3 tests** are in the same project: the interrupt mapping (the schema for every field kind,
+the reason) and the registry's state machine as pure tests; both modes, the answer endpoint, expiry
+and follow-up routing through the test host; and the conformance tests drive an interrupt and its
+resume with `AGUIChatClient`, which implements both (`InterruptRequestContent`,
+`InterruptResponseContent`).
+
 - **Unit.** The `AgentReply` → event mapping and question-mode state are pure functions over
   recorded envelopes. Use `RockBot.Messaging.InProcess` for the proxy service.
 - **Conformance.** Drive `POST /agui` with `AGUI.Client`'s `AGUIChatClient` in an integration test,
@@ -491,8 +595,10 @@ one test over a real socket for a client that stops reading.
    a run the right call, or does it confuse clients that validate streams strictly? The alternative
    is plain RockBot JSON (`AgentReply` and friends), which is simpler and honest about not being
    AG-UI.
-2. **Interrupt as default.** Should `interrupt` be the default question mode? It's what generic
-   clients expect, but blocking new input is a real UX regression compared with Blazor.
+2. **Interrupt as default.** *Decided: `interrupt`.* Should `interrupt` be the default question
+   mode? It's what generic clients expect, but blocking new input is a real UX regression compared
+   with Blazor. RockBot's own clients opt into `custom`; and since forms are opt-in, a client that
+   never asks for them is not blocked at all (phase 3, decision 2).
 3. **What history replays.** Does conversation history include unsolicited replies (subagent
    results, scheduled tasks) with enough metadata to rebuild `ReplyOrigin` on reload? If not,
    `rockbot.resync` loses anchors.

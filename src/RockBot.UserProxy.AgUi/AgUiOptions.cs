@@ -45,6 +45,14 @@ public sealed class AgUiOptions
     /// </summary>
     public int NotifySubscriberQueueSize { get; set; } = 256;
 
+    /// <summary>
+    /// How long a run that resumed an MCP question waits for the agent's reply, once the agent
+    /// has accepted the answer. After that the run ends with <c>rockbot.reply_pending</c> and the
+    /// reply, if one comes, arrives on the notify stream. (Some answers get no reply: the one
+    /// that goes on to a background task, for example.)
+    /// </summary>
+    public TimeSpan ResumeReplyTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
     /// <summary>True when clients may use <paramref name="threadId"/>. The match is exact.</summary>
     public bool IsThreadAllowed(string? threadId) =>
         !string.IsNullOrEmpty(threadId) && ThreadIds().Contains(threadId, StringComparer.Ordinal);

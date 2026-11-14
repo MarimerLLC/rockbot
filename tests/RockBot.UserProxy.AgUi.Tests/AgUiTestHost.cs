@@ -18,6 +18,9 @@ internal sealed class AgUiTestHost(params (string Key, string Value)[] settings)
 {
     public const string AgentName = "RockBot";
 
+    /// <summary>Extra service registrations, applied last (a clock a test controls, say).</summary>
+    public Action<IServiceCollection>? ConfigureServices { get; init; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("UserProxy:ProxyId", "agui-test");
@@ -38,6 +41,7 @@ internal sealed class AgUiTestHost(params (string Key, string Value)[] settings)
                 services.Remove(descriptor);
 
             services.AddRockBotInProcessMessaging();
+            ConfigureServices?.Invoke(services);
         });
     }
 
@@ -57,6 +61,7 @@ internal sealed class FakeAgent : IAsyncDisposable
     private readonly Lock _lock = new();
     private readonly List<ReceivedMessage> _messages = [];
     private readonly TaskCompletionSource<CancelSessionRequest> _cancel = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly List<McpQuestionAnswer> _answers = [];
 
     private FakeAgent(IMessagePublisher publisher) => _publisher = publisher;
 
@@ -68,6 +73,15 @@ internal sealed class FakeAgent : IAsyncDisposable
 
     /// <summary>What the agent does with a cancel request, after recording it.</summary>
     public Func<FakeAgent, CancelSessionRequest, Task>? OnCancel { get; set; }
+
+    /// <summary>What the agent does with a form answer, after recording it. The default does nothing.</summary>
+    public Func<FakeAgent, McpQuestionAnswer, Task>? OnAnswer { get; set; }
+
+    /// <summary>The form answers the agent received, in order.</summary>
+    public IReadOnlyList<McpQuestionAnswer> Answers
+    {
+        get { lock (_lock) return [.. _answers]; }
+    }
 
     /// <summary>The history the agent returns, or null to leave history requests unanswered.</summary>
     public ConversationHistoryResponse? History { get; set; }
@@ -107,6 +121,17 @@ internal sealed class FakeAgent : IAsyncDisposable
             }));
 
         agent._subscriptions.Add(await subscriber.SubscribeAsync(
+            $"{UserProxyTopics.McpAnswer}.{AgUiTestHost.AgentName}", "fake-agent.mcp-answer",
+            async (envelope, _) =>
+            {
+                var answer = envelope.GetPayload<McpQuestionAnswer>()!;
+                lock (agent._lock) agent._answers.Add(answer);
+                if (agent.OnAnswer is { } onAnswer)
+                    await onAnswer(agent, answer);
+                return MessageResult.Ack;
+            }));
+
+        agent._subscriptions.Add(await subscriber.SubscribeAsync(
             $"{UserProxyTopics.ConversationHistoryRequest}.{AgUiTestHost.AgentName}", "fake-agent.history",
             async (envelope, ct) =>
             {
@@ -139,6 +164,44 @@ internal sealed class FakeAgent : IAsyncDisposable
     public Task EventAsync<T>(T payload) =>
         _publisher.PublishAsync($"{UserProxyTopics.UserEvent}.{AgUiTestHost.AgentName}",
             payload.ToEnvelope<T>(source: AgUiTestHost.AgentName));
+
+    // MCP questions, as the bridge and McpQuestionAnswerHandler send them: all broadcast, none correlated.
+
+    /// <summary>Shows a question as a form, as the bridge does: a final reply that carries the form and its text.</summary>
+    public Task FormAsync(McpQuestionForm form, string sessionId = AgUiOptions.DefaultThreadId) => BroadcastAsync(new AgentReply
+    {
+        Content = $"{form.ServerName} asks: {form.Message}",
+        SessionId = sessionId,
+        AgentName = "mcp-bridge",
+        IsFinal = true,
+        Source = ReplySource.Bridge,
+        ContentType = McpQuestionForm.ContentType,
+        StructuredData = JsonSerializer.Serialize(form, TurnEventMapper.PayloadJson),
+    });
+
+    public Task StatusAsync(
+        string questionId, string state, string? answeredBy = null, string? reason = null,
+        string sessionId = AgUiOptions.DefaultThreadId) =>
+        BroadcastAsync(new McpQuestionStatus
+        {
+            SessionId = sessionId, QuestionId = questionId, State = state, AnsweredBy = answeredBy, Reason = reason,
+        });
+
+    /// <summary>The agent's reply after an accepted form answer.</summary>
+    public Task FollowUpAsync(string questionId, string content, string sessionId = AgUiOptions.DefaultThreadId) =>
+        BroadcastAsync(new AgentReply
+        {
+            Content = content, SessionId = sessionId, AgentName = AgUiTestHost.AgentName, IsFinal = true,
+            Source = ReplySource.Primary, FollowsQuestionId = questionId,
+        });
+
+    /// <summary>Accepts a form answer the way the real agent does: the bridge's status, then the reply.</summary>
+    public async Task AcceptAsync(McpQuestionAnswer answer, string reply)
+    {
+        await StatusAsync(answer.QuestionId, answer.Decline ? McpQuestionState.Declined : McpQuestionState.Answered,
+            answeredBy: "user", sessionId: answer.SessionId);
+        await FollowUpAsync(answer.QuestionId, reply, answer.SessionId);
+    }
 
     public Task ReplyAsync(ReceivedMessage to, string content, bool isFinal = true, ToolCallInfo? toolCall = null) =>
         SendAsync(to, new AgentReply

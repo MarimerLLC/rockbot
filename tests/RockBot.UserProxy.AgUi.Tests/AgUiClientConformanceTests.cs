@@ -1,5 +1,8 @@
+using System.Text.Json;
+using AGUI.Abstractions;
 using AGUI.Client;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace RockBot.UserProxy.AgUi.Tests;
 
@@ -81,4 +84,114 @@ public sealed class AgUiClientConformanceTests
 
         StringAssert.Contains(string.Concat(updates.Select(u => u.Text)), "Found it.");
     }
-}
+
+    // ── MCP questions (#794, phase 3) ────────────────────────────────────────
+
+    private static readonly McpQuestionForm Question = new()
+    {
+        QuestionId = "q1", ServerName = "scheduler", ToolName = "create_event", Message = "Which time zone?",
+        ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(10),
+        Fields = [new McpQuestionField { Name = "tz", Kind = McpQuestionFieldKind.String, Title = "Time zone", Required = true }],
+    };
+
+    /// <summary>
+    /// Chat options for the thread with <c>forwardedProps.rockbot.questionMode</c> set, the way
+    /// the SDK's client lets a caller add to the request.
+    /// </summary>
+    private static ChatOptions WithQuestionMode(string mode) => new()
+    {
+        ConversationId = Thread,
+        RawRepresentationFactory = _ => new RunAgentInput
+        {
+            ForwardedProperties = JsonSerializer.SerializeToElement(new { rockbot = new { questionMode = mode } }),
+        },
+    };
+
+    /// <summary>The agent's turn hands back a question as a form, then says so.</summary>
+    private void AgentAsksDuringTheTurn() => _agent.OnMessage = async (agent, received) =>
+    {
+        await agent.FormAsync(Question);
+        var registry = _host.Services.GetRequiredService<McpQuestionRegistry>();
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (registry.Find(Question.QuestionId) is null && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await agent.ReplyAsync(received, "Please fill in the form.");
+    };
+
+    [TestMethod]
+    public async Task ChatClient_ReadsAnInterrupt_AndResumesIt()
+    {
+        AgentAsksDuringTheTurn();
+        _agent.OnAnswer = (agent, answer) => agent.AcceptAsync(answer, "Booked for Brussels time.");
+        var options = WithQuestionMode("interrupt");
+
+        // The run ends with an interrupt, which the client hands over as content to answer.
+        var first = await _chat.GetResponseAsync([new ChatMessage(ChatRole.User, "Book it")], options);
+
+        StringAssert.Contains(first.Text, "Please fill in the form.");
+        var request = first.Messages.SelectMany(m => m.Contents).OfType<InterruptRequestContent>().Single();
+        Assert.AreEqual("q1", request.RequestId);
+        Assert.AreEqual(InterruptReasons.InputRequired, request.Reason);
+        Assert.AreEqual("Which time zone?", request.Message);
+        Assert.IsTrue(DateTimeOffset.TryParse(request.ExpiresAt, out _), request.ExpiresAt);
+        Assert.AreEqual("string", request.ResponseSchema!.Value.GetProperty("properties").GetProperty("tz").GetProperty("type").GetString());
+
+        // Its answer goes back as the next run's resume, and that run streams the agent's reply.
+        var messages = new List<ChatMessage> { new(ChatRole.User, "Book it") };
+        messages.AddRange(first.Messages);
+        messages.Add(new ChatMessage(ChatRole.User,
+            [new InterruptResponseContent(request.RequestId) { Payload = JsonSerializer.SerializeToElement(new { tz = "Europe/Brussels" }) }]));
+        var resumed = await _chat.GetResponseAsync(messages, options);
+
+        StringAssert.Contains(resumed.Text, "Booked for Brussels time.");
+        Assert.IsFalse(resumed.Messages.SelectMany(m => m.Contents).OfType<InterruptRequestContent>().Any());
+
+        var answer = _agent.Answers.Single();
+        Assert.AreEqual("q1", answer.QuestionId);
+        Assert.IsFalse(answer.Decline);
+        Assert.AreEqual("Europe/Brussels", JsonDocument.Parse(answer.Answers!).RootElement.GetProperty("tz").GetString());
+        Assert.AreEqual(1, _agent.Messages.Count, "the resume replayed the conversation, and none of it was sent again");
+    }
+
+    [TestMethod]
+    public async Task ChatClient_IsToldWhenNewInputIsBlockedByAnInterrupt()
+    {
+        AgentAsksDuringTheTurn();
+        var options = WithQuestionMode("interrupt");
+        await _chat.GetResponseAsync([new ChatMessage(ChatRole.User, "Book it")], options);
+
+        // RUN_ERROR, with rockbot.mcp_question events before it: the client's parser takes the
+        // stream, and reports the error its own way.
+        Exception? error = null;
+        ChatResponse? response = null;
+        try
+        {
+            response = await _chat.GetResponseAsync([new ChatMessage(ChatRole.User, "Something else")], options);
+        }
+        catch (Exception ex)
+        {
+            error = ex;
+        }
+
+        Assert.AreEqual(1, _agent.Messages.Count, "the blocked input never reached the agent");
+        var said = error?.ToString()
+            ?? string.Join(" ", response!.Messages.SelectMany(m => m.Contents).Select(c => c is ErrorContent e ? $"{e.ErrorCode} {e.Message}" : c.ToString()));
+        StringAssert.Contains(said, "interrupts");
+    }
+
+    [TestMethod]
+    public async Task ChatClient_ReadsARunWithACustomModeQuestion()
+    {
+        AgentAsksDuringTheTurn();
+
+        // A CUSTOM rockbot.mcp_question event mid-run, and a plain RUN_FINISHED.
+        var updates = new List<ChatResponseUpdate>();
+        await foreach (var update in _chat.GetStreamingResponseAsync(
+            [new ChatMessage(ChatRole.User, "Book it")], WithQuestionMode("custom")))
+        {
+            updates.Add(update);
+        }
+
+        StringAssert.Contains(string.Concat(updates.Select(u => u.Text)), "Please fill in the form.");
+        Assert.IsFalse(updates.SelectMany(u => u.Contents).OfType<InterruptRequestContent>().Any());
+    }}
