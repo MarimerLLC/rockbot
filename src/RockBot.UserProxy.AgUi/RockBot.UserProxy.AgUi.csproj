@@ -12,6 +12,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- App auth: validates OIDC tokens presented as Authorization: Bearer. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\RockBot.UserProxy.Abstractions\RockBot.UserProxy.Abstractions.csproj" />
     <ProjectReference Include="..\RockBot.UserProxy\RockBot.UserProxy.csproj" />
     <ProjectReference Include="..\RockBot.UserProxy.AgUi.Events\RockBot.UserProxy.AgUi.Events.csproj" />

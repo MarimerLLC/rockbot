@@ -19,8 +19,17 @@ public sealed class AgUiOptions
     /// </remarks>
     public List<string> AllowedThreadIds { get; set; } = [];
 
-    /// <summary>The <see cref="UserMessage.UserId"/> for every caller while there is no app auth.</summary>
+    /// <summary>
+    /// The <see cref="UserMessage.UserId"/> for every caller in network mode. In app mode it is
+    /// the caller's own (see <see cref="AgUiIdentity.UserId"/>), and this is only the fallback.
+    /// </summary>
     public string DefaultUserId { get; set; } = "agui-user";
+
+    /// <summary>App auth: bearer tokens and the allowlist. Off by default.</summary>
+    public AgUiAuthOptions Auth { get; set; } = new();
+
+    /// <summary>The browser origins that may call the API. None by default.</summary>
+    public AgUiCorsOptions Cors { get; set; } = new();
 
     /// <summary>
     /// How often an idle run or notify stream gets an SSE comment, so proxies and mobile networks
