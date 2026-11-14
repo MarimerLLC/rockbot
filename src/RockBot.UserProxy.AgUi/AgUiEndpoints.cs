@@ -43,6 +43,8 @@ internal static class AgUiEndpoints
         var api = app.MapGroup("");
         if (options.Auth.Enabled)
             api.RequireAuthorization();
+        // In both modes, a request to any of them that names an Origin must name an allowed one.
+        api.WithMetadata(new OriginCheckedMetadata());
         api.MapPost("/agui", RunAsync);
         api.MapGet("/agui/notify", NotifyAsync);
         api.MapPost("/threads/{id}/cancel", CancelAsync);

@@ -54,8 +54,9 @@ builder.Services.AddSingleton(sp => new McpSignInTracker(sp.GetService<TimeProvi
 
 var app = builder.Build();
 
-// Network mode (the default): no middleware is added, and whoever can reach the port is allowed
-// in, so the proxy belongs on a private network such as a tailnet. App mode (AgUi:Auth:Enabled):
+// Network mode (the default): whoever can reach the port is allowed in, so the proxy belongs on
+// a private network such as a tailnet; the only check is that a browser request comes from an
+// allowed origin, so a page on some other site can't drive it. App mode (AgUi:Auth:Enabled):
 // every endpoint but /healthz and the MCP sign-in redirect needs a bearer token from an account
 // on the allowlist. See docs/agui.md.
 app.UseAgUiAccess(agUiOptions);

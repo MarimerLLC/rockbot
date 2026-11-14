@@ -323,7 +323,7 @@ public sealed class AgUiAuthTests
     // ── Which endpoints are locked ───────────────────────────────────────────
 
     /// <summary>Every endpoint a client calls: method, route pattern, and a URL that reaches it.</summary>
-    private static readonly (string Method, string Pattern, string Url)[] ClientEndpoints =
+    internal static readonly (string Method, string Pattern, string Url)[] ClientEndpoints =
     [
         ("POST", "/agui", "/agui"),
         ("GET", "/agui/notify", "/agui/notify?threadId=agui-session"),
@@ -346,7 +346,7 @@ public sealed class AgUiAuthTests
         ("GET", "/agent", "/agent"),
     ];
 
-    private static readonly string[] OpenEndpoints = ["/healthz", "/mcp-oauth/callback"];
+    internal static readonly string[] OpenEndpoints = ["/healthz", "/mcp-oauth/callback"];
 
     [TestMethod]
     public async Task EveryClientEndpoint_RefusesARequestWithoutAToken()
@@ -905,7 +905,8 @@ public sealed class AgUiCorsTests
         using var response = await client.SendAsync(From(App, HttpMethod.Get, "/threads/agui-session/questions"));
         using var preflight = await client.SendAsync(Preflight("/agui", App, "POST", "content-type"));
 
-        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        // Refused outright, not answered without the header: see AgUiOriginCheckTests.
+        Assert.AreEqual(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.IsNull(Header(response, "Access-Control-Allow-Origin"));
         Assert.AreEqual(HttpStatusCode.MethodNotAllowed, preflight.StatusCode);
         Assert.IsNull(Header(preflight, "Access-Control-Allow-Origin"));

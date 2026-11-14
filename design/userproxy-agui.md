@@ -670,8 +670,10 @@ Open after phase 4:
 
 ### Phase 5: app auth (implemented)
 
-- **`AgUi:Auth`** (`AgUiAuthOptions`) turns app mode on. Off, nothing is registered and no
-  middleware is added: the pipeline is phase 4's.
+- **`AgUi:Auth`** (`AgUiAuthOptions`) turns app mode on. Off, no auth services are registered and
+  no auth middleware is added.
+- **`OriginCheck`** refuses a request to a client endpoint from an origin that isn't allowed, in
+  both modes.
 - **Bearer tokens** are validated by ASP.NET Core's JWT bearer handler against one OIDC issuer
   (`Authority`, Google by default) and a list of audiences.
 - **`UserAllowlist`** and a new base class for its two lists, `UserAllowlistOptions`, moved from
@@ -760,6 +762,20 @@ Decisions:
 13. **Fail fast.** Enabled with no allowlist entry, no audience, a non-`https` authority, a bad
     ticket key or a wildcard origin, the proxy throws at startup. The chart fails on the first
     two at render time.
+14. **The origin is checked, in both modes.** CORS stops a page reading a response, not sending
+    a request, and a browser sends "simple" requests without a preflight: a `text/plain`
+    `POST /agui`, a multipart `POST /attachments`, a body-less `POST /threads/{id}/cancel` or
+    `/clear`. In network mode nothing else stood between a page on any site and those. Requiring
+    a JSON content type would cover the first and not the others, so the check is on the one
+    thing a page can't forge: a request to a client endpoint that carries `Origin` gets `403`
+    unless the origin is a configured CORS origin or the proxy's own. "Its own" is
+    `AgUi:PublicBaseUrl`'s origin, or any origin whose host and port equal the request's `Host`;
+    the scheme is ignored there because a TLS-terminating ingress changes it. `Origin: null` is
+    never allowed, which covers the sandboxed HTML attachments. No `Origin` passes: that is every
+    non-browser client, navigations, and `<img>`. `/healthz` and the sign-in redirect are exempt
+    (endpoint metadata on the group decides, so an endpoint added to the group is covered). The
+    check runs after the CORS middleware, which still answers preflights, and before
+    authentication.
 
 Where the implementation differs from the design above:
 
@@ -775,14 +791,19 @@ Where the implementation differs from the design above:
 4. **`POST /tickets` and `GET /t/{ticket}/attachments/{path}`** are not in the design's table.
 5. **Network mode doesn't say "tailnet only".** The proxy can't tell what network it is on. The
    chart's guard is what stops a public ingress without auth.
+6. **The origin check** is not in the design, which only says that with CORS "only the
+   configured WASM origins may call the API". CORS headers alone don't make that true.
 
 Open after phase 5:
 
-- **Network mode and cross-site requests.** With no app auth, a web page on any origin, opened in
-  a browser that can reach the proxy, can *send* a request it can't read: `POST /agui` doesn't
-  insist on `Content-Type: application/json`, so a form post is not preflighted. That is as it
-  was in phases 1 to 4, and app mode is not affected (no ambient credential). Requiring a JSON
-  content type, or refusing an `Origin` that isn't allowed, would close it for network mode.
+- **Network mode and cross-site requests.** *Closed in phase 5* by the origin check (decision
+  14). What it leaves, in network mode only:
+  - *DNS rebinding.* A page whose hostname is re-pointed at the proxy is same-origin to the
+    browser, and its `Origin` host equals `Host`. ASP.NET Core's `AllowedHosts` closes it; the
+    proxy ships with `*` and the chart doesn't set it, because it can't know every name a
+    tailnet gives the Service.
+  - *Browsers that send no `Origin` on a cross-site form post* (older Firefox, and others of
+    that age).
 - **Revocation needs a restart.** The allowlist is read at startup.
 - **One issuer.** Accepting Google and another provider at once needs a second bearer scheme.
 - **Tickets and replicas.** Without a shared key a ticket only works on the replica that issued
@@ -827,7 +848,9 @@ validation (audience, issuer, expiry, signature, no signature, the public key as
 unverified and missing email, the allowlist by address and by domain); every mapped endpoint
 refusing a request without a token, with a check that the list of endpoints is complete; the
 user id reaching the agent; tickets (scope, tampering, expiry, each kind on the other's door);
-the notify stream ending at expiry and a run finishing; CORS; startup validation; and the
+the notify stream ending at expiry and a run finishing; CORS; the origin check (each shape of
+un-preflighted cross-site request, every endpoint, `null`, same origin with and without TLS
+termination, the public address, no origin); startup validation; and the
 conformance test once with a bearer token. The allowlist's own tests are in
 `tests/RockBot.UserProxy.Tests`.
 

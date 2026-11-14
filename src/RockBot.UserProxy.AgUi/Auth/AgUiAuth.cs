@@ -198,10 +198,68 @@ internal sealed class AccessTicketHandler(
     protected override Task HandleForbiddenAsync(AuthenticationProperties properties) => AgUiAuth.ForbidAsync(Context);
 }
 
+/// <summary>Marks an endpoint a client calls: a request to it that names an <c>Origin</c> must name an allowed one.</summary>
+internal sealed class OriginCheckedMetadata;
+
 /// <summary>
-/// Wires app auth and CORS into the proxy (#794, phase 5). With <see cref="AgUiAuthOptions.Enabled"/>
-/// off and no CORS origins, nothing here is registered and no middleware is added: the pipeline is
-/// the one the proxy had before it could authenticate anyone.
+/// Decides whether a request that carries an <c>Origin</c> header may reach a client endpoint.
+/// In both modes: it is what keeps a web page on some other site, open in a browser that can
+/// reach the proxy, from sending it requests.
+/// </summary>
+/// <remarks>
+/// <para>
+/// CORS only stops a page from <em>reading</em> a response. A "simple" request (a form post, a
+/// <c>text/plain</c> or multipart body, a POST with no body) is sent without a preflight, and in
+/// network mode nothing else asks who is calling. So a page on any site could start a run, cancel
+/// one, clear the context or upload a file, blind. Browsers put <c>Origin</c> on every request
+/// that isn't a same-origin or no-CORS <c>GET</c>/<c>HEAD</c>, and a page can't forge or remove
+/// it, which makes it the thing to check.
+/// </para>
+/// <para>
+/// Allowed: the configured CORS origins, and the proxy's own origin. Its own origin is
+/// <see cref="AgUiOptions.PublicBaseUrl"/>'s when that is set, and otherwise any origin whose
+/// host and port are the request's <c>Host</c>. The scheme is not compared in that second case:
+/// behind something that terminates TLS the proxy sees <c>http</c> where the browser said
+/// <c>https</c>. <c>Origin: null</c> (a sandboxed document, such as an HTML attachment) is never
+/// allowed. A request with no <c>Origin</c> is not a cross-site browser request and passes:
+/// <c>curl</c>, a phone app, a server, a navigation, an <c>&lt;img&gt;</c>.
+/// </para>
+/// </remarks>
+internal sealed class OriginCheck
+{
+    private readonly HashSet<string> _allowed;
+
+    public OriginCheck(AgUiOptions options)
+    {
+        _allowed = new HashSet<string>(options.Cors.ResolveOrigins(), StringComparer.OrdinalIgnoreCase);
+        if (options.ResolvePublicBaseUrl() is { } publicBaseUrl)
+            _allowed.Add(new Uri(publicBaseUrl).GetLeftPart(UriPartial.Authority));
+    }
+
+    /// <summary>True when the request names no origin, or one that may call the API.</summary>
+    public bool Allows(HttpRequest request)
+    {
+        var origins = request.Headers.Origin;
+        if (origins.Count == 0)
+            return true;
+        if (origins.Count != 1 || origins[0] is not { Length: > 0 } origin)
+            return false;
+        if (_allowed.Contains(origin))
+            return true;
+
+        // Same origin, as far as the proxy can tell: the page was served from the address this
+        // request was sent to.
+        var scheme = origin.IndexOf("://", StringComparison.Ordinal);
+        return scheme > 0
+            && request.Host.HasValue
+            && string.Equals(origin[(scheme + 3)..], request.Host.Value, StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+/// <summary>
+/// Wires app auth, CORS and the origin check into the proxy (#794, phase 5). With
+/// <see cref="AgUiAuthOptions.Enabled"/> off and no CORS origins, no auth or CORS services are
+/// registered and neither middleware is added; the origin check is always on.
 /// </summary>
 internal static class AgUiAuth
 {
@@ -240,6 +298,7 @@ internal static class AgUiAuth
                 .SetPreflightMaxAge(TimeSpan.FromMinutes(10))));
         }
 
+        services.AddSingleton(new OriginCheck(options));
         services.AddSingleton(sp => new AccessTicketService(auth.ResolveTicketKey(), sp.GetService<TimeProvider>()));
         if (!auth.Enabled)
             return services;
@@ -327,6 +386,28 @@ internal static class AgUiAuth
     {
         if (options.Cors.ResolveOrigins().Count > 0)
             app.UseCors(CorsPolicy);
+
+        // After CORS, which answers preflights by itself, and before authentication and the
+        // endpoint: a request from an origin that isn't allowed is refused before anything
+        // looks at it, in both modes. Only client endpoints are checked; /healthz and the
+        // sign-in redirect are not.
+        var originCheck = app.Services.GetRequiredService<OriginCheck>();
+        app.Use(async (context, next) =>
+        {
+            if (context.GetEndpoint()?.Metadata.GetMetadata<OriginCheckedMetadata>() is not null
+                && !originCheck.Allows(context.Request))
+            {
+                context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger(LogCategory)
+                    .LogInformation("Refused {Method} {Path} from origin {Origin}: not an allowed origin",
+                        context.Request.Method, context.Request.Path, context.Request.Headers.Origin.ToString());
+                await AgUiEndpoints.Refusal(StatusCodes.Status403Forbidden,
+                        "This origin is not allowed to call this API. A browser app on another origin than the proxy's "
+                        + "has to be listed in AgUi:Cors:AllowedOrigins.")
+                    .ExecuteAsync(context);
+                return;
+            }
+            await next(context);
+        });
 
         if (options.Auth.Enabled)
         {

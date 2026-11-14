@@ -34,8 +34,9 @@ browser apps. A reference client is the remaining phase of
 > everything on this page: talk to the agent as its user, read the thread's history, the saved
 > responses and every file in the attachments directory, upload files, and start MCP sign-ins.
 > Run it on a private network such as a tailnet, or turn on [app auth](#app-auth), which is what
-> an API reachable from the internet needs. It sends no CORS headers either until you list the
-> [origins](#cors) that may call it.
+> an API reachable from the internet needs. A browser app on another origin can't call it until
+> you list its [origin](#cors): the proxy sends no CORS headers for other origins and
+> [refuses their requests](#the-origin-check).
 
 ## Endpoints
 
@@ -60,7 +61,8 @@ browser apps. A reference client is the remaining phase of
 
 The REST endpoints answer in JSON with camelCase names, the same shapes the events use. A refusal
 is a problem-details body (`application/problem+json`) whose `detail` says what was wrong. Three
-statuses mean the same everywhere: `403` for a thread that isn't allowed, `503` when the proxy is
+statuses mean the same everywhere: `403` for a thread that isn't allowed (and for a browser
+request from an [origin that isn't allowed](#the-origin-check)), `503` when the proxy is
 not connected to the message bus, and `504` when the agent didn't answer within
 `AgUi:RequestTimeout`. An endpoint that takes a `threadId` lets you leave it out when the proxy
 allows only one thread.
@@ -1073,7 +1075,8 @@ agui:
 ```
 
 - **None configured (the default): no CORS headers at all.** Only pages served from the proxy's
-  own origin and non-browser clients (a phone app, `curl`, a server) can use the API.
+  own origin and non-browser clients (a phone app, `curl`, a server) can use the API. A request
+  from any other origin is refused; see [The origin check](#the-origin-check).
 - An origin is `scheme://host[:port]`, with no path. There is no wildcard, and `*` stops the
   proxy at startup.
 - Allowed origins may use `GET`, `POST` and `DELETE`, send any request header (`Authorization`,
@@ -1085,10 +1088,49 @@ agui:
 - The proxy never sends `Access-Control-Allow-Credentials`: it has no cookies. Use
   `fetch(url, { headers: { Authorization: … } })`, not `credentials: "include"`.
 
-CORS is a browser rule about which pages may *read* responses. It is not authentication. In
-network mode a page on an origin that isn't listed still can't read anything, but the proxy
-doesn't check the `Origin` of a request, so keep relying on the network (or turn on app auth) for
-who may call.
+### The origin check
+
+CORS headers only decide which pages may *read* a response. A browser still *sends* some
+cross-site requests without asking first: a form post, a `text/plain` or multipart body, a `POST`
+with no body. In network mode nothing else asks who is calling, so without a check any web page,
+open in a browser that can reach the proxy, could start a run, cancel one, clear the context or
+upload a file.
+
+So the proxy checks the `Origin` header itself, **in both modes and whether or not any CORS origin
+is configured**. A request to a client endpoint that names an origin is answered `403` (a
+problem-details body, before anything else looks at the request) unless the origin is:
+
+- one of `AgUi:Cors:AllowedOrigins`; or
+- the proxy's own: the origin of `AgUi:PublicBaseUrl` when that is set, or any origin whose host
+  and port are the request's `Host` header. The scheme isn't compared in the second case, because
+  behind an ingress that terminates TLS the browser says `https` and the proxy sees `http`.
+
+What that means in practice:
+
+| Request | Result |
+|---|---|
+| No `Origin` header: `curl`, a phone app, a server, a link or new tab, an `<img>` | Passes, as before. |
+| A page served from the proxy's own address | Passes. |
+| A page on a listed origin | Passes, with CORS headers. |
+| A page on any other origin, any method | `403`. |
+| `Origin: null`: a sandboxed document (an HTML attachment is served sandboxed), a `file://` page, a request sent with `Referrer-Policy: no-referrer` | `403`. `null` can't be listed. |
+
+`GET /healthz` and `GET /mcp-oauth/callback` are not checked. If an ingress rewrites the `Host`
+header, a page served from the proxy's own address is refused until you set `AgUi:PublicBaseUrl`.
+A script in an HTML attachment can load images beside it, but not module scripts or fonts, which
+a browser fetches with `Origin: null`.
+
+What the check doesn't cover:
+
+- **It is not authentication.** A program that isn't a browser sends whatever `Origin` it likes,
+  or none. In network mode the network is still the gate.
+- **A browser that doesn't send `Origin` on a cross-site `POST`.** Every current browser does. A
+  few from before 2020 don't.
+- **DNS rebinding.** A page that points its own hostname at the proxy's address is same-origin as
+  far as the browser, and this check, can tell. Set `AllowedHosts` (ASP.NET Core's host filter;
+  environment variable `AllowedHosts`, for example `rockbot-agui;rockbot-agui.example.ts.net`) so
+  the proxy only answers to its real names, or use app auth, where a page without a token gets
+  nothing either way.
 
 ## Configuration
 
