@@ -75,14 +75,41 @@ public sealed class AgUiHistoryMapperTests
     }
 
     [TestMethod]
-    public void ARoleThatIsNotTheUsers_IsShownAsTheAgents()
+    public void ARoleThatIsNeitherTheUsersNorTheSystems_IsShownAsTheAgents()
     {
         var snapshot = AgUiHistoryMapper.ToSnapshot("t", new ConversationHistoryResponse
         {
-            Turns = [new ConversationHistoryTurn { Role = "system", Content = "note", Timestamp = At }],
+            Turns = [new ConversationHistoryTurn { Role = "tool", Content = "note", Timestamp = At }],
         });
 
         Assert.IsInstanceOfType<AGUIAssistantMessage>(snapshot.Messages[0]);
+    }
+
+    /// <summary>
+    /// The agent stores prompts it wrote to itself as system turns (a consolidation after a
+    /// subagent finished). They must not come back as things the agent said to the user.
+    /// </summary>
+    [TestMethod]
+    public void ASystemTurn_KeepsItsRole_SoAClientCanLeaveItOut()
+    {
+        var snapshot = AgUiHistoryMapper.ToSnapshot("t", new ConversationHistoryResponse
+        {
+            Turns =
+            [
+                new ConversationHistoryTurn { Role = "user", Content = "Go", Timestamp = At },
+                new ConversationHistoryTurn { Role = "System", Content = "[Consolidate the subagent's findings]", Timestamp = At },
+                new ConversationHistoryTurn { Role = "assistant", Content = "Done.", Timestamp = At, AgentName = "RockBot" },
+            ],
+        });
+
+        Assert.IsInstanceOfType<AGUISystemMessage>(snapshot.Messages[1]);
+        var json = JsonDocument.Parse(AgUiJson.Serialize(snapshot)).RootElement.GetProperty("messages");
+        CollectionAssert.AreEqual(
+            new[] { "user", "system", "assistant" },
+            json.EnumerateArray().Select(m => m.GetProperty("role").GetString()).ToArray());
+        // Ids are positions in the thread, so the system turn still takes one.
+        Assert.AreEqual("t-2", json[2].GetProperty("id").GetString());
+        Assert.AreEqual("[Consolidate the subagent's findings]", json[1].GetProperty("content").GetString());
     }
 
     [TestMethod]
