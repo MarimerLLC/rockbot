@@ -297,4 +297,93 @@ public sealed class AgUiRequestMapperTests
             Assert.IsFalse(preset.HasFlag(absent), absent.ToString());
         }
     }
+
+    // ── Attachments (phase 4) ────────────────────────────────────────────────
+
+    private static AgUiRunRequest MapWithAttachments(string attachmentsJson, string content = "hi") => Map(
+        "{\"threadId\":\"agui-session\",\"runId\":\"r1\",\"messages\":[{\"id\":\"1\",\"role\":\"user\",\"content\":\"" + content + "\"}],"
+        + "\"forwardedProps\":{\"rockbot\":{\"attachments\":" + attachmentsJson + "}}}");
+
+    [TestMethod]
+    public void Attachments_AreReadFromForwardedProps_AsAnUploadReturnedThem()
+    {
+        var request = MapWithAttachments(
+            """[{"mime":"image/png","path":"shot-1.png","fileName":"Screenshot.png","url":"/attachments/shot-1.png"},"""
+            + """{"mime":"APPLICATION/PDF","path":"previews/ab/report.pdf"}]""");
+
+        Assert.IsFalse(request.IsRefused, request.Error);
+        var attachments = request.Message!.Attachments!;
+        Assert.AreEqual(new AgentAttachment { Mime = "image/png", Path = "shot-1.png", FileName = "Screenshot.png" }, attachments[0]);
+        // The type is the table's spelling, whatever case the client used.
+        Assert.AreEqual(new AgentAttachment { Mime = "application/pdf", Path = "previews/ab/report.pdf" }, attachments[1]);
+    }
+
+    [TestMethod]
+    [DataRow("null")]
+    [DataRow("[]")]
+    public void NoAttachments_IsNull_NotAnEmptyList(string attachmentsJson)
+    {
+        var request = MapWithAttachments(attachmentsJson);
+
+        Assert.IsFalse(request.IsRefused, request.Error);
+        Assert.IsNull(request.Message!.Attachments);
+    }
+
+    [TestMethod]
+    public void AMessageOfAttachmentsAlone_IsSentWithEmptyText()
+    {
+        var request = MapWithAttachments("""[{"mime":"image/png","path":"shot-1.png"}]""", content: "");
+
+        Assert.IsFalse(request.IsRefused, request.Error);
+        Assert.AreEqual("", request.Message!.Content);
+        Assert.AreEqual(1, request.Message.Attachments!.Count);
+    }
+
+    [TestMethod]
+    [DataRow("""[{"mime":"image/png","path":"../secret.png"}]""", DisplayName = "traversal")]
+    [DataRow("""[{"mime":"image/png","path":"a/../../secret.png"}]""", DisplayName = "traversal inside")]
+    [DataRow("""[{"mime":"image/png","path":"/rockbot/shared/exports/x.png"}]""", DisplayName = "absolute")]
+    [DataRow("""[{"mime":"image/png","path":"C:/x.png"}]""", DisplayName = "drive")]
+    [DataRow("""[{"mime":"image/png","path":"a\\x.png"}]""", DisplayName = "backslash")]
+    [DataRow("""[{"mime":"image/png","path":"x.png\u0000.html"}]""", DisplayName = "control character")]
+    [DataRow("""[{"mime":"text/html","path":"x.png"}]""", DisplayName = "type that isn't the extension's")]
+    [DataRow("""[{"path":"x.png"}]""", DisplayName = "no type")]
+    [DataRow("""[{"mime":"text/plain","path":"x.txt"}]""", DisplayName = "type that can't be attached")]
+    [DataRow("""[{"mime":"image/png"}]""", DisplayName = "no path")]
+    [DataRow("""[{"mime":"image/png","path":7}]""", DisplayName = "path that isn't a string")]
+    [DataRow("""["x.png"]""", DisplayName = "entry that isn't an object")]
+    [DataRow("""{"mime":"image/png","path":"x.png"}""", DisplayName = "not an array")]
+    [DataRow("""[{"mime":"image/png","path":"x.png","fileName":"a\nb.png"}]""", DisplayName = "display name with a line break")]
+    public void ABadAttachmentReference_Is400(string attachmentsJson)
+    {
+        var request = MapWithAttachments(attachmentsJson);
+
+        Assert.AreEqual(400, request.ErrorStatus);
+        StringAssert.Contains(request.Error, "forwardedProps.rockbot.attachments");
+        Assert.IsNull(request.Message);
+    }
+
+    [TestMethod]
+    public void MoreAttachmentsThanAMessageMayCarry_Is400()
+    {
+        var entry = """{"mime":"image/png","path":"x.png"}""";
+        var atLimit = MapWithAttachments("[" + string.Join(",", Enumerable.Repeat(entry, AgUiRequestMapper.MaxAttachments)) + "]");
+        var over = MapWithAttachments("[" + string.Join(",", Enumerable.Repeat(entry, AgUiRequestMapper.MaxAttachments + 1)) + "]");
+
+        Assert.IsFalse(atLimit.IsRefused, atLimit.Error);
+        Assert.AreEqual(400, over.ErrorStatus);
+    }
+
+    [TestMethod]
+    public void ARunThatResumes_IgnoresAttachments()
+    {
+        var request = Map("""
+            {"threadId":"agui-session","runId":"r1","messages":[],
+             "resume":[{"interruptId":"q1","status":"cancelled"}],
+             "forwardedProps":{"rockbot":{"attachments":"nonsense"}}}
+            """);
+
+        Assert.IsFalse(request.IsRefused, request.Error);
+        Assert.IsNotNull(request.Resume);
+    }
 }

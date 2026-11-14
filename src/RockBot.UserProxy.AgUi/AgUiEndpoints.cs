@@ -20,7 +20,10 @@ internal sealed class AgUiRunRegistry
     public void Finish(string runId) => _active.TryRemove(runId, out _);
 }
 
-/// <summary>The proxy's HTTP surface (#794): runs, the notify stream, cancel, history and health.</summary>
+/// <summary>
+/// The proxy's HTTP surface (#794): runs, the notify stream, cancel, history and health here; the
+/// plain REST endpoints in <see cref="AgUiRestEndpoints"/>.
+/// </summary>
 internal static class AgUiEndpoints
 {
     /// <summary>How long a cancel request sent after the client went away may take.</summary>
@@ -31,11 +34,19 @@ internal static class AgUiEndpoints
 
     public static IEndpointRouteBuilder MapAgUi(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/agui", RunAsync);
-        app.MapGet("/agui/notify", NotifyAsync);
-        app.MapPost("/threads/{id}/cancel", CancelAsync);
-        app.MapGet("/threads/{id}/messages", MessagesAsync);
-        app.MapPost("/questions/{id}/answer", AnswerQuestionAsync);
+        // Everything a client calls is in this one group, so that app auth (phase 5) is a single
+        // RequireAuthorization() here. Until then whoever can reach the proxy is allowed in.
+        var api = app.MapGroup("");
+        api.MapPost("/agui", RunAsync);
+        api.MapGet("/agui/notify", NotifyAsync);
+        api.MapPost("/threads/{id}/cancel", CancelAsync);
+        api.MapGet("/threads/{id}/messages", MessagesAsync);
+        api.MapPost("/questions/{id}/answer", AnswerQuestionAsync);
+        api.MapAgUiRest();
+
+        // The two endpoints that stay anonymous whatever the group requires: a browser sent back
+        // by an authorization server has no token to show, and neither has a probe.
+        app.MapMcpSignInCallback();
 
         // For probes: ready only while the proxy holds its subscriptions on the bus.
         app.MapGet("/healthz", (UserProxyService proxy) =>
@@ -59,6 +70,7 @@ internal static class AgUiEndpoints
         AgUiOptions options,
         AgUiRunRegistry runs,
         McpQuestionRegistry questions,
+        AttachmentPathResolver attachments,
         IHostApplicationLifetime lifetime,
         ILoggerFactory loggerFactory)
     {
@@ -90,6 +102,15 @@ internal static class AgUiEndpoints
             return;
         }
 
+        // An attachment reference has the right form (the mapper saw to that); this is whether
+        // there is such a file, which only the volume can say.
+        if (AgUiRestEndpoints.FirstMissing(attachments, request.Message?.Attachments) is { } missing)
+        {
+            await RefuseAsync(context, StatusCodes.Status400BadRequest,
+                $"There is no attachment '{missing.Path}'. Upload the file with POST /attachments and use the path it returns.");
+            return;
+        }
+
         if (!proxy.IsConnected)
         {
             await RefuseAsync(context, StatusCodes.Status503ServiceUnavailable, "The proxy is not connected to the message bus.");
@@ -107,7 +128,8 @@ internal static class AgUiEndpoints
             // The emitter is called from the bus's message-handling thread; the channel moves its
             // events to this request, which alone writes the response.
             var events = Channel.CreateUnbounded<BaseEvent>(new UnboundedChannelOptions { SingleReader = true });
-            var emitter = new TurnEventEmitter(input.ThreadId, input.RunId, e => events.Writer.TryWrite(e));
+            var emitter = new TurnEventEmitter(
+                input.ThreadId, input.RunId, e => events.Writer.TryWrite(e), attachmentUrl: AttachmentLinks.Url);
             var stopping = lifetime.ApplicationStopping;
 
             if (request.Resume is { } resume)
@@ -495,7 +517,7 @@ internal static class AgUiEndpoints
         return Results.Json(new { questionId = id, threadId, known = known is not null }, statusCode: StatusCodes.Status202Accepted);
     }
 
-    private static IResult Refusal(int status, string detail) => Results.Problem(detail: detail, statusCode: status);
+    internal static IResult Refusal(int status, string detail) => Results.Problem(detail: detail, statusCode: status);
 
     private static Task RefuseAsync(HttpContext context, int status, string detail) =>
         Refusal(status, detail).ExecuteAsync(context);

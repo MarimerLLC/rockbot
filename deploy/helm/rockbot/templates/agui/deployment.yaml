@@ -21,8 +21,12 @@ spec:
         {{- include "rockbot.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: agui
     spec:
-      # Stateless: no volumes. The proxy's identity on the bus is agui-<pod name>, and
-      # its queues are ephemeral, so a replaced pod leaves nothing behind on the broker.
+      # Stateless: no volume of its own. The proxy's identity on the bus is agui-<pod name>,
+      # and its queues are ephemeral, so a replaced pod leaves nothing behind on the broker.
+      # The shared PVC is co-mounted read-only, solely to serve attachments; the fsGroup
+      # matches the shared data's, so files the agent wrote (group rw) are readable here.
+      securityContext:
+        fsGroup: {{ .Values.shared.fsGroup }}
       containers:
         - name: agui
           image: {{ .Values.agui.image.repository }}:{{ .Values.agui.image.tag }}
@@ -58,6 +62,21 @@ spec:
                 secretKeyRef:
                   name: {{ include "rockbot.secretName" . }}
                   key: RabbitMq__Password
+            # Where the shared attachments directory is mounted: GET /attachments/{path} serves
+            # files under ${ROCKBOT_SHARED_PATH}/attachments.
+            - name: ROCKBOT_SHARED_PATH
+              value: "/rockbot/shared"
+            {{- if .Values.agent.attachmentUpload.enabled }}
+            # Upload attachments to the agent over HTTP rather than putting their bytes through
+            # RabbitMQ. Unset this and uploads still work — they just fall back to the bus.
+            - name: UserProxy__AttachmentUploadUrl
+              value: "http://{{ include "rockbot.fullname" . }}-agent:{{ .Values.agent.attachmentUpload.port | default 8082 }}"
+            {{- end }}
+            {{- with .Values.agui.publicBaseUrl }}
+            # The address browsers reach the proxy at; the MCP sign-in redirect URI is built from it.
+            - name: AgUi__PublicBaseUrl
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.agui.replyTimeout }}
             # How long a run waits for the agent to start working on it.
             - name: UserProxy__ReplyTimeout
@@ -85,4 +104,13 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.agui.resources | nindent 12 }}
+          volumeMounts:
+            # Read-only: the proxy only serves attachment bytes; the agent owns writes.
+            - name: shared-data
+              mountPath: /rockbot/shared
+              readOnly: true
+      volumes:
+        - name: shared-data
+          persistentVolumeClaim:
+            claimName: {{ include "rockbot.sharedPvcName" . }}
 {{- end }}

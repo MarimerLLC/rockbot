@@ -31,7 +31,10 @@ internal static class AgUiHistoryMapper
                     {
                         turn.Timestamp,
                         turn.AgentName,
-                        Attachments = turn.Attachments is { Count: > 0 } ? turn.Attachments : null,
+                        // Each with the URL of its bytes, as in rockbot.attachments.
+                        Attachments = turn.Attachments is { Count: > 0 } attachments
+                            ? attachments.Select(a => new { a.Mime, a.Path, a.FileName, Url = AttachmentLinks.Url(a) }).ToList()
+                            : null,
                     },
                 },
                 TurnEventMapper.PayloadJson);
