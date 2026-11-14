@@ -311,7 +311,10 @@ public sealed class AgUiEndpointTests
     [DataRow("""null""", DisplayName = "null")]
     [DataRow("""{"threadId":"agui-session","runId":"r1","messages":[]}""", DisplayName = "no user message")]
     [DataRow("""{"threadId":"agui-session","runId":"r1","messages":[{"id":"1","role":"assistant","content":"hi"}]}""", DisplayName = "only an assistant message")]
-    [DataRow("""{"threadId":"agui-session","runId":"r1","messages":[{"id":"1","role":"user","content":"hi"}],"resume":[{"interruptId":"q1","status":"cancelled"}]}""", DisplayName = "resume")]
+    [DataRow("""{"threadId":"agui-session","runId":"r1","messages":[{"id":"1","role":"user","content":"hi"}],"resume":[{"interruptId":"q1","status":"approved"}]}""", DisplayName = "resume with an unknown status")]
+    [DataRow("""{"threadId":"agui-session","runId":"r1","messages":[],"resume":[{"interruptId":"q1","status":"resolved","payload":"yes"}]}""", DisplayName = "resume whose payload is not an object")]
+    [DataRow("""{"threadId":"agui-session","runId":"r1","messages":[],"resume":[{"interruptId":"q1","status":"cancelled"},{"interruptId":"q1","status":"cancelled"}]}""", DisplayName = "resume answering one interrupt twice")]
+    [DataRow("""{"threadId":"agui-session","runId":"r1","messages":[{"id":"1","role":"user","content":"hi"}],"forwardedProps":{"rockbot":{"questionMode":"popup"}}}""", DisplayName = "an unknown question mode")]
     public async Task Run_WithABadRequest_Is400_AndReachesNoAgent(string body)
     {
         using var response = await _client.PostAsync("/agui", Json(body));
