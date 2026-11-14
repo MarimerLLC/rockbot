@@ -62,6 +62,21 @@ public static class ClientCapabilityPresets
         ClientCapabilities.HtmlInline | ClientCapabilities.SvgInline | ClientCapabilities.ImageAttachment |
         ClientCapabilities.HtmlPreview | ClientCapabilities.InteractiveForms;
 
+    /// <summary>
+    /// The default for an AG-UI client (<c>RockBot.UserProxy.AgUi</c>) that declares nothing in
+    /// <c>forwardedProps.rockbot.capabilities</c>: text, every Markdown subset, inline links and
+    /// image attachments. No <see cref="ClientCapabilities.HtmlInline"/>,
+    /// <see cref="ClientCapabilities.SvgInline"/> or <see cref="ClientCapabilities.HtmlPreview"/>,
+    /// because a generic client may not sanitize them, and no
+    /// <see cref="ClientCapabilities.InteractiveForms"/>, so a client that can't render a form
+    /// gets a question as text.
+    /// </summary>
+    public const ClientCapabilities AgUi =
+        ClientCapabilities.Text | ClientCapabilities.MarkdownBasic | ClientCapabilities.MarkdownHeadings |
+        ClientCapabilities.MarkdownTables | ClientCapabilities.MarkdownCode | ClientCapabilities.LinkInline |
+        ClientCapabilities.MarkdownStrikethrough | ClientCapabilities.MarkdownTaskList |
+        ClientCapabilities.ImageAttachment;
+
     // Documented in advance so capability-vocabulary decisions stay coherent —
     // not used by code until those proxies ship.
     public const ClientCapabilities WhatsApp =
