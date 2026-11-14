@@ -1,7 +1,7 @@
 # AG-UI User Proxy
 
-**Status:** Phases 1 (runs), 2 (notify stream) and 3 (MCP questions) implemented, 2026-11-14.
-Phases 4 to 6 are not started. See
+**Status:** Phases 1 (runs), 2 (notify stream), 3 (MCP questions) and 4 (REST extras) implemented,
+2026-11-14. Phases 5 and 6 are not started. See
 [Implementation status](#implementation-status) for what was built and where it differs from this
 design; user documentation is in [`docs/agui.md`](../docs/agui.md).
 
@@ -331,6 +331,7 @@ One PR each.
 3. **MCP questions.** Both modes, with `responseSchema` built from `McpQuestionField`.
    *Implemented.*
 4. **REST extras.** Attachments, feedback, saved responses, MCP sign-in, clear context, agent info.
+   *Implemented.*
 5. **App auth.** Bearer tokens, the shared allowlist, CORS.
 6. **A reference client.** Probably a small Blazor WASM app on `AGUIChatClient` and the notify
    stream; it can live in this repo as a sample.
@@ -378,7 +379,7 @@ Where the implementation differs from the design above:
 7. **SSE is written directly.** The proxy writes `data: {json}` frames itself and references only
    `AGUI.Abstractions`, not `AGUI.Formatting`. `AGUI.Client` is a test-only reference.
 8. **Multimodal input.** A user message's image and document parts are dropped; only its text is
-   sent. Attachments come with phase 4.
+   sent. Files go with a message as references to uploads (phase 4).
 
 Open after phase 1: aborting a request cancels **all** in-flight work for the thread, and by default
 every client shares one thread. A phone that drops its connection mid-run therefore cancels the turn.
@@ -550,14 +551,120 @@ Open after phase 3:
   let it end at once.
 - **A new notify connection isn't told the open questions.** It gets them by replay
   (`Last-Event-ID`) or, in interrupt mode, in the refused run. A client that reloads in custom mode
-  and is beyond the buffer doesn't see a still-open form. Listing them after `rockbot.connected`,
-  or a `GET /threads/{id}/questions`, would close that.
+  and is beyond the buffer doesn't see a still-open form. *Closed in phase 4:*
+  `GET /threads/{id}/questions`.
 - **Shared threads.** The agent keeps one capability set per session, from the last message. A
   client without forms and one with forms on the same thread flip it back and forth.
 - **Replicas.** Each replica routes follow-up replies by its own runs, so with more than one the
   reply is in the resume run on one replica and on the others' notify streams.
 - **Progress of the agent's follow-up turn** (its tool calls after an answer) is uncorrelated and
   goes to the notify stream, not into the resume run.
+
+### Phase 4: REST extras (implemented)
+
+- **`AgUiRestEndpoints`** holds the endpoints; each is one call on `UserProxyService`:
+
+  | Endpoint | Maps to |
+  |---|---|
+  | `POST /attachments` | `UploadAttachmentAsync` |
+  | `GET /attachments/{**path}` | a read from the shared volume |
+  | `POST /feedback` | `SendFeedbackAsync` |
+  | `GET /saved`, `GET /saved/{id}`, `POST /saved`, `DELETE /saved/{id}` | the four saved-response methods |
+  | `GET /mcp-signin`, `POST /mcp-signin/{server}/start` | `ListMcpSignInsAsync`, `StartMcpSignInAsync` |
+  | `GET /mcp-oauth/callback` | `SendMcpSignInCallbackAsync` |
+  | `POST /threads/{id}/clear` | `ClearContextAsync` |
+  | `GET /threads/{id}/questions` | `McpQuestionRegistry.Open` |
+  | `GET /agent` | `GetAgentInfoAsync`, `GetActiveStatusAsync` |
+
+- **`forwardedProps.rockbot.attachments`** on a run puts upload references on the `UserMessage`.
+- **`AttachmentPathResolver` and `AttachmentPresentation`** moved from the Blazor project to
+  `RockBot.UserProxy`, which both proxies reference, so the containment check and the response
+  headers for untrusted files are one implementation. Their tests moved with them.
+- **`McpSignInTracker`** remembers the sign-ins the proxy started, by OAuth `state`.
+- **`rockbot.attachments`** entries carry a `url` when the host serves attachments
+  (`TurnEventMapper.AttachmentUrl`). The CLI doesn't set it, so its JSON lines are unchanged.
+- **`rockbot.context_cleared`** is a new notify event.
+- **Deployment:** the pod mounts the shared PVC read-only and gets `ROCKBOT_SHARED_PATH`, and
+  `UserProxy__AttachmentUploadUrl` when the agent's upload endpoint is on. New value:
+  `agui.publicBaseUrl`.
+
+Decisions:
+
+1. **One group for phase 5.** `MapAgUi` maps every endpoint a client calls on one route group;
+   app auth is a single `RequireAuthorization()` there. `/healthz` and `/mcp-oauth/callback` are
+   mapped outside it and marked anonymous.
+2. **Attachments are served by path, not by query.** `GET /attachments/previews/ab12/deck.html`,
+   where the Blazor UI has `/attachments?file=…`. An HTML attachment's relative links (a deck's
+   images and scripts beside it) then resolve to their own attachment URLs, which a query can't
+   give, and the event's `url` is an ordinary path a client can hand to `<img>`. The containment
+   check is the same resolver either way.
+3. **Served files are untrusted, as in Blazor:** `nosniff` on every response, `sandbox
+   allow-scripts` for HTML and `sandbox` for SVG. The proxy has no cookies for such a document to
+   steal, but a WASM client may be served from the same origin, and phase 5 may add them.
+4. **The proxy doesn't write files.** An upload goes to the agent (over HTTP when
+   `UserProxy:AttachmentUploadUrl` is set, else over the bus), which owns the volume, the stored
+   name and the list of accepted types. The proxy refuses what it can without the agent: over 8 MB
+   (`AttachmentUploadRequest.MaxBytes`, now the one constant the agent and both proxies use), and
+   a declared type that isn't the type `AttachmentMimeTypes` gives the file's extension. The
+   agent's own, narrower allowlist is `422`.
+5. **Upload takes multipart or a raw body.** Multipart is what a browser's `FormData` and
+   `MultipartFormDataContent` produce; a raw body with `Content-Type` and `?fileName=` is the
+   least a small client has to do.
+6. **An attachment reference is held to the form an upload produces.** A client hands back
+   `{mime, path, fileName}`, so it can name any path. Three checks before the message is sent: the
+   path is a plain relative one (`AttachmentPathResolver.IsSafeRelativePath`: lexical, the same on
+   every platform, so a Linux proxy refuses a backslash path a Windows agent would misread); the
+   type is the type of the path's extension; and, where the proxy has the volume, the file exists
+   under the attachments directory. The agent still resolves the path with its own containment
+   check. The proxy does not track which references it issued: that state would be lost on a
+   restart and absent on another replica, and referencing a file already in the directory (one the
+   agent attached earlier) is legitimate.
+7. **The sign-in redirect URI is the proxy's own, always.** A client can't supply one, since the
+   authorization code is sent wherever it points. It is built from `AgUi:PublicBaseUrl`, or from
+   the request when that is empty. Blazor's `Auth:PublicBaseUrl` rewrites every request and has a
+   forwarded-headers option; the proxy builds one URL, so it has neither.
+8. **The callback only relays what the proxy started.** Blazor's callback relays any `state` and
+   leaves the matching to the bridge, behind the app's own sign-in. This one will be anonymous for
+   good (a browser arriving from an authorization server has no bearer token), so it relays a
+   redirect only when its `state` is one of the sign-ins the proxy started, unexpired, and once.
+   A sign-in started before a proxy restart, or on another replica, therefore has to be started
+   again. A redirect with a known state and no code is still relayed, so the bridge fails the
+   sign-in at once instead of letting it expire.
+9. **Clearing the context tells every client.** The agent clears, stops the session's work and
+   confirms with an unsolicited reply. The proxy adds `rockbot.context_cleared` on the thread's
+   notify stream, published before the request goes to the agent so the confirmation follows it.
+   The proxy's own state is left alone: the notify buffer keeps its events (a reconnecting client
+   replays them in order, the clear included); open questions stay until the agent closes them or
+   they expire, since they belong to MCP calls; an open run ends as cancelled when the agent
+   reports it.
+10. **A shorter wait for REST.** `AgUi:RequestTimeout` (30 seconds) instead of
+    `UserProxy:ReplyTimeout` (3 minutes), which is sized for a turn. Starting a sign-in waits 90
+    seconds, as the Blazor UI does.
+
+Where the implementation differs from the design above:
+
+1. **`GET /threads/{id}/questions`** is not in the design's table. It closes a gap phase 3 left.
+2. **`rockbot.attachments` references by `url` and by `path`.** The design says the event
+   "references `/attachments/...` URLs"; it keeps the attachment as the bus has it and adds `url`.
+3. **The callback page and its HTML are a second copy** of the Blazor UI's (25 lines). They differ
+   in the state check, and sharing them would put ASP.NET Core in `RockBot.UserProxy`.
+
+Open after phase 4:
+
+- **Attachments and bearer tokens (phase 5).** A browser can't send an `Authorization` header from
+  `<img src>` or a new tab. With app auth, `GET /attachments/…` needs another way in for those
+  uses: a cookie, a short-lived signed URL, or a client that fetches the bytes and shows a blob.
+- **The accepted upload types are stated twice.** The agent's `InboundAttachmentService` has the
+  allowlist; the proxy only knows the wider `AttachmentMimeTypes` table, so an SVG or HTML upload
+  travels to the agent to be refused. Moving the allowlist to `RockBot.UserProxy.Abstractions`
+  would let every client refuse up front.
+- **Multimodal input.** Image and document parts of an AG-UI message are still dropped. Mapping
+  them (upload, then reference) would let a generic AG-UI client send files without knowing
+  RockBot.
+- **Synthetic history turns.** `AgUiHistoryMapper` still shows a subagent's stored result as a
+  user message (open question 3).
+- **Replicas.** The sign-ins under way are per replica, like the notify buffer and the question
+  list.
 
 ## Testing
 
@@ -581,6 +688,15 @@ the reason) and the registry's state machine as pure tests; both modes, the answ
 and follow-up routing through the test host; and the conformance tests drive an interrupt and its
 resume with `AGUIChatClient`, which implements both (`InterruptRequestContent`,
 `InterruptResponseContent`).
+
+**Phase 4 tests** are in the same project: every endpoint through the test host, with the fake
+agent answering the request topics (the happy path, the agent not answering, validation, the
+thread allow-list); attachments served from a temporary directory (containment, `nosniff`, the
+sandbox policies), upload limits and types, and references on a run; the sign-in callback (a state
+the proxy didn't issue, no state, no code, relayed once); the sign-in tracker and the attachment
+reference mapping as pure tests; and one test over a real socket for an upload that doesn't
+announce its length. The resolver's and presentation's own tests are in
+`tests/RockBot.UserProxy.Tests`.
 
 - **Unit.** The `AgentReply` → event mapping and question-mode state are pure functions over
   recorded envelopes. Use `RockBot.Messaging.InProcess` for the proxy service.
@@ -618,7 +734,7 @@ resume with `AGUIChatClient`, which implements both (`InterruptRequestContent`,
    - **Broadcast-session output isn't there at all.** A scheduled task replies in the `scheduled`
      or `scheduled-system` session and writes nothing to the thread's conversation memory, and
      inbound A2A notifications are in `a2a-inbound`. A user's scheduled-task reports are kept in
-     the saved-response archive (#418), which phase 4's `/saved` endpoints will expose.
+     the saved-response archive (#418), which the `/saved` endpoints expose.
 
    So `rockbot.resync` does lose anchors, and loses scheduled and inbound A2A output outright. The
    buffer (200 events, 24 hours) is what keeps that rare. Closing the gap needs an agent-side change:
