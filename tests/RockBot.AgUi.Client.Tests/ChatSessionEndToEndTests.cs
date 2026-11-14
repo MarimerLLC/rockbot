@@ -100,7 +100,12 @@ public sealed class ChatSessionEndToEndTests
         await ConnectAsync();
 
         await _session.SendAsync("Hello, and notify me");
-        await UntilAsync(() => _chat.State.Messages.Any(m => m.Category == MessageCategory.ScheduledUser), "the scheduled task's report");
+        // The subagent's lifecycle and task list travel on the agent's event topic, the replies on
+        // its response topic, and nothing orders one topic against the other: the report can be
+        // shown before the subagent's end is. So wait for the whole end state, not the last reply.
+        await UntilAsync(() => _chat.State.Messages.Any(m => m.Category == MessageCategory.ScheduledUser)
+            && _chat.State.TaskLists.Count == 1
+            && _chat.State.ActiveStatusIndicators.Count == 0, "the scheduled task's report and the subagent's end");
 
         var state = _chat.State;
         var result = state.Messages.Single(m => m.Category == MessageCategory.SubagentActivity && !m.IsActivityLog);
