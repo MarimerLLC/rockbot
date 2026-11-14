@@ -27,6 +27,20 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
         public const string Heartbeat = "rockbot.heartbeat";
         public const string Attachments = "rockbot.attachments";
         public const string Origin = "rockbot.origin";
+
+        /// <summary>A run ended without its reply; the reply will arrive on the notify stream.</summary>
+        public const string ReplyPending = "rockbot.reply_pending";
+
+        // The rest are only on the AG-UI proxy's notify stream (#794).
+        public const string RunFinished = "rockbot.run_finished";
+        public const string McpQuestion = "rockbot.mcp_question";
+        public const string McpQuestionStatus = "rockbot.mcp_question_status";
+        public const string McpSignInStatus = "rockbot.mcp_signin_status";
+        public const string AgentName = "rockbot.agent_name";
+        public const string Error = "rockbot.error";
+        public const string ActiveWork = "rockbot.active_work";
+        public const string Connected = "rockbot.connected";
+        public const string Resync = "rockbot.resync";
     }
 
     /// <summary><c>RUN_ERROR</c> codes this mapper emits.</summary>
@@ -57,6 +71,13 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
     public string ThreadId => threadId;
     public string RunId => runId;
 
+    /// <summary>
+    /// When true, a task-list change is always a <c>STATE_SNAPSHOT</c>, never a <c>STATE_DELTA</c>.
+    /// For a stream a consumer may join part-way (the proxy's notify stream), where a patch could
+    /// refer to a list the consumer was never given.
+    /// </summary>
+    public bool AlwaysSnapshotState { get; init; }
+
     public BaseEvent RunStarted() => Stamp(new RunStartedEvent
     {
         ThreadId = threadId,
@@ -77,7 +98,13 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
     /// A non-final reply: tool-call events when it carries a <see cref="ToolCallInfo"/>, else an
     /// activity snapshot with its text. A subagent's or worker's reply is attributed to it.
     /// </summary>
-    public IReadOnlyList<BaseEvent> Progress(AgentReply reply)
+    public IReadOnlyList<BaseEvent> Progress(AgentReply reply) => Progress(reply, activityId: null);
+
+    /// <summary>
+    /// As <see cref="Progress(AgentReply)"/>, with the activity's id chosen by the caller. Without
+    /// one, the id is derived from the run and the subagent.
+    /// </summary>
+    public IReadOnlyList<BaseEvent> Progress(AgentReply reply, string? activityId)
     {
         var subagentRunId = SubagentRunId(reply.Source);
 
@@ -145,7 +172,7 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
             Stamp(new ActivitySnapshotEvent
             {
                 // One activity per source, so a subagent's progress doesn't overwrite the turn's.
-                MessageId = subagentRunId is null ? $"{runId}-progress" : $"{runId}-progress-{subagentRunId}",
+                MessageId = activityId ?? (subagentRunId is null ? $"{runId}-progress" : $"{runId}-progress-{subagentRunId}"),
                 ActivityType = ProgressActivityType,
                 Content = ToElement(new
                 {
@@ -157,6 +184,19 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
             }),
         ];
     }
+
+    /// <summary>
+    /// The source of the activity <paramref name="activityId"/> has finished: a last snapshot with
+    /// <c>content.done</c> set and no text, so a consumer can take its indicator down.
+    /// </summary>
+    public BaseEvent ActivityDone(AgentReply reply, string activityId) => Stamp(new ActivitySnapshotEvent
+    {
+        MessageId = activityId,
+        ActivityType = ProgressActivityType,
+        Content = ToElement(new { reply.AgentName, text = "", done = true }),
+        Replace = true,
+        SubagentRunId = SubagentRunId(reply.Source),
+    });
 
     /// <summary>A task list was created or replaced: the whole state, every list included.</summary>
     public BaseEvent TaskListSnapshot(TaskListSnapshot snapshot)
@@ -179,6 +219,15 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
             return Stamp(new StateSnapshotEvent { Snapshot = StateDocument() });
         }
 
+        if (AlwaysSnapshotState)
+        {
+            if (list.FindIndex(t => t.Id == delta.Item.Id) is var at and >= 0)
+                list[at] = delta.Item;
+            else
+                list.Add(delta.Item);
+            return Stamp(new StateSnapshotEvent { Snapshot = StateDocument() });
+        }
+
         var listPath = $"/taskLists/{EscapePointer(key)}";
         var item = ToNode(delta.Item);
         JsonObject op;
@@ -196,6 +245,14 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
 
         return Stamp(new StateDeltaEvent { Delta = ToElement(new JsonArray(op)) });
     }
+
+    /// <summary>
+    /// Drops a finished subagent's or worker's task list from the state, so a mapper that lives
+    /// longer than one turn doesn't keep every list it has ever seen. Returns the state without
+    /// it, or null when there was no such list.
+    /// </summary>
+    public BaseEvent? ForgetTaskList(string subagentRunId) =>
+        _taskLists.Remove(subagentRunId) ? Stamp(new StateSnapshotEvent { Snapshot = StateDocument() }) : null;
 
     public BaseEvent SubagentStarted(SubagentStarted started) => Stamp(new SubagentStartedEvent
     {
@@ -253,6 +310,23 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
         return events;
     }
 
+    /// <summary>
+    /// The end of a run the proxy stopped waiting for while the agent may still be working: a
+    /// <c>rockbot.reply_pending</c> event, then a plain <c>RUN_FINISHED</c>. The reply, if one
+    /// comes, is delivered some other way (the AG-UI proxy's notify stream). Only for a host that
+    /// has such a way; <see cref="Finish"/> reports the same turn as <c>RUN_ERROR</c>.
+    /// </summary>
+    public IReadOnlyList<BaseEvent> ReplyPending(TurnResult result) =>
+    [
+        Custom(CustomNames.ReplyPending, new
+        {
+            runId,
+            result.RunStarted,
+            message = result.Error is { Length: > 0 } error ? error : TurnResultText.Describe(result),
+        }),
+        Stamp(new RunFinishedEvent { ThreadId = threadId, RunId = runId }),
+    ];
+
     public BaseEvent RunError(string code, string message) =>
         Stamp(new RunErrorEvent { Code = code, Message = message });
 
@@ -277,7 +351,8 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
         return (messageId, events);
     }
 
-    private BaseEvent Custom(string name, object value, DateTimeOffset? at = null) =>
+    /// <summary>A <c>CUSTOM</c> event whose value is <paramref name="value"/> as camelCase JSON.</summary>
+    public BaseEvent Custom(string name, object value, DateTimeOffset? at = null) =>
         Stamp(new CustomEvent { Name = name, Value = ToElement(value) }, at);
 
     private BaseEvent Stamp(BaseEvent e, DateTimeOffset? at = null)
