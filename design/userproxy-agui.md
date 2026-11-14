@@ -1,9 +1,9 @@
 # AG-UI User Proxy
 
-**Status:** Phases 1 (runs), 2 (notify stream), 3 (MCP questions), 4 (REST extras) and 5 (app
-auth) implemented, 2026-11-14. Phase 6 is not started. See
-[Implementation status](#implementation-status) for what was built and where it differs from this
-design; user documentation is in [`docs/agui.md`](../docs/agui.md).
+**Status:** All six phases implemented, 2026-11-14: runs, the notify stream, MCP questions, the
+REST extras, app auth, and a reference client. See [Implementation status](#implementation-status)
+for what was built and where it differs from this design; user documentation is in
+[`docs/agui.md`](../docs/agui.md).
 
 ## Problem
 
@@ -335,7 +335,7 @@ One PR each.
    *Implemented.*
 5. **App auth.** Bearer tokens, the shared allowlist, CORS. *Implemented.*
 6. **A reference client.** Probably a small Blazor WASM app on `AGUIChatClient` and the notify
-   stream; it can live in this repo as a sample.
+   stream; it can live in this repo as a sample. *Implemented*, under `samples/`.
 
 ## Implementation status
 
@@ -810,6 +810,118 @@ Open after phase 5:
   it, like the notify buffer and the question list.
 - **No rate limit on failed tokens.** Each is a signature check; an ingress can limit them.
 
+### Phase 6: a reference client (implemented)
+
+A sample, under `samples/`, in the solution so CI builds it. It is not a replacement for the
+Blazor Server UI (a non-goal above), and it is not packed, containerized or in the Helm chart.
+
+- **`samples/RockBot.AgUi.Client`** is the transport, a class library with no browser dependency:
+  - `AgUiSse` reads a proxy event stream (a run or the notify stream) into AG-UI events.
+  - `AgUiEventMapper` turns those into `ChatEvent`s for `RockBot.UserProxy.ChatState` (#796).
+    It is to AG-UI events what `BlazorUserFrontend` and `ChatTurnObserver` are to the bus's
+    callbacks.
+  - `AgUiProxyClient` is the HTTP calls, one method each.
+  - `ChatSession` strings them together: it sends turns, keeps the notify stream open (with
+    `Last-Event-ID`, backoff, and a reload on `rockbot.connected` and `rockbot.resync`), and
+    feeds a `ChatStateService`.
+- **`samples/RockBot.AgUi.WasmClient`** is a standalone Blazor WebAssembly app: one page that
+  renders the chat state, a form generated from an `McpQuestionForm`, attachments, an upload, and
+  an optional Google sign-in for app mode.
+- **`samples/RockBot.AgUi.DevHost`** is the proxy's own `Program` behind `WebApplicationFactory`,
+  with the in-process bus in place of RabbitMQ and a scripted demo agent on that bus. It runs the
+  sample locally, and the client's end-to-end tests use it in memory.
+- **`tests/RockBot.AgUi.Client.Tests`** tests the transport without a browser.
+
+Decisions:
+
+1. **The chat state is the shared one.** The sample adds no state model of its own: every AG-UI
+   event becomes `ChatEvent`s, and `ChatStateService.Apply` is the only thing that changes what
+   the page shows. The reducer and its events were not changed. What the wire has and the bus
+   didn't is adapted in the mapper:
+   - *A reply is several events.* The mapper holds a message from `TEXT_MESSAGE_START` to the
+     event that completes it (`RUN_FINISHED` in a run, `rockbot.origin` on the notify stream) and
+     emits the one `TurnEnded` or `ReplyReceived` the reducer expects, with the AG-UI `messageId`
+     as the chat message's id.
+   - *A tool call has no text line.* The bus sends one with each call; the mapper writes it
+     ("Calling web_search…").
+   - *Task lists are state.* A `STATE_SNAPSHOT` becomes a snapshot event per list. A
+     `STATE_DELTA` is read as the one item it adds or replaces, since the reducer keys items by
+     id; no JSON Patch is applied and no state document is kept.
+   - *A run the proxy stopped waiting for* (`rockbot.reply_pending`) is `TurnOutcome.TimedOut`,
+     the chat state's name for the same thing. The session then tells the notify mapper that
+     run's id, because the notify stream's task list for it is keyed `primary` and doesn't say.
+   - *A subagent's result* is closed in its activity log by `content.done` and shown as a
+     message of its own, as the notify stream sends it (phase 2, decision 6). The Blazor UI puts
+     the whole result in the log.
+   - *The origin* is a quoted line at the top of the reply's text, as in the Blazor UI. The chat
+     state has no field for it.
+2. **The streams are parsed with `AGUI.Abstractions`, not read through `AGUIChatClient`.** The
+   notify stream needs each event's SSE id and is not a run, so it needs its own reader either
+   way, and one reader then serves both. The mapping also wants the events themselves (activity,
+   tool calls, state, `CUSTOM rockbot.*`), where `AGUIChatClient` presents a run as chat response
+   updates for an `IChatClient`, replays the conversation with each request, and models questions
+   as interrupts. The reader is `System.Net.ServerSentEvents.SseParser` with the SDK's
+   `AGUIJsonSerializerContext`.
+3. **`fetch`, not `EventSource`, for the notify stream.** Blazor WebAssembly's `HttpClient` is
+   `fetch`: it can send `Authorization` and `Last-Event-ID`, so the stream needs no ticket and
+   reconnects are the client's own (with its own backoff). Tickets are used for what the browser
+   loads by itself: images and links.
+4. **`custom` question mode**, as the Blazor UI works. Forms are answered with
+   `POST /questions/{id}/answer`, and `GET /threads/{id}/questions` is read at start.
+5. **The sample declares only what it renders.** Its Markdown renderer is one small class that
+   encodes everything and then adds a fixed set of tags, so the sample declares text, basic Markdown,
+   headings, code, links and image attachments, and not `HtmlInline`, `SvgInline` or tables. The
+   Blazor project's Markdig and sanitizer were not brought in.
+6. **Nothing needs reflection.** RockBot's payloads are read through a source-generated JSON
+   context, and settings are read key by key, so the app publishes trimmed with no warnings. The
+   client's library is marked trimmable so the analyzers check it on every build.
+   `RockBot.UserProxy.ChatState` and `RockBot.UserProxy.Abstractions` run in the browser as they
+   are.
+7. **The event names are repeated in the client.** `TurnEventMapper.CustomNames` is in
+   `RockBot.UserProxy.AgUi.Events`, which references the bus client, so a browser app can't
+   reference it. The client has its own constants and a test that compares the two lists.
+8. **A dev host instead of a broker.** A client can't be tried without a proxy, and the proxy
+   can't run without a bus. The dev host is the proxy's tests' arrangement (the real `Program`,
+   the in-process bus) with a socket and an agent that follows a script.
+9. **`RockBot.UserProxy.ChatState` is no longer packable.** #796 marked it packable in case the
+   reference client lived outside this repository. It doesn't, and no release branch or tag
+   contains the library, so no package was ever published.
+
+Two changes to the proxy, found by writing the client:
+
+- **`rockbot.origin` has a `sessionId`.** A thread's notify stream also carries the `scheduled`,
+  `scheduled-system` and `a2a-inbound` sessions, and nothing said which one a reply was sent in.
+  A client could not tell a system job's output from the user's own scheduled task, which the
+  Blazor UI shows differently. The property is new; nothing was removed. The CLI's JSON lines get
+  it too, since the event comes from the shared mapper.
+- **History keeps `system` turns as `system` messages.** They are prompts the agent wrote to
+  itself. `AgUiHistoryMapper` returned them as assistant messages, so a client showed them as
+  replies; the Blazor UI leaves them out.
+
+Where the implementation differs from the design above:
+
+1. **Not on `AGUIChatClient`** (decision 2).
+2. **Three projects and a test project, not one app**: the transport is apart from the page so it
+   can be tested without a browser.
+3. **App mode is written but not tested against Google.** The sign-in is Google Identity Services
+   through a few lines of JavaScript, off by default. The token plumbing (a bearer token on every
+   request, tickets for attachments) is tested against a scripted proxy; the sign-in itself needs
+   a real OAuth client.
+
+Not in the sample: saved responses, feedback, clearing the context, MCP sign-in, `interrupt`
+mode, inline HTML previews, and token refresh. Its README lists them.
+
+Open after phase 6:
+
+- **History still can't rebuild what a resync loses** (open question 3). The sample shows it:
+  after a reload, earlier scheduled-task output and origins are gone.
+- **A stored subagent result is a `user` message in history.** A client that knows RockBot can
+  tell by `metadata.rockbot.agentName` (the sample does, through the reducer); a generic one
+  can't.
+- **Reloading the page during a turn cancels it.** The reload closes the run's connection, and
+  the proxy takes a closed run as a cancel. That is the phase 1 open item about cancelling on
+  disconnect, seen from a browser.
+
 ## Testing
 
 **Shared with the CLI.** `rockbot chat --output jsonl` (#797, [`docs/cli.md`](../docs/cli.md))
@@ -853,6 +965,19 @@ un-preflighted cross-site request, every endpoint, `null`, same origin with and 
 termination, the public address, no origin); startup validation; and the
 conformance test once with a bearer token. The allowlist's own tests are in
 `tests/RockBot.UserProxy.Tests`.
+
+**Phase 6 tests** are in `tests/RockBot.AgUi.Client.Tests`, and need no browser. Event streams
+recorded from the proxy (a run with a tool call and a task list, a run that timed out and its
+late reply, a subagent's life and a scheduled report on the notify stream, a question and its
+answer) go through `AgUiEventMapper` to the expected `ChatEvent`s, and through `ChatReducer` to
+the expected `ChatViewState`. The session's logic runs against a scripted `HttpMessageHandler`:
+the order of the first loads, `Last-Event-ID` on a reconnect, a message split across two
+connections, `rockbot.resync`, backoff after `503` and `401`, stopping on `403`, a refused run, a
+run whose connection drops, and a bearer token with tickets. End-to-end tests run the same
+session against the dev host in memory: a turn, unsolicited output, a question answered and
+declined, a second client loading history and the open question, an upload, a reply's image,
+cancel, a timeout and a clear. The sample itself was driven once in Chromium against the dev
+host, as built and as published.
 
 - **Unit.** The `AgentReply` → event mapping and question-mode state are pure functions over
   recorded envelopes. Use `RockBot.Messaging.InProcess` for the proxy service.

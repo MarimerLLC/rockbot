@@ -26,8 +26,8 @@ This page describes what is built so far: runs, the notify stream for output nob
 RockBot's own events), cancelling, history, the plain REST endpoints for everything else a
 RockBot client does (attachments, feedback, saved responses, MCP sign-in, clearing the context,
 agent info), and who may call it: [app auth](#app-auth) with bearer tokens, and [CORS](#cors) for
-browser apps. A reference client is the remaining phase of
-[#794](https://github.com/MarimerLLC/rockbot/issues/794). The full design is in
+browser apps. A small Blazor WebAssembly app in the repository shows a client using all of it; see
+[A reference client](#a-reference-client). The full design is in
 [`design/userproxy-agui.md`](https://github.com/MarimerLLC/rockbot/blob/main/design/userproxy-agui.md).
 
 > **By default the proxy asks nobody who they are** ("network mode"). Whoever can reach it can do
@@ -207,7 +207,7 @@ client falls too far behind (see [Reconnecting](#reconnecting)). Like a run, an 
 
 | What happened | Events |
 |---|---|
-| A reply nobody is waiting for: a scheduled task's output, the agent's answer after a subagent finished, an A2A result, a late reply, the reply to a form answer that no run is waiting for | `TEXT_MESSAGE_START` / `CONTENT` / `END`, `CUSTOM rockbot.attachments` when it has any (each with its `url`), then `CUSTOM rockbot.origin` with `messageId`, `origin` (`channel`, `promptSummary`, `startedAt`, `sessionId`), `source`, and `followsQuestionId` on the reply to a form answer |
+| A reply nobody is waiting for: a scheduled task's output, the agent's answer after a subagent finished, an A2A result, a late reply, the reply to a form answer that no run is waiting for | `TEXT_MESSAGE_START` / `CONTENT` / `END`, `CUSTOM rockbot.attachments` when it has any (each with its `url`), then `CUSTOM rockbot.origin` with `messageId`, `sessionId` (the session the reply was sent in: the thread's own, or `scheduled`, `scheduled-system` or `a2a-inbound`, see below), `origin` (`channel`, `promptSummary`, `startedAt`, `sessionId`: where the work that led to it was started), `source`, and `followsQuestionId` on the reply to a form answer |
 | An MCP server's question, as a form, when no run on the thread took it | `CUSTOM rockbot.mcp_question`: `form` (the [`McpQuestionForm`](https://github.com/MarimerLLC/rockbot/blob/main/src/RockBot.UserProxy.Abstractions/McpQuestionForm.cs)), `text` (the same question as plain text), `interrupt` (the question as an AG-UI interrupt), `sessionId`, `agentName`. Only a thread whose last message asked for forms gets them. See [MCP questions](#mcp-questions). |
 | A question changed state | `CUSTOM rockbot.mcp_question_status`: `sessionId`, `questionId`, `state` (`answered`, `declined`, `expired`, `cancelled`, `interrupted`, `unavailable`, or `rejected`, which leaves it open), `answeredBy` (`user` or `agent`), `reason` |
 | Progress from a subagent, a worker, a remote agent, or a run that timed out | `ACTIVITY_SNAPSHOT`, one activity per source (`messageId` is `notify-progress-<task id>`, or `notify-progress-<agent name>`), each snapshot replacing the last; `TOOL_CALL_*` for tool calls |
@@ -615,6 +615,15 @@ A message's `id` is its position in the thread (`{threadId}-{index}`), which cha
 context is cleared. It is not the `messageId` the run's stream used for the same reply. RockBot's
 own detail is under `metadata.rockbot`. Each attachment also has the `url` of its bytes
 (`"url": "/attachments/chart.png"`), as in `rockbot.attachments`.
+
+Two kinds of message are not what the user typed or the agent answered:
+
+- **`"role": "system"`** is a prompt the agent wrote to itself, such as the note it works from
+  after a subagent finishes. Leave these out of what you show.
+- **A `user` message whose `metadata.rockbot.agentName` names someone other than the agent** is a
+  result the agent stored as input to itself: `subagent-<task id>` or `worker-<task id>` for a
+  subagent's or worker's output, another agent's name for an A2A result. Show it as that
+  source's output, not as the user's words.
 
 `403` for a thread that isn't allowed, and `504` when the agent doesn't answer in time.
 
@@ -1335,3 +1344,34 @@ With [app auth](#app-auth) on, the client sends whatever its `HttpClient` sends,
 there (`DefaultRequestHeaders.Authorization`, or a `DelegatingHandler` that refreshes it). In a
 browser, `EventSource` can't send the header: open the notify stream with a
 [ticket](#access-tickets-post-tickets), or read it with `fetch`.
+
+### A reference client
+
+[`samples/RockBot.AgUi.WasmClient`](https://github.com/MarimerLLC/rockbot/tree/main/samples/RockBot.AgUi.WasmClient)
+is a small Blazor WebAssembly chat app written against this page: runs, the notify stream with
+its reconnect rules, history, MCP questions in `custom` mode, uploads and attachments, and
+(optionally) Google sign-in for app mode. It is a sample to read and copy from, not a supported
+UI; the [Blazor UI](blazor-ui) is still RockBot's own.
+
+It comes in three parts:
+
+- **`samples/RockBot.AgUi.Client`** is the transport, with no browser dependency. It reads both
+  event streams with one parser and maps each AG-UI event to the chat events of
+  [`RockBot.UserProxy.ChatState`](blazor-ui#chat-state-rockbotuserproxychatstate), the state
+  model the Blazor UI uses. A .NET client of another kind (MAUI, a console app) can start from it.
+- **`samples/RockBot.AgUi.WasmClient`** is the page that renders that state.
+- **`samples/RockBot.AgUi.DevHost`** runs this proxy with an in-process message bus and a
+  scripted agent, so a client can be developed with no RabbitMQ, LLM or cluster:
+
+  ```bash
+  dotnet run --project samples/RockBot.AgUi.DevHost       # the proxy, http://localhost:5140
+  dotnet run --project samples/RockBot.AgUi.WasmClient    # the sample, http://localhost:5180
+  ```
+
+To point it at a deployed proxy, set `AgUi:BaseUrl` in the sample's `wwwroot/appsettings.json`
+and add the sample's origin to the proxy's [`AgUi:Cors:AllowedOrigins`](#cors). Published, the
+sample is static files for any web server; it has no image and is not in the Helm chart. The
+sample's
+[README](https://github.com/MarimerLLC/rockbot/blob/main/samples/RockBot.AgUi.WasmClient/README.md)
+has the details, what it leaves out, and the state of its app-mode sign-in (written, not tested
+against Google).
