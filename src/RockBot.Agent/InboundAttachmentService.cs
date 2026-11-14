@@ -23,7 +23,7 @@ internal sealed class InboundAttachmentService(
     /// Largest upload accepted, matching <c>FileSystemOptions.AnalyzeFileMaxBytes</c> — a file
     /// the agent could not hand to a vision model anyway is not worth storing.
     /// </summary>
-    internal const long MaxBytes = 8L * 1024 * 1024;
+    internal const long MaxBytes = AttachmentUploadRequest.MaxBytes;
 
     /// <summary>
     /// What a person may send. Deliberately narrower than the MIME table the outbound gateway

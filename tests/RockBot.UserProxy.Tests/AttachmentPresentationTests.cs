@@ -1,6 +1,4 @@
-using RockBot.UserProxy.Blazor.Services;
-
-namespace RockBot.UserProxy.Blazor.Tests;
+namespace RockBot.UserProxy.Tests;
 
 [TestClass]
 public class AttachmentPresentationTests

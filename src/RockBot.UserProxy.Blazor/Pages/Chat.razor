@@ -475,7 +475,7 @@
     /// Matches the agent's cap. Blazor's OpenReadStream defaults to 512 KB and throws past it,
     /// so this has to be passed explicitly or every real screenshot fails.
     /// </summary>
-    private const long MaxAttachmentBytes = 8L * 1024 * 1024;
+    private const long MaxAttachmentBytes = AttachmentUploadRequest.MaxBytes;
     private ElementReference messagesContainer;
     private ElementReference messageInput;
     private bool IsDarkMode = false;
