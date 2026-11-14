@@ -107,6 +107,7 @@ public sealed class AgUiNotifyEndpointTests
         Assert.AreEqual("The research is done.", Sse.Str(frames[1].Event, "delta"));
         Assert.AreEqual(TurnEventMapper.CustomNames.Origin, frames[3].Name);
         Assert.AreEqual("Research the vendors", frames[3].Value.GetProperty("origin").GetProperty("promptSummary").GetString());
+        Assert.AreEqual(Thread, frames[3].Value.GetProperty("sessionId").GetString());
         Assert.AreEqual(Sse.Str(frames[0].Event, "messageId"), frames[3].Value.GetProperty("messageId").GetString());
 
         // Ids count up from the connected event's, in the hub's epoch.
@@ -216,6 +217,10 @@ public sealed class AgUiNotifyEndpointTests
         Assert.AreEqual("Rocky", frames[0].Value.GetProperty("agentName").GetString());
         Assert.AreEqual(TurnEventMapper.CustomNames.McpSignInStatus, frames[1].Name);
         Assert.AreEqual("Your morning summary.", Sse.Str(frames[3].Event, "delta"));
+        // The thread's stream carries other sessions' output too, so the origin says which
+        // session each reply was sent in: the only way to tell a scheduled task's from a system job's.
+        Assert.AreEqual(TurnEventMapper.CustomNames.Origin, frames[5].Name);
+        Assert.AreEqual("scheduled", frames[5].Value.GetProperty("sessionId").GetString());
         // Nothing was skipped in the numbering either: the other session's reply never got a number.
         CollectionAssert.AreEqual(new long[] { 1, 2, 3, 4, 5, 6 }, frames.Select(f => f.Sequence).ToArray());
     }

@@ -79,6 +79,7 @@ RockBot is one part of a family of projects that work together. Each runs as its
 | `RockBot.UserProxy.Cli` | Console chat interface using Spectre.Console; one-shot mode for scripts, with turn events as AG-UI JSON lines ([`docs/cli.md`](docs/cli.md)) |
 | `RockBot.UserProxy.AgUi` | AG-UI proxy: the agent over HTTP POST and server-sent events, for WASM, mobile and third-party clients ([`docs/agui.md`](docs/agui.md)) |
 | `RockBot.UserProxy.AgUi.Events` | Maps a turn's bus traffic to AG-UI events; shared by the CLI and the AG-UI proxy |
+| `samples/RockBot.AgUi.WasmClient` | Sample: a small Blazor WebAssembly client for the AG-UI proxy, with its transport library and a broker-free dev host ([README](samples/RockBot.AgUi.WasmClient/README.md)) |
 | `McpServer.OpenRouter` | Standalone MCP server exposing OpenRouter account and usage information |
 | `McpServer.TodoApp` | Standalone MCP server providing a persistent to-do list with recurrence support |
 | `ClaudeCodeProxy` | OpenAI-compatible proxy for the Anthropic Messages API — enables use of a Claude Code Max subscription as the agent LLM |

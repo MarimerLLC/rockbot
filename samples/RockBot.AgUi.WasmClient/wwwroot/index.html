@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RockBot AG-UI sample client</title>
+    <base href="/" />
+    <!-- No icon: an empty one, so the browser doesn't ask the host for /favicon.ico. -->
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="css/app.css" />
+</head>
+
+<body>
+    <div id="app">
+        <p class="loading">Loading…</p>
+    </div>
+
+    <div id="blazor-error-ui">
+        Something went wrong in the page.
+        <a href="." class="reload">Reload</a>
+    </div>
+
+    <script>
+        // Keeps the newest message in view; called from Chat.razor after a render that added one.
+        window.rockbotScrollToEnd = () => window.scrollTo({ top: document.body.scrollHeight });
+    </script>
+    <script src="_framework/blazor.webassembly.js"></script>
+</body>
+
+</html>

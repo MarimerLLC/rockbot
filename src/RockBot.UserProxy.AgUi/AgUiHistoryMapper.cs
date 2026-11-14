@@ -10,6 +10,7 @@ namespace RockBot.UserProxy.AgUi;
 internal static class AgUiHistoryMapper
 {
     private const string UserRole = "user";
+    private const string SystemRole = "system";
 
     /// <summary>
     /// One message per turn, in order. A turn's id is <c>{threadId}-{index}</c>: history has no
@@ -39,11 +40,16 @@ internal static class AgUiHistoryMapper
                 },
                 TurnEventMapper.PayloadJson);
 
-            // History holds user turns and the agent's; anything that isn't the user's is shown
-            // as the agent's.
-            messages.Add(string.Equals(turn.Role, UserRole, StringComparison.OrdinalIgnoreCase)
-                ? new AGUIUserMessage { Id = id, Content = turn.Content, Metadata = metadata }
-                : new AGUIAssistantMessage { Id = id, Content = turn.Content, Name = turn.AgentName, Metadata = metadata });
+            // History holds the user's turns, the agent's, and system turns: prompts the agent
+            // wrote to itself (a consolidation after a subagent finished, a feedback note). Those
+            // keep their role, so a client leaves them out, as the Blazor UI does; shown as the
+            // agent's they would read as replies it never gave. Anything else is the agent's.
+            messages.Add(turn.Role.ToLowerInvariant() switch
+            {
+                UserRole => new AGUIUserMessage { Id = id, Content = turn.Content, Metadata = metadata },
+                SystemRole => new AGUISystemMessage { Id = id, Content = turn.Content, Metadata = metadata },
+                _ => new AGUIAssistantMessage { Id = id, Content = turn.Content, Name = turn.AgentName, Metadata = metadata },
+            });
         }
 
         return new MessagesSnapshotEvent

@@ -1,0 +1,54 @@
+@inject ChatSession Session
+
+@* A message's files. An image is an <img>, anything else a link that opens in a new tab; the
+   browser fetches both by itself, so in app mode the address is a ticketed one (the session
+   asks POST /tickets). The proxy serves HTML and SVG sandboxed, and an SVG in <img> runs no script. *@
+
+@if (Attachments is { Count: > 0 })
+{
+    <div class="attachments">
+        @foreach (var attachment in Attachments)
+        {
+            var name = attachment.FileName ?? attachment.Path;
+            @if (!_urls.TryGetValue(attachment.Path, out var url))
+            {
+                <span class="file">@name</span>
+            }
+            else if (attachment.Mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                <a href="@url" target="_blank" rel="noopener noreferrer"><img src="@url" alt="@name" /></a>
+            }
+            else
+            {
+                <a class="file" href="@url" target="_blank" rel="noopener noreferrer">@name</a>
+            }
+        }
+    </div>
+}
+
+@code {
+    private readonly Dictionary<string, string> _urls = new(StringComparer.Ordinal);
+    private IReadOnlyList<AgentAttachment>? _resolved;
+
+    [Parameter]
+    public IReadOnlyList<AgentAttachment>? Attachments { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Attachments is null || ReferenceEquals(Attachments, _resolved))
+            return;
+
+        _resolved = Attachments;
+        foreach (var attachment in Attachments)
+        {
+            try
+            {
+                _urls[attachment.Path] = (await Session.AttachmentUrlAsync(attachment)).ToString();
+            }
+            catch (Exception)
+            {
+                // No ticket (the proxy is unreachable, the token expired): the name is shown without a link.
+            }
+        }
+    }
+}

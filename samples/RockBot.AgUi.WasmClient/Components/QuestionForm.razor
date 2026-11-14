@@ -1,0 +1,173 @@
+@inject ChatSession Session
+
+@* An MCP server's question as a generated form (custom question mode): answered or declined over
+   POST /questions/{id}/answer; the notify stream then reports what became of it. Everything the
+   server wrote (the message, titles, option labels) is untrusted and rendered as text. *@
+
+@if (Message.Question is not { } form)
+{
+    <div class="question"><p>@Message.Content</p></div>
+}
+else
+{
+    <div class="question">
+        <div class="from"><span class="source">@form.ServerName</span> asks <span class="badge">@form.ToolName</span></div>
+        <p class="ask">@form.Message</p>
+
+        @if (McpQuestionState.IsClosed(Message.QuestionState))
+        {
+            <p class="settled">@Settled</p>
+        }
+        else if (Message.IsSubmitting)
+        {
+            <p class="settled">Sending…</p>
+        }
+        else if (DateTimeOffset.UtcNow >= form.ExpiresAt)
+        {
+            <p class="settled">This question has expired.</p>
+        }
+        else
+        {
+            @if (Message.QuestionState == McpQuestionState.Rejected)
+            {
+                <p class="error">The answer was not accepted@(Message.QuestionReason is { Length: > 0 } reason ? $": {reason}" : "."). You can send it again.</p>
+            }
+            @if (_problem is not null)
+            {
+                <p class="error">@_problem</p>
+            }
+
+            @if (_answers!.IsDecision)
+            {
+                var decision = form.Fields[0];
+                <div class="buttons">
+                    <button type="button" class="send" @onclick="() => DecideAsync(decision.Name, true)">@(decision.Title ?? "Yes")</button>
+                    <button type="button" @onclick="() => DecideAsync(decision.Name, false)">No</button>
+                    <button type="button" class="link" @onclick="DeclineAsync">Decline to answer</button>
+                </div>
+            }
+            else
+            {
+                @foreach (var field in form.Fields)
+                {
+                    var id = $"{form.QuestionId}-{field.Name}";
+                    <div class="field">
+                        <label for="@id">@(field.Title ?? field.Name)@(field.Required ? " *" : "")</label>
+                        @switch (field.Kind)
+                        {
+                            case McpQuestionFieldKind.Boolean:
+                                <input id="@id" type="checkbox" checked="@_answers.Flags.GetValueOrDefault(field.Name)"
+                                       @onchange="e => _answers.Flags[field.Name] = e.Value is true" />
+                                break;
+
+                            case McpQuestionFieldKind.SingleSelect:
+                                <select id="@id" value="@_answers.Text.GetValueOrDefault(field.Name)"
+                                        @onchange="e => _answers.Text[field.Name] = e.Value?.ToString() ?? string.Empty">
+                                    <option value="">(choose)</option>
+                                    @foreach (var option in field.Options ?? [])
+                                    {
+                                        <option value="@option.Value">@option.Label</option>
+                                    }
+                                </select>
+                                break;
+
+                            case McpQuestionFieldKind.MultiSelect:
+                                <span class="options">
+                                    @foreach (var option in field.Options ?? [])
+                                    {
+                                        <label>
+                                            <input type="checkbox" checked="@_answers.Choices[field.Name].Contains(option.Value)"
+                                                   @onchange="e => Toggle(field.Name, option.Value, e.Value is true)" />
+                                            @option.Label
+                                        </label>
+                                    }
+                                </span>
+                                break;
+
+                            default:
+                                @* string, number, integer, and any kind a newer agent adds: a text box. *@
+                                <input id="@id" type="@InputType(field)" value="@_answers.Text.GetValueOrDefault(field.Name)"
+                                       @oninput="e => _answers.Text[field.Name] = e.Value?.ToString() ?? string.Empty" />
+                                break;
+                        }
+                        @if (!string.IsNullOrEmpty(field.Description))
+                        {
+                            <small>@field.Description</small>
+                        }
+                    </div>
+                }
+                <div class="buttons">
+                    <button type="button" class="send" @onclick="AnswerAsync">Answer</button>
+                    <button type="button" class="link" @onclick="DeclineAsync">Decline</button>
+                </div>
+            }
+        }
+    </div>
+}
+
+@code {
+    private QuestionAnswers? _answers;
+    private string? _questionId;
+    private string? _problem;
+
+    /// <summary>The chat message that carries the question (<see cref="MessageCategory.McpQuestion"/>).</summary>
+    [Parameter, EditorRequired]
+    public ChatMessage Message { get; set; } = null!;
+
+    private string Settled => Message.QuestionState switch
+    {
+        McpQuestionState.Answered => Message.QuestionAnsweredBy == "agent" ? "Answered by the agent." : "Answered.",
+        McpQuestionState.Declined => "Declined.",
+        McpQuestionState.Expired => "This question has expired.",
+        McpQuestionState.Cancelled or McpQuestionState.Interrupted => "The question was withdrawn.",
+        McpQuestionState.Unavailable => "The question is no longer open.",
+        var other => $"Closed ({other}).",
+    };
+
+    protected override void OnParametersSet()
+    {
+        // What the user typed survives the re-renders every chat event causes: the values are
+        // only rebuilt for a different question.
+        if (Message.Question is { } form && form.QuestionId != _questionId)
+        {
+            _questionId = form.QuestionId;
+            _answers = new QuestionAnswers(form);
+            _problem = null;
+        }
+    }
+
+    private void Toggle(string field, string value, bool chosen)
+    {
+        if (chosen)
+            _answers!.Choices[field].Add(value);
+        else
+            _answers!.Choices[field].Remove(value);
+    }
+
+    private async Task AnswerAsync()
+    {
+        if (_answers!.Build(out _problem) is { } answers)
+            await Session.AnswerAsync(_questionId!, answers);
+    }
+
+    private Task DecideAsync(string field, bool value)
+    {
+        _answers!.Flags[field] = value;
+        return AnswerAsync();
+    }
+
+    private Task DeclineAsync() => Session.AnswerAsync(_questionId!, answers: null, decline: true);
+
+    private static string InputType(McpQuestionField field) => field.Kind switch
+    {
+        McpQuestionFieldKind.Number or McpQuestionFieldKind.Integer => "number",
+        _ => field.Format switch
+        {
+            "email" => "email",
+            "uri" => "url",
+            "date" => "date",
+            "date-time" => "datetime-local",
+            _ => "text",
+        },
+    };
+}

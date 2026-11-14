@@ -308,7 +308,10 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
     {
         var (messageId, events) = TextMessage(reply);
         // followsQuestionId: set on the agent's reply to a form answer, so a consumer can pair them.
-        events.Add(Custom(CustomNames.Origin, new { messageId, reply.Origin, reply.Source, reply.FollowsQuestionId }));
+        // sessionId: the session the reply was sent in. Nothing else on the stream says, and a
+        // consumer needs it to tell a system job's output (scheduled-system) from the user's own
+        // scheduled task, and an inbound A2A notification from the agent's own answer.
+        events.Add(Custom(CustomNames.Origin, new { messageId, reply.SessionId, reply.Origin, reply.Source, reply.FollowsQuestionId }));
         return events;
     }
 

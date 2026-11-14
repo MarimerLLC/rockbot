@@ -5,7 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>RockBot.UserProxy.ChatState</RootNamespace>
-    <IsPackable>true</IsPackable>
+    <!-- Not a package: every front end that uses it (the Blazor Server UI, the AG-UI reference
+         client under samples/) is in this repository and references the project. -->
     <Description>Event-driven chat state for RockBot user proxy front ends: chat events, a pure reducer and an observable store, with no UI framework dependency.</Description>
   </PropertyGroup>
 

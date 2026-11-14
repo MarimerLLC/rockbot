@@ -1,0 +1,313 @@
+@implements IDisposable
+@inject ChatSession Session
+@inject ChatStateService ChatState
+@inject GoogleSignIn SignIn
+@inject ClientSettings Settings
+@inject IJSRuntime JS
+
+@* The whole sample: one page that renders the shared chat state (RockBot.UserProxy.ChatState)
+   and calls the session for everything the user does. It never changes the state itself, other
+   than through ChatState.Apply for a purely local action (expanding a message). *@
+
+@{
+    var state = ChatState.State;
+    var busy = ChatState.IsBusy;
+}
+
+<header class="top">
+    <h1>@(state.AgentName ?? "RockBot") <small>@state.AgentVersion</small></h1>
+    <span class="pill conn-@Session.Connection.ToString().ToLowerInvariant()" title="@Session.ConnectionError">@ConnectionText</span>
+    @foreach (var indicator in state.ActiveStatusIndicators)
+    {
+        <span class="pill working">@indicator.AgentName: @indicator.LatestContent</span>
+    }
+    <span class="spacer"></span>
+    <span class="where">@Settings.ProxyAddress · @Settings.ThreadId</span>
+    @if (SignIn.IsEnabled && SignIn.IsSignedIn)
+    {
+        <span class="who">@SignIn.Email</span>
+        <button type="button" class="link" @onclick="SignOutAsync">Sign out</button>
+    }
+</header>
+
+@if (NeedsSignIn)
+{
+    <section class="signin">
+        @if (string.IsNullOrEmpty(Settings.GoogleClientId))
+        {
+            <p class="error">
+                App mode is on (<code>AgUi:Auth:Enabled</code>) but <code>AgUi:Auth:GoogleClientId</code> is empty.
+                Set it in <code>wwwroot/appsettings.json</code>.
+            </p>
+        }
+        else
+        {
+            <p>Sign in with an account the proxy allows.</p>
+            <div @ref="_signInButton"></div>
+        }
+    </section>
+}
+else
+{
+    @if (Session.Connection != NotifyConnection.Connected && Session.ConnectionError is { } connectionError)
+    {
+        <p class="banner">Not connected to the proxy: @connectionError</p>
+    }
+
+    <main class="messages">
+        @foreach (var message in state.Messages)
+        {
+            <article @key="message.MessageId" class="message @CssClass(message)">
+                @if (message.Category == MessageCategory.McpQuestion)
+                {
+                    <QuestionForm Message="message" />
+                }
+                else if (message.IsActivityLog)
+                {
+                    var open = state.IsActivityLogOpen(message.MessageId);
+                    <details class="activity">
+                        <summary>
+                            @if (open)
+                            {
+                                <span class="spinner" aria-label="working"></span>
+                            }
+                            <span class="source">@(message.AgentName ?? state.AgentName ?? "agent")</span>
+                            @message.Content
+                        </summary>
+                        <ul>
+                            @foreach (var entry in message.ActivityLogEntries)
+                            {
+                                <li class="@(entry.ToolCall?.Phase)">
+                                    @entry.Content
+                                    @if (entry.ToolCall is { Phase: ToolCallPhase.Finished, Result: { Length: > 0 } result })
+                                    {
+                                        <span class="detail"> → @result</span>
+                                    }
+                                </li>
+                            }
+                        </ul>
+                    </details>
+                }
+                else if (message.IsFromUser || message.IsError)
+                {
+                    @* The user's own words, and error text: shown as text, never as markup. *@
+                    <div class="text">@message.Content</div>
+                    <AttachmentList Attachments="message.Attachments" />
+                }
+                else
+                {
+                    <div class="from">
+                        <span class="source">@(message.AgentName ?? state.AgentName ?? "agent")</span>
+                        @if (Badge(message.Category) is { } badge)
+                        {
+                            <span class="badge">@badge</span>
+                        }
+                        <button type="button" class="link" @onclick="() => ChatState.Apply(new MessageExpandToggled(message.MessageId))">
+                            @(message.IsExpanded ? "collapse" : "expand")
+                        </button>
+                    </div>
+                    @if (message.IsExpanded)
+                    {
+                        @* Markdown through SafeMarkdown, which encodes everything first: HTML in a
+                           reply is shown as text. The sample doesn't declare HtmlInline or SvgInline. *@
+                        <div class="markdown">@((MarkupString)SafeMarkdown.ToHtml(message.Content))</div>
+                        <AttachmentList Attachments="message.Attachments" />
+                    }
+                    else
+                    {
+                        <div class="preview">@Preview(message.Content)</div>
+                    }
+                }
+            </article>
+        }
+
+        @if (busy)
+        {
+            <p class="thinking"><span class="spinner"></span> @(state.ThinkingMessage ?? "Working…")</p>
+        }
+    </main>
+
+    @if (state.TaskLists.Count > 0)
+    {
+        <aside class="plans">
+            @foreach (var plan in state.TaskLists.Values.OrderBy(p => p.Key == ReplySourceKind.Primary ? 0 : 1))
+            {
+                <section class="plan">
+                    <h2>@(plan.Key == ReplySourceKind.Primary ? "Plan" : $"Plan of {plan.Source.Kind} {plan.Key}") <small>@plan.CompletedCount/@plan.Items.Count</small></h2>
+                    <ul>
+                        @foreach (var item in plan.Items)
+                        {
+                            <li class="@item.Status">@item.Description</li>
+                        }
+                    </ul>
+                </section>
+            }
+        </aside>
+    }
+
+    <footer class="composer">
+        @if (_pending.Count > 0 || _uploadError is not null)
+        {
+            <div class="pending">
+                @foreach (var file in _pending)
+                {
+                    <span class="pill">@(file.FileName ?? file.Path) <button type="button" class="link" @onclick="() => _pending.Remove(file)">remove</button></span>
+                }
+                @if (_uploadError is not null)
+                {
+                    <span class="error">@_uploadError</span>
+                }
+            </div>
+        }
+        <form @onsubmit="SendAsync">
+            <input type="text" class="input" placeholder="Message the agent" autocomplete="off"
+                   @bind="_text" @bind:event="oninput" disabled="@busy" />
+            <label class="attach">
+                Attach
+                <InputFile OnChange="UploadAsync" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,application/pdf" disabled="@_uploading" />
+            </label>
+            <button type="submit" class="send" disabled="@(busy || _uploading || !HasSomethingToSend)">Send</button>
+            @if (busy)
+            {
+                <button type="button" class="cancel" @onclick="Session.CancelAsync">Cancel</button>
+            }
+        </form>
+    </footer>
+}
+
+@code {
+    private readonly List<AgentAttachment> _pending = [];
+    private ElementReference _signInButton;
+    private string _text = "";
+    private string? _uploadError;
+    private bool _uploading;
+    private bool _signInShown;
+    private int _shownMessages;
+
+    private bool NeedsSignIn => SignIn.IsEnabled && !SignIn.IsSignedIn;
+
+    private bool HasSomethingToSend => !string.IsNullOrWhiteSpace(_text) || _pending.Count > 0;
+
+    private string ConnectionText => Session.Connection switch
+    {
+        NotifyConnection.Connected => "connected",
+        NotifyConnection.Connecting => "connecting…",
+        NotifyConnection.Reconnecting => "reconnecting…",
+        _ => "not connected",
+    };
+
+    protected override void OnInitialized()
+    {
+        ChatState.OnStateChanged += Refresh;
+        Session.ConnectionChanged += Refresh;
+        SignIn.Changed += OnSignInChanged;
+
+        // Network mode: nothing to wait for. App mode: the stream needs a token first.
+        if (!SignIn.IsEnabled)
+            Session.Start();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Google draws its button into an element of the sign-in panel, which is only on the page
+        // while there is no valid token: draw it each time the panel comes back (a token expired).
+        if (!NeedsSignIn)
+        {
+            _signInShown = false;
+        }
+        else if (!_signInShown && !string.IsNullOrEmpty(Settings.GoogleClientId))
+        {
+            _signInShown = true;
+            await SignIn.ShowAsync(_signInButton);
+        }
+
+        var count = ChatState.State.Messages.Count;
+        if (count != _shownMessages)
+        {
+            _shownMessages = count;
+            await JS.InvokeVoidAsync("rockbotScrollToEnd");
+        }
+    }
+
+    private void Refresh() => InvokeAsync(StateHasChanged);
+
+    private void OnSignInChanged()
+    {
+        if (SignIn.IsSignedIn)
+            Session.Start();
+        Refresh();
+    }
+
+    private Task SignOutAsync() => SignIn.SignOutAsync();
+
+    private async Task SendAsync()
+    {
+        if (!HasSomethingToSend || ChatState.IsBusy)
+            return;
+
+        var text = _text.Trim();
+        var files = _pending.ToList();
+        _text = "";
+        _pending.Clear();
+        _uploadError = null;
+
+        // Returns when the run has ended; the page updates from the chat state as events arrive.
+        await Session.SendAsync(text, files);
+    }
+
+    private async Task UploadAsync(InputFileChangeEventArgs change)
+    {
+        _uploadError = null;
+        _uploading = true;
+        try
+        {
+            var file = change.File;
+            // The proxy refuses anything over 8 MB; don't read more than that into memory.
+            await using var stream = file.OpenReadStream(maxAllowedSize: AttachmentUploadRequest.MaxBytes);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer);
+            _pending.Add(await Session.UploadAsync(file.Name, file.ContentType, buffer.ToArray()));
+        }
+        catch (Exception ex)
+        {
+            // Too large, a type the proxy or the agent doesn't take, or the proxy is unreachable.
+            _uploadError = $"Could not attach the file: {ex.Message}";
+        }
+        finally
+        {
+            _uploading = false;
+        }
+    }
+
+    private static string CssClass(ChatMessage message) => message switch
+    {
+        { IsFromUser: true } => "user",
+        { IsError: true } => "error",
+        { IsActivityLog: true } => "log",
+        { Category: MessageCategory.McpQuestion } => "question",
+        { Category: MessageCategory.PrimaryFinal } => "agent",
+        _ => "agent other",
+    };
+
+    private static string? Badge(MessageCategory category) => category switch
+    {
+        MessageCategory.SubagentActivity => "subagent result",
+        MessageCategory.A2AActivity => "from another agent",
+        MessageCategory.ScheduledUser => "scheduled task",
+        MessageCategory.ScheduledSystem => "system job",
+        _ => null,
+    };
+
+    private static string Preview(string content)
+    {
+        var line = content.Split('\n').FirstOrDefault(l => !string.IsNullOrWhiteSpace(l) && !l.StartsWith('>')) ?? "";
+        return line.Length > 120 ? line[..120] + "…" : line;
+    }
+
+    public void Dispose()
+    {
+        ChatState.OnStateChanged -= Refresh;
+        Session.ConnectionChanged -= Refresh;
+        SignIn.Changed -= OnSignInChanged;
+    }
+}

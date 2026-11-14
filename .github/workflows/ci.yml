@@ -5,11 +5,13 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'samples/**'
       - '*.slnx'
   pull_request:
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'samples/**'
       - '*.slnx'
 
 jobs:
