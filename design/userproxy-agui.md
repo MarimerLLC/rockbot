@@ -1,6 +1,7 @@
 # AG-UI User Proxy
 
-**Status:** Phase 1 (runs) implemented, 2026-11-14. Phases 2 to 6 are not started. See
+**Status:** Phases 1 (runs) and 2 (notify stream) implemented, 2026-11-14. Phases 3 to 6 are not
+started. See
 [Implementation status](#implementation-status) for what was built and where it differs from this
 design; user documentation is in [`docs/agui.md`](../docs/agui.md).
 
@@ -322,7 +323,7 @@ One PR each.
 
 1. **Runs.** Project, hosting, `POST /agui` (run, progress, final text, cancel, errors), `GET
    /threads/{id}/messages`, network-mode auth, Helm chart, Dockerfile. *Implemented.*
-2. **Notify stream.** Routing frontend, ring buffer, `Last-Event-ID`, resync.
+2. **Notify stream.** Routing frontend, ring buffer, `Last-Event-ID`, resync. *Implemented.*
 3. **MCP questions.** Both modes, with `responseSchema` built from `McpQuestionField`.
 4. **REST extras.** Attachments, feedback, saved responses, MCP sign-in, clear context, agent info.
 5. **App auth.** Bearer tokens, the shared allowlist, CORS.
@@ -348,9 +349,9 @@ Where the implementation differs from the design above:
 
 1. **Timeouts.** The design's long run timeout followed by `CUSTOM rockbot.reply_pending` assumed
    `SendAsync`. The proxy uses `SendTurnAsync` (#795), so a run lives for as long as the agent sends
-   heartbeats, up to `MaxTurnDuration`. A run that is lost or capped ends with `RUN_ERROR`
-   (`agent_lost` or `timeout`), as it does in `rockbot chat --output jsonl`. `reply_pending` only
-   helps once the notify stream can deliver the late reply, so it is left to phase 2.
+   heartbeats, up to `MaxTurnDuration`. In phase 1 a run that was lost or capped ended with
+   `RUN_ERROR` (`agent_lost` or `timeout`), as it does in `rockbot chat --output jsonl`. Phase 2
+   changed the timed-out case to `reply_pending`; see below.
 2. **Ephemeral queues.** The design says `EphemeralQueues: false`. A Deployment's pod name, and
    with it `ProxyId`, changes on every rollout, so durable queues would pile up on the broker. The
    proxy sets `EphemeralQueues = true`. Nothing is lost: a new pod has a new id and would never read
@@ -365,10 +366,10 @@ Where the implementation differs from the design above:
    bus).
 5. **Shutdown.** A proxy that is stopping ends its open runs with `RUN_ERROR` code `proxy_stopping`
    and does not cancel the session. Only a client abort cancels.
-6. **Unsolicited traffic is dropped.** Until phase 2 the proxy's `IUserFrontend` logs and drops
-   everything that isn't a run's own correlated traffic. That includes subagent lifecycle events
-   for the run's session, which the CLI does put in its stream. Because nothing can arrive late, the
-   proxy doesn't use the CLI's settle wait before the terminal event.
+6. **Runs carry only their own traffic.** A run's stream has the turn's correlated traffic and
+   nothing else. Subagent lifecycle events for the run's session, which the CLI does put in its
+   stream, are not in it; since phase 2 they are on the notify stream. Because nothing can arrive
+   late, the proxy doesn't use the CLI's settle wait before the terminal event.
 7. **SSE is written directly.** The proxy writes `data: {json}` frames itself and references only
    `AGUI.Abstractions`, not `AGUI.Formatting`. `AGUI.Client` is a test-only reference.
 8. **Multimodal input.** A user message's image and document parts are dropped; only its text is
@@ -378,6 +379,87 @@ Open after phase 1: aborting a request cancels **all** in-flight work for the th
 every client shares one thread. A phone that drops its connection mid-run therefore cancels the turn.
 That follows this design and the AG-UI convention. If it proves too aggressive for mobile, an
 opt-out (say `AgUi:CancelOnDisconnect`) is a small follow-up.
+
+### Phase 2: the notify stream (implemented)
+
+- **`GET /agui/notify?threadId=`** serves the thread's unsolicited output as server-sent events.
+  Each has an `id` and one AG-UI event as `data`, written by the same serializer as a run's.
+- **`AgUiUserFrontend`** is now the routing frontend: every `IUserFrontend` callback is mapped to
+  events and published to the threads it concerns.
+- **`NotifyHub`** holds, for each allowed thread, the sequence, the ring buffer and the subscribers.
+- **`SessionRouting`** (shared library) holds the session-matching rule that was in the CLI's
+  `JsonLinesFrontend`, and the list of sessions that go to every thread.
+- **Long turns.** A run that ends as `TimedOut` now ends with `CUSTOM rockbot.reply_pending` and a
+  plain `RUN_FINISHED`. `agent_lost` is still `RUN_ERROR`. The CLI is unchanged: it has no notify
+  stream, so it still reports `RUN_ERROR` with code `timeout`.
+
+Decisions:
+
+1. **AG-UI event JSON on the notify stream** (open question 1). One parser serves a run and the
+   notify stream. What AG-UI has no event for is `CUSTOM rockbot.*`.
+2. **Event ids are `{epoch}-{sequence}`.** The sequence counts up from 1 for each thread. The epoch
+   is random for each proxy process. A bare number would collide after a restart: the new process
+   also has an event 1, and a client's old `Last-Event-ID` would be taken for a position in the new
+   sequence, silently skipping or repeating events. With the epoch, an id from another process is
+   recognised and answered with `rockbot.resync` (`reason: "unknown"`); an id older than the buffer
+   gets `reason: "expired"`. Clients treat the id as opaque.
+3. **`rockbot.connected`.** A connection without `Last-Event-ID` starts with this event, whose id is
+   the stream's position. Without it a client has no id until the first real event, and a drop
+   before then would lose whatever happened in between. It and `rockbot.resync` take no sequence
+   number: they belong to one connection, not to the thread's history.
+4. **No gap, no duplicate.** Subscribing computes the replay and registers the subscriber under the
+   lock that numbers events, so every event is either in the replay or delivered live, never both
+   or neither.
+5. **Slow clients are dropped.** Each subscriber has a bounded queue (256 events, and never less
+   than a whole buffer, which a reconnect is handed at once). The bus's thread only ever does a
+   non-blocking write to it. When it is full the subscriber is removed and its stream ended; the
+   client reconnects with `Last-Event-ID` and replays. The alternative, discarding events for that
+   client, would leave a gap it can't detect.
+6. **A subagent's completion is its result.** `DisplayStatusAsync` with `IsCompletion` is what
+   `SubagentResultHandler` sends when a subagent finishes: the subagent's whole output, non-final.
+   The Blazor UI adds it to the subagent's activity log and closes the log; the CLI emits it as a
+   message. The notify stream does both, because both are true of what the agent sends: an
+   `ACTIVITY_SNAPSHOT` with `content.done` closes the activity (the design's table), and the output
+   follows as a text message with `subagentRunId` and `rockbot.origin` (it is a result, often long,
+   not a status line). The agent's own synthesis arrives later as a separate final reply.
+7. **Task lists are always snapshots.** The run mapper sends `STATE_DELTA` patches. On a stream a
+   client can join at any event, a patch may refer to a list the client never received, so the
+   notify stream sends the whole `STATE_SNAPSHOT` each time. A finished subagent's list is removed,
+   so the state doesn't grow for as long as the proxy runs.
+8. **Runs stay correlated-only.** Broadcast events are not copied into an open run. Nothing a
+   run-only client needs is lost by that today: a run's reply, progress, tool calls and task list
+   are all correlated. What a run-only client doesn't see is what it never could (unsolicited
+   output), plus MCP question forms, which the bridge broadcasts; those are phase 3's subject.
+9. **More callbacks than the table lists.** Besides the table's rows, the frontend maps subagent
+   lifecycle (`SUBAGENT_*`), subagent task lists (`STATE_SNAPSHOT`), run events for a turn the proxy
+   stopped waiting for (`rockbot.agent_run_started`, `rockbot.heartbeat`, `rockbot.run_finished`,
+   each with its `runId`) and the agent's active-work broadcast (`rockbot.active_work`).
+
+Where the implementation differs from the design above:
+
+1. **Progress is `ACTIVITY_SNAPSHOT` and `TOOL_CALL_*`**, not `ACTIVITY_DELTA`, as in runs. The
+   activity is keyed by the subagent's or worker's task id when the reply has one, else by
+   `AgentName`.
+2. **`a2a-inbound/<context id>`** sessions are treated like `a2a-inbound`. The Blazor UI matches the
+   bare prefix `a2a-inbound`; the proxy requires the exact id or the `/` form, so an allowed thread
+   that merely starts with those letters is still its own thread.
+3. **Only allowed threads have a stream.** Traffic for any other session (`blazor-session`, a CLI
+   session) is dropped, where the Blazor UI shows everything it hears.
+4. **A dropped client's connection may be reset.** The proxy stops in the middle of a write, so the
+   stream doesn't end cleanly. The client treats it like any other drop.
+
+Open after phase 2:
+
+- **A late reply doesn't say which run it answers.** `IUserFrontend.DisplayReplyAsync` gets the
+  reply without its correlation id, so the text message on the notify stream can't carry the
+  `runId` of the run that ended with `reply_pending`. A client can pair them by order, or by the
+  `rockbot.run_finished` event that follows. Passing the correlation id through the frontend
+  interface would fix it.
+- **A narrow race in `UserProxyService`.** A reply that arrives after a turn has timed out but
+  before the turn is removed from the pending table completes a turn nobody is reading, and is
+  lost. The Blazor UI has the same window. It is a few instructions wide.
+- **Notify state and run state are separate documents.** Both use `STATE_SNAPSHOT`. A client has to
+  keep them apart (see `docs/agui.md`).
 
 ## Testing
 
@@ -391,6 +473,11 @@ and origins as `CUSTOM rockbot.*` events. The mapping is `TurnEventMapper`, now 
 pure functions, the endpoints through `WebApplicationFactory` with the in-process bus and a fake
 agent, and a conformance test that drives `POST /agui` with `AGUIChatClient`.
 
+**Phase 2 tests** are in the same project: the hub (ordering, both bounds, replay, resync, dropped
+subscribers, and publishers racing reconnecting subscribers) and the routing as pure tests; the
+notify endpoint through the test host, with the fake agent publishing on the broadcast topics; and
+one test over a real socket for a client that stops reading.
+
 - **Unit.** The `AgentReply` → event mapping and question-mode state are pure functions over
   recorded envelopes. Use `RockBot.Messaging.InProcess` for the proxy service.
 - **Conformance.** Drive `POST /agui` with `AGUI.Client`'s `AGUIChatClient` in an integration test,
@@ -400,14 +487,38 @@ agent, and a conformance test that drives `POST /agui` with `AGUIChatClient`.
 
 ## Open questions
 
-1. **The notify stream's shape.** Is reusing AG-UI event JSON outside a run the right call, or does
-   it confuse clients that validate streams strictly? The alternative is plain RockBot JSON
-   (`AgentReply` and friends), which is simpler and honest about not being AG-UI.
+1. **The notify stream's shape.** *Decided: AG-UI event JSON.* Is reusing AG-UI event JSON outside
+   a run the right call, or does it confuse clients that validate streams strictly? The alternative
+   is plain RockBot JSON (`AgentReply` and friends), which is simpler and honest about not being
+   AG-UI.
 2. **Interrupt as default.** Should `interrupt` be the default question mode? It's what generic
    clients expect, but blocking new input is a real UX regression compared with Blazor.
 3. **What history replays.** Does conversation history include unsolicited replies (subagent
    results, scheduled tasks) with enough metadata to rebuild `ReplyOrigin` on reload? If not,
    `rockbot.resync` loses anchors.
+
+   *Answered (2026-11-14, from the agent's code): some of the replies, and none of the origin.*
+   `ConversationHistoryRequestHandler` returns the session's `ConversationTurn`s, which have a role,
+   content, timestamp, `AgentName` and attachments. There is no origin, no `ReplySource` and no
+   message id.
+   - **Replies in the thread's own session are there.** A subagent's result is stored as a
+     synthetic *user* turn (`[Subagent task <id> completed]: …`) with `AgentName` `subagent-<id>`,
+     and the agent's synthesis as an assistant turn (`SubagentResultHandler`). A2A results and MCP
+     task results are stored the same way. The kind of source can be guessed from the `AgentName`
+     prefix, as `ChatReducer.CategorizeHistoryTurn` does; `AgUiHistoryMapper` doesn't do that yet,
+     so those synthetic turns come back as user messages.
+   - **`ReplyOrigin` can't be rebuilt.** Its channel, prompt summary and start time live in the
+     agent's `SessionOriginStore` and travel only on the live reply.
+   - **Broadcast-session output isn't there at all.** A scheduled task replies in the `scheduled`
+     or `scheduled-system` session and writes nothing to the thread's conversation memory, and
+     inbound A2A notifications are in `a2a-inbound`. A user's scheduled-task reports are kept in
+     the saved-response archive (#418), which phase 4's `/saved` endpoints will expose.
+
+   So `rockbot.resync` does lose anchors, and loses scheduled and inbound A2A output outright. The
+   buffer (200 events, 24 hours) is what keeps that rare. Closing the gap needs an agent-side change:
+   `Origin` and `Source` on `ConversationTurn` (additive under `design/schema-migrations.md`), and
+   either history for the broadcast sessions or a client that reads the saved-response archive
+   after a resync.
 4. **One thread or many.** Should the proxy allow more than one thread id (say, one per device)?
    That's cheap for the proxy, but every extra session splits history and working memory on the
    agent side.

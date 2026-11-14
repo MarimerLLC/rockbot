@@ -26,16 +26,18 @@ builder.Services.AddUserProxy(opts =>
         && maxTurn > TimeSpan.Zero)
         opts.MaxTurnDuration = maxTurn;
 });
-builder.Services.AddSingleton<IUserFrontend, AgUiUserFrontend>();
-
 var agUiOptions = new AgUiOptions();
 builder.Configuration.GetSection(AgUiOptions.SectionName).Bind(agUiOptions);
 builder.Services.AddSingleton(agUiOptions);
 builder.Services.AddSingleton<AgUiRunRegistry>();
 
+// Everything that isn't a run's own traffic goes through the frontend to the notify stream.
+builder.Services.AddSingleton(sp => new NotifyHub(agUiOptions, logger: sp.GetRequiredService<ILogger<NotifyHub>>()));
+builder.Services.AddSingleton<IUserFrontend, AgUiUserFrontend>();
+
 var app = builder.Build();
 
-// No authentication and no CORS: this phase (#794, phase 1) is for a private network such as a
+// No authentication and no CORS yet (#794, phase 5): the proxy is for a private network such as a
 // tailnet, where whoever can reach the port is allowed in. See docs/agui.md.
 app.MapAgUi();
 

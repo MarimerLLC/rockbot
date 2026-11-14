@@ -20,7 +20,7 @@ internal sealed class AgUiRunRegistry
     public void Finish(string runId) => _active.TryRemove(runId, out _);
 }
 
-/// <summary>The proxy's HTTP surface for phase 1 of #794: runs, cancel, history and health.</summary>
+/// <summary>The proxy's HTTP surface (#794): runs, the notify stream, cancel, history and health.</summary>
 internal static class AgUiEndpoints
 {
     /// <summary>How long a cancel request sent after the client went away may take.</summary>
@@ -32,6 +32,7 @@ internal static class AgUiEndpoints
     public static IEndpointRouteBuilder MapAgUi(this IEndpointRouteBuilder app)
     {
         app.MapPost("/agui", RunAsync);
+        app.MapGet("/agui/notify", NotifyAsync);
         app.MapPost("/threads/{id}/cancel", CancelAsync);
         app.MapGet("/threads/{id}/messages", MessagesAsync);
 
@@ -113,13 +114,7 @@ internal static class AgUiEndpoints
         HttpContext context, UserProxyService proxy, AgUiOptions options, UserMessage message, string runId,
         CancellationToken stopping, ILogger logger)
     {
-        var response = context.Response;
-        response.StatusCode = StatusCodes.Status200OK;
-        response.ContentType = "text/event-stream";
-        response.Headers.CacheControl = "no-cache";
-        // Tells nginx (and proxies that follow its convention) not to buffer the stream.
-        response.Headers["X-Accel-Buffering"] = "no";
-        context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+        var response = StartEventStream(context);
 
         // The emitter is called from the bus's message-handling thread; the channel moves its
         // events to this request, which alone writes the response.
@@ -136,7 +131,8 @@ internal static class AgUiEndpoints
 
         try
         {
-            await PumpAsync(events.Reader, response, options.KeepAliveInterval, clientGone.Token);
+            await PumpAsync(events.Reader, response, options.KeepAliveInterval,
+                e => $"data: {AgUiJson.Serialize(e)}\n\n", clientGone.Token);
         }
         catch (OperationCanceledException)
         {
@@ -173,7 +169,14 @@ internal static class AgUiEndpoints
                 stop);
 
             logger.LogDebug("Run {RunId} on thread {ThreadId} ended as {Outcome}", emitter.RunId, emitter.ThreadId, result.Outcome);
-            emitter.Finish(result);
+
+            // Timed out: this proxy stopped waiting, but the agent may still be working. Its
+            // reply then arrives uncorrelated and goes to the notify stream, so the run ends
+            // normally and says so. Every other outcome is final.
+            if (result.Outcome == TurnResultOutcome.TimedOut)
+                emitter.FinishReplyPending(result);
+            else
+                emitter.Finish(result);
         }
         catch (OperationCanceledException) when (clientGone.IsCancellationRequested)
         {
@@ -210,11 +213,86 @@ internal static class AgUiEndpoints
     }
 
     /// <summary>
-    /// Writes events as server-sent events until the channel completes, with an SSE comment
-    /// whenever nothing was written for <paramref name="keepAlive"/>.
+    /// <c>GET /agui/notify?threadId=</c>: the thread's unsolicited output as server-sent events,
+    /// each an AG-UI event with an <c>id</c>. Not a run: there is no <c>RUN_STARTED</c>, and the
+    /// stream ends only when the client goes away, the proxy stops, or the client falls so far
+    /// behind that it is dropped. A client that sends the last id it saw (<c>Last-Event-ID</c>, or
+    /// <c>lastEventId</c> in the query for one that can't set headers) gets what it missed first.
     /// </summary>
-    private static async Task PumpAsync(
-        ChannelReader<BaseEvent> events, HttpResponse response, TimeSpan keepAlive, CancellationToken ct)
+    private static async Task NotifyAsync(
+        HttpContext context,
+        NotifyHub hub,
+        AgUiOptions options,
+        IHostApplicationLifetime lifetime,
+        ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger("RockBot.UserProxy.AgUi.Notify");
+
+        var threadId = context.Request.Query["threadId"].ToString();
+        if (string.IsNullOrEmpty(threadId))
+        {
+            await RefuseAsync(context, StatusCodes.Status400BadRequest, "The threadId query parameter is required.");
+            return;
+        }
+
+        if (!options.IsThreadAllowed(threadId))
+        {
+            await RefuseAsync(context, StatusCodes.Status403Forbidden, $"Thread '{threadId}' is not allowed.");
+            return;
+        }
+
+        var lastEventId = context.Request.Headers["Last-Event-ID"].ToString();
+        if (string.IsNullOrEmpty(lastEventId))
+            lastEventId = context.Request.Query["lastEventId"].ToString();
+
+        using var subscription = hub.Subscribe(threadId, lastEventId);
+        if (subscription is null)
+        {
+            await RefuseAsync(context, StatusCodes.Status403Forbidden, $"Thread '{threadId}' is not allowed.");
+            return;
+        }
+
+        var response = StartEventStream(context);
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(
+            context.RequestAborted, lifetime.ApplicationStopping, subscription.Dropped);
+        try
+        {
+            await PumpAsync(subscription.Reader, response, options.KeepAliveInterval,
+                frame => $"id: {frame.Id}\ndata: {frame.Json}\n\n", stop.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // The client went away, the proxy is stopping, or the subscriber was dropped.
+        }
+        catch (IOException ex)
+        {
+            logger.LogDebug(ex, "Writing the notify stream of thread {ThreadId} failed", threadId);
+        }
+
+        if (subscription.IsDropped)
+            logger.LogInformation("Ended a notify stream of thread {ThreadId}: the client fell too far behind", threadId);
+    }
+
+    /// <summary>Sets the response up as an unbuffered event stream.</summary>
+    private static HttpResponse StartEventStream(HttpContext context)
+    {
+        var response = context.Response;
+        response.StatusCode = StatusCodes.Status200OK;
+        response.ContentType = "text/event-stream";
+        response.Headers.CacheControl = "no-cache";
+        // Tells nginx (and proxies that follow its convention) not to buffer the stream.
+        response.Headers["X-Accel-Buffering"] = "no";
+        context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+        return response;
+    }
+
+    /// <summary>
+    /// Writes each item as the server-sent event <paramref name="format"/> makes of it, until the
+    /// channel completes, with an SSE comment whenever nothing was written for
+    /// <paramref name="keepAlive"/>.
+    /// </summary>
+    private static async Task PumpAsync<T>(
+        ChannelReader<T> events, HttpResponse response, TimeSpan keepAlive, Func<T, string> format, CancellationToken ct)
     {
         await response.StartAsync(ct);
 
@@ -241,7 +319,7 @@ internal static class AgUiEndpoints
                 return;
 
             while (events.TryRead(out var e))
-                await response.WriteAsync($"data: {AgUiJson.Serialize(e)}\n\n", ct);
+                await response.WriteAsync(format(e), ct);
             await response.Body.FlushAsync(ct);
         }
     }

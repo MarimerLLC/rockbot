@@ -193,15 +193,31 @@ public sealed class AgUiEndpointTests
     }
 
     [TestMethod]
-    public async Task Run_WhenTheAgentNeverAnswers_EndsWithRunErrorTimeout()
+    public async Task Run_WhenTheAgentDoesNotAnswerInTime_EndsNormallyWithReplyPending()
     {
         await RestartAsync(("UserProxy:ReplyTimeout", "00:00:00.300"));
         _agent.OnMessage = (_, _) => Task.CompletedTask;
 
         var events = await RunToEndAsync(Run("run-1"));
 
-        CollectionAssert.AreEqual(new[] { "RUN_STARTED", "RUN_ERROR" }, Types(events));
-        Assert.AreEqual(TurnEventMapper.ErrorCodes.Timeout, Sse.Str(events[^1], "code"));
+        // Not an error: the agent may still answer, and the answer then goes to the notify stream.
+        CollectionAssert.AreEqual(new[] { "RUN_STARTED", "CUSTOM", "RUN_FINISHED" }, Types(events));
+        Assert.AreEqual(TurnEventMapper.CustomNames.ReplyPending, Sse.Str(events[1], "name"));
+        Assert.AreEqual("run-1", events[1].GetProperty("value").GetProperty("runId").GetString());
+        Assert.IsFalse(events[^1].TryGetProperty("outcome", out _), "the run ends normally");
+    }
+
+    [TestMethod]
+    public async Task Run_WhenTheAgentGoesSilentAfterStarting_StillEndsWithRunErrorAgentLost()
+    {
+        _host.Services.GetRequiredService<UserProxyOptions>().HeartbeatTimeout = TimeSpan.FromMilliseconds(200);
+        _agent.OnMessage = (agent, received) => agent.RunStartedAsync(received);
+
+        var events = await RunToEndAsync(Run("run-1"));
+
+        Assert.AreEqual("RUN_ERROR", Sse.Type(events[^1]));
+        Assert.AreEqual(TurnEventMapper.ErrorCodes.AgentLost, Sse.Str(events[^1], "code"));
+        Assert.IsFalse(events.Any(e => Sse.Str(e, "name") == TurnEventMapper.CustomNames.ReplyPending));
     }
 
     [TestMethod]

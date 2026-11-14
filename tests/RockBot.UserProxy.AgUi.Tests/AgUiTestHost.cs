@@ -127,6 +127,19 @@ internal sealed class FakeAgent : IAsyncDisposable
         _publisher.PublishAsync(to.Envelope.ReplyTo!,
             payload.ToEnvelope<T>(source: AgUiTestHost.AgentName, correlationId: to.Envelope.CorrelationId));
 
+    /// <summary>
+    /// Publishes <paramref name="payload"/> on the reply broadcast topic every proxy hears, with
+    /// no correlation id: unsolicited replies, question and sign-in statuses, name changes.
+    /// </summary>
+    public Task BroadcastAsync<T>(T payload) =>
+        _publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{AgUiTestHost.AgentName}",
+            payload.ToEnvelope<T>(source: AgUiTestHost.AgentName));
+
+    /// <summary>Publishes <paramref name="payload"/> on the event broadcast topic: subagent lifecycle, their task lists.</summary>
+    public Task EventAsync<T>(T payload) =>
+        _publisher.PublishAsync($"{UserProxyTopics.UserEvent}.{AgUiTestHost.AgentName}",
+            payload.ToEnvelope<T>(source: AgUiTestHost.AgentName));
+
     public Task ReplyAsync(ReceivedMessage to, string content, bool isFinal = true, ToolCallInfo? toolCall = null) =>
         SendAsync(to, new AgentReply
         {
@@ -149,6 +162,99 @@ internal sealed class FakeAgent : IAsyncDisposable
     {
         foreach (var subscription in _subscriptions)
             await subscription.DisposeAsync();
+    }
+}
+
+/// <summary>
+/// An open notify stream, read one server-sent event at a time. Comments (keepalives) are counted
+/// and skipped.
+/// </summary>
+internal sealed class NotifyStream : IDisposable
+{
+    public static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
+
+    private readonly HttpResponseMessage _response;
+    private readonly StreamReader _reader;
+
+    private NotifyStream(HttpResponseMessage response, StreamReader reader)
+    {
+        _response = response;
+        _reader = reader;
+    }
+
+    public sealed record Frame(string Id, JsonElement Event)
+    {
+        public string Type => Sse.Type(Event);
+
+        /// <summary>A <c>CUSTOM</c> event's name.</summary>
+        public string? Name => Sse.Str(Event, "name");
+
+        /// <summary>A <c>CUSTOM</c> event's value.</summary>
+        public JsonElement Value => Event.GetProperty("value");
+
+        /// <summary>The id's sequence number: what follows the epoch.</summary>
+        public long Sequence => long.Parse(Id[(Id.LastIndexOf('-') + 1)..]);
+    }
+
+    public HttpResponseMessage Response => _response;
+
+    public int Comments { get; private set; }
+
+    public static async Task<NotifyStream> OpenAsync(
+        HttpClient client, string threadId = "agui-session", string? lastEventId = null, string query = "")
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, $"/agui/notify?threadId={Uri.EscapeDataString(threadId)}{query}");
+        if (lastEventId is not null)
+            request.Headers.TryAddWithoutValidation("Last-Event-ID", lastEventId);
+
+        var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).WaitAsync(Patience);
+        Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode);
+        return new NotifyStream(response, new StreamReader(await response.Content.ReadAsStreamAsync()));
+    }
+
+    /// <summary>The next event, or null when the stream has ended.</summary>
+    public async Task<Frame?> NextAsync()
+    {
+        string? id = null;
+        string? data = null;
+        while (await _reader.ReadLineAsync().WaitAsync(Patience) is { } line)
+        {
+            if (line.StartsWith(':'))
+                Comments++;
+            else if (line.StartsWith("id: ", StringComparison.Ordinal))
+                id = line["id: ".Length..];
+            else if (line.StartsWith("data: ", StringComparison.Ordinal))
+                data = line["data: ".Length..];
+            else if (line.Length == 0 && data is not null)
+                return new Frame(id ?? "", JsonDocument.Parse(data).RootElement.Clone());
+        }
+        return null;
+    }
+
+    /// <summary>The next event; fails if the stream ended instead.</summary>
+    public async Task<Frame> ReadAsync() =>
+        await NextAsync() ?? throw new AssertFailedException("the notify stream ended");
+
+    public async Task<List<Frame>> ReadAsync(int count)
+    {
+        var frames = new List<Frame>(count);
+        while (frames.Count < count)
+            frames.Add(await ReadAsync());
+        return frames;
+    }
+
+    /// <summary>Reads past the <c>rockbot.connected</c> event a new stream starts with, and returns it.</summary>
+    public async Task<Frame> ReadConnectedAsync()
+    {
+        var frame = await ReadAsync();
+        Assert.AreEqual(TurnEventMapper.CustomNames.Connected, frame.Name);
+        return frame;
+    }
+
+    public void Dispose()
+    {
+        _reader.Dispose();
+        _response.Dispose();
     }
 }
 

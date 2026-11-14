@@ -82,6 +82,57 @@ public sealed class AgUiKestrelTests
     }
 
     [TestMethod]
+    public async Task ANotifyClientThatStopsReading_IsDisconnected_AndHoldsNobodyUp()
+    {
+        // A small buffer and queue, and events big enough to fill the socket's buffers quickly.
+        await using var host = new AgUiTestHost(("AgUi:NotifyBufferSize", "4"), ("AgUi:NotifySubscriberQueueSize", "8"));
+        host.UseKestrel(0);
+        host.StartServer();
+        using var client = host.CreateClient();
+        await using var agent = await FakeAgent.StartAsync(host);
+
+        using var stuck = await NotifyStream.OpenAsync(client);
+        using var reading = await NotifyStream.OpenAsync(client);
+        var lastSeen = (await stuck.ReadConnectedAsync()).Id;
+        await reading.ReadConnectedAsync();
+
+        // The stuck client reads nothing from here on. The other one gets every event, promptly:
+        // the bus's thread is never waiting on the stuck client's socket.
+        const int count = 80;
+        var padding = new string('x', 256 * 1024);
+        for (var i = 1; i <= count; i++)
+        {
+            await agent.BroadcastAsync(new AgentNameChanged { AgentName = $"{i}:{padding}" });
+            var frame = await reading.ReadAsync();
+            Assert.AreEqual(i, frame.Sequence);
+        }
+
+        // The proxy gave up on the stuck client: its stream ends, short of the events it missed.
+        var received = 0;
+        try
+        {
+            while (await stuck.NextAsync() is { } frame)
+            {
+                lastSeen = frame.Id;
+                received++;
+            }
+        }
+        catch (IOException)
+        {
+            // How the end looks from here: the proxy stopped mid-write, so the connection is
+            // reset rather than closed cleanly, and what was still in flight is lost.
+        }
+        Assert.IsTrue(received < count, $"the stuck client got {received} of {count} events before it was dropped");
+
+        // It reconnects with the last id it got. It missed more than the buffer holds, so it is
+        // told to resync; a smaller gap would have been replayed.
+        using var again = await NotifyStream.OpenAsync(client, lastEventId: lastSeen);
+        var first = await again.ReadAsync();
+        Assert.AreEqual(TurnEventMapper.CustomNames.Resync, first.Name);
+        Assert.AreEqual(count, first.Sequence);
+    }
+
+    [TestMethod]
     public async Task ClosingTheConnection_CancelsTheSession()
     {
         _agent.OnMessage = (agent, received) => agent.RunStartedAsync(received);
