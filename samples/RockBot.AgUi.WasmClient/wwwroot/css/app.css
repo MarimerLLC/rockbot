@@ -18,6 +18,30 @@ body {
     background: var(--bg);
 }
 
+/* The page itself never scrolls: the header and the composer take their own height, and the
+   area between them (.body > .scroll) is the only thing that scrolls. */
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+}
+
+.body {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+}
+
 .loading { padding: 2rem; color: var(--muted); }
 
 #blazor-error-ui {
@@ -31,9 +55,7 @@ body {
 }
 
 .top {
-    position: sticky;
-    top: 0;
-    z-index: 5;
+    flex: none;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -64,7 +86,7 @@ body {
 .banner, .signin { margin: 1rem; padding: .6rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 .banner { border-color: #e0c060; background: #fff8e1; }
 
-.messages { max-width: 52rem; margin: 0 auto; padding: 1rem 1rem 9rem; }
+.messages { max-width: 52rem; margin: 0 auto; padding: 1rem; }
 
 .message {
     margin: .6rem 0;
@@ -118,12 +140,14 @@ body {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Wide screens: floats over the right of the chat area, below the header. Narrow screens (see
+   below): a strip between the chat area and the composer. Either way it scrolls on its own. */
 .plans {
-    position: fixed;
-    top: 4rem;
-    right: 1rem;
+    position: absolute;
+    top: 1rem;
+    right: 1.5rem;
     width: 15rem;
-    max-height: 60vh;
+    max-height: calc(100% - 2rem);
     overflow: auto;
     padding: .5rem .8rem;
     border: 1px solid var(--line);
@@ -138,8 +162,8 @@ body {
 .plan li.in_progress { font-weight: 600; }
 
 @media (max-width: 80rem) {
-    .plans { position: static; width: auto; max-width: 52rem; margin: 0 auto 9rem; }
-    .messages { padding-bottom: 1rem; }
+    /* Lined up with the messages column (52rem less its 1rem padding on each side). */
+    .plans { position: static; flex: none; width: calc(100% - 2rem); max-width: 50rem; max-height: 30vh; margin: 0 auto .6rem; }
 }
 
 .question .ask { margin: .3rem 0 .6rem; font-weight: 600; white-space: pre-wrap; }
@@ -154,8 +178,7 @@ body {
 .error { color: var(--error); }
 
 .composer {
-    position: fixed;
-    inset: auto 0 0 0;
+    flex: none;
     padding: .6rem 1rem;
     background: var(--panel);
     border-top: 1px solid var(--line);

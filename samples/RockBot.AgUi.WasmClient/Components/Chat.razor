@@ -49,101 +49,106 @@
 }
 else
 {
-    @if (Session.Connection != NotifyConnection.Connected && Session.ConnectionError is { } connectionError)
-    {
-        <p class="banner">Not connected to the proxy: @connectionError</p>
-    }
+    @* The header and the composer stay put; only this area between them scrolls. *@
+    <div class="body">
+        <div class="scroll" id="chat-scroll">
+            @if (Session.Connection != NotifyConnection.Connected && Session.ConnectionError is { } connectionError)
+            {
+                <p class="banner">Not connected to the proxy: @connectionError</p>
+            }
 
-    <main class="messages">
-        @foreach (var message in state.Messages)
-        {
-            <article @key="message.MessageId" class="message @CssClass(message)">
-                @if (message.Category == MessageCategory.McpQuestion)
+            <main class="messages">
+                @foreach (var message in state.Messages)
                 {
-                    <QuestionForm Message="message" />
-                }
-                else if (message.IsActivityLog)
-                {
-                    var open = state.IsActivityLogOpen(message.MessageId);
-                    <details class="activity">
-                        <summary>
-                            @if (open)
-                            {
-                                <span class="spinner" aria-label="working"></span>
-                            }
-                            <span class="source">@(message.AgentName ?? state.AgentName ?? "agent")</span>
-                            @message.Content
-                        </summary>
-                        <ul>
-                            @foreach (var entry in message.ActivityLogEntries)
-                            {
-                                <li class="@(entry.ToolCall?.Phase)">
-                                    @entry.Content
-                                    @if (entry.ToolCall is { Phase: ToolCallPhase.Finished, Result: { Length: > 0 } result })
+                    <article @key="message.MessageId" class="message @CssClass(message)">
+                        @if (message.Category == MessageCategory.McpQuestion)
+                        {
+                            <QuestionForm Message="message" />
+                        }
+                        else if (message.IsActivityLog)
+                        {
+                            var open = state.IsActivityLogOpen(message.MessageId);
+                            <details class="activity">
+                                <summary>
+                                    @if (open)
                                     {
-                                        <span class="detail"> → @result</span>
+                                        <span class="spinner" aria-label="working"></span>
                                     }
-                                </li>
+                                    <span class="source">@(message.AgentName ?? state.AgentName ?? "agent")</span>
+                                    @message.Content
+                                </summary>
+                                <ul>
+                                    @foreach (var entry in message.ActivityLogEntries)
+                                    {
+                                        <li class="@(entry.ToolCall?.Phase)">
+                                            @entry.Content
+                                            @if (entry.ToolCall is { Phase: ToolCallPhase.Finished, Result: { Length: > 0 } result })
+                                            {
+                                                <span class="detail"> → @result</span>
+                                            }
+                                        </li>
+                                    }
+                                </ul>
+                            </details>
+                        }
+                        else if (message.IsFromUser || message.IsError)
+                        {
+                            @* The user's own words, and error text: shown as text, never as markup. *@
+                            <div class="text">@message.Content</div>
+                            <AttachmentList Attachments="message.Attachments" />
+                        }
+                        else
+                        {
+                            <div class="from">
+                                <span class="source">@(message.AgentName ?? state.AgentName ?? "agent")</span>
+                                @if (Badge(message.Category) is { } badge)
+                                {
+                                    <span class="badge">@badge</span>
+                                }
+                                <button type="button" class="link" @onclick="() => ChatState.Apply(new MessageExpandToggled(message.MessageId))">
+                                    @(message.IsExpanded ? "collapse" : "expand")
+                                </button>
+                            </div>
+                            @if (message.IsExpanded)
+                            {
+                                @* Markdown through SafeMarkdown, which encodes everything first: HTML in a
+                                   reply is shown as text. The sample doesn't declare HtmlInline or SvgInline. *@
+                                <div class="markdown">@((MarkupString)SafeMarkdown.ToHtml(message.Content))</div>
+                                <AttachmentList Attachments="message.Attachments" />
+                            }
+                            else
+                            {
+                                <div class="preview">@Preview(message.Content)</div>
+                            }
+                        }
+                    </article>
+                }
+
+                @if (busy)
+                {
+                    <p class="thinking"><span class="spinner"></span> @(state.ThinkingMessage ?? "Working…")</p>
+                }
+            </main>
+        </div>
+
+        @if (state.TaskLists.Count > 0)
+        {
+            <aside class="plans">
+                @foreach (var plan in state.TaskLists.Values.OrderBy(p => p.Key == ReplySourceKind.Primary ? 0 : 1))
+                {
+                    <section class="plan">
+                        <h2>@(plan.Key == ReplySourceKind.Primary ? "Plan" : $"Plan of {plan.Source.Kind} {plan.Key}") <small>@plan.CompletedCount/@plan.Items.Count</small></h2>
+                        <ul>
+                            @foreach (var item in plan.Items)
+                            {
+                                <li class="@item.Status">@item.Description</li>
                             }
                         </ul>
-                    </details>
+                    </section>
                 }
-                else if (message.IsFromUser || message.IsError)
-                {
-                    @* The user's own words, and error text: shown as text, never as markup. *@
-                    <div class="text">@message.Content</div>
-                    <AttachmentList Attachments="message.Attachments" />
-                }
-                else
-                {
-                    <div class="from">
-                        <span class="source">@(message.AgentName ?? state.AgentName ?? "agent")</span>
-                        @if (Badge(message.Category) is { } badge)
-                        {
-                            <span class="badge">@badge</span>
-                        }
-                        <button type="button" class="link" @onclick="() => ChatState.Apply(new MessageExpandToggled(message.MessageId))">
-                            @(message.IsExpanded ? "collapse" : "expand")
-                        </button>
-                    </div>
-                    @if (message.IsExpanded)
-                    {
-                        @* Markdown through SafeMarkdown, which encodes everything first: HTML in a
-                           reply is shown as text. The sample doesn't declare HtmlInline or SvgInline. *@
-                        <div class="markdown">@((MarkupString)SafeMarkdown.ToHtml(message.Content))</div>
-                        <AttachmentList Attachments="message.Attachments" />
-                    }
-                    else
-                    {
-                        <div class="preview">@Preview(message.Content)</div>
-                    }
-                }
-            </article>
+            </aside>
         }
-
-        @if (busy)
-        {
-            <p class="thinking"><span class="spinner"></span> @(state.ThinkingMessage ?? "Working…")</p>
-        }
-    </main>
-
-    @if (state.TaskLists.Count > 0)
-    {
-        <aside class="plans">
-            @foreach (var plan in state.TaskLists.Values.OrderBy(p => p.Key == ReplySourceKind.Primary ? 0 : 1))
-            {
-                <section class="plan">
-                    <h2>@(plan.Key == ReplySourceKind.Primary ? "Plan" : $"Plan of {plan.Source.Kind} {plan.Key}") <small>@plan.CompletedCount/@plan.Items.Count</small></h2>
-                    <ul>
-                        @foreach (var item in plan.Items)
-                        {
-                            <li class="@item.Status">@item.Description</li>
-                        }
-                    </ul>
-                </section>
-            }
-        </aside>
-    }
+    </div>
 
     <footer class="composer">
         @if (_pending.Count > 0 || _uploadError is not null)

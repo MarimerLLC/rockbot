@@ -23,7 +23,10 @@
 
     <script>
         // Keeps the newest message in view; called from Chat.razor after a render that added one.
-        window.rockbotScrollToEnd = () => window.scrollTo({ top: document.body.scrollHeight });
+        window.rockbotScrollToEnd = () => {
+            const scroll = document.getElementById("chat-scroll");
+            if (scroll) scroll.scrollTop = scroll.scrollHeight;
+        };
     </script>
     <script src="_framework/blazor.webassembly.js"></script>
 </body>
