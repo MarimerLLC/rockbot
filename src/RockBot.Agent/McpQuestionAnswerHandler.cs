@@ -249,19 +249,21 @@ internal sealed class McpQuestionAnswerHandler(
         if (string.IsNullOrWhiteSpace(finalContent))
             finalContent = $"Your answer was sent to {server}.";
 
+        var reply = new AgentReply
+        {
+            Source = UserProxy.ReplySource.Primary,
+            Content = finalContent,
+            SessionId = sessionId,
+            AgentName = agent.Name,
+            IsFinal = true,
+            FollowsQuestionId = message.QuestionId,
+            MessageId = ConversationTurn.NewId(),
+        };
         await conversationMemory.AddTurnAsync(sessionId,
-            new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow), ct);
+            new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow).Matching(reply), ct);
 
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}",
-            new AgentReply
-            {
-                Source = UserProxy.ReplySource.Primary,
-                Content = finalContent,
-                SessionId = sessionId,
-                AgentName = agent.Name,
-                IsFinal = true,
-                FollowsQuestionId = message.QuestionId,
-            }.ToEnvelope<AgentReply>(source: agent.Name), ct);
+            reply.ToEnvelope<AgentReply>(source: agent.Name), ct);
 
         logger.LogInformation("Replied after the form answer to MCP question {QuestionId} ({Length} chars)",
             message.QuestionId, finalContent.Length);

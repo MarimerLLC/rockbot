@@ -488,6 +488,121 @@ public class ChatReducerTests
     }
 
     [TestMethod]
+    public void HistoryLoaded_CategorizesBySourceAndSession_AsLiveRepliesAre()
+    {
+        // #809: newer agents record where each turn came from, and merge in the broadcast sessions.
+        var loaded = ChatReducer.Reduce(ChatViewState.Empty with { AgentName = "RockBot" }, new HistoryLoaded(
+        [
+            new ConversationHistoryTurn { Role = "user", Content = "research it", Timestamp = At(1), SessionId = Session },
+            new ConversationHistoryTurn
+            {
+                Role = "user", Content = "[Subagent task abc completed]", Timestamp = At(2), AgentName = "subagent-abc",
+                SessionId = Session, Source = ReplySource.Subagent("abc"),
+            },
+            new ConversationHistoryTurn
+            {
+                Role = "user", Content = "[peer result]", Timestamp = At(3), AgentName = "PeerBot",
+                SessionId = Session, Source = ReplySource.A2A,
+            },
+            new ConversationHistoryTurn
+            {
+                Role = "assistant", Content = "PeerBot says yes", Timestamp = At(4), AgentName = "RockBot",
+                SessionId = Session, Source = ReplySource.A2A,
+            },
+            new ConversationHistoryTurn
+            {
+                Role = "assistant", Content = "daily report", Timestamp = At(5), AgentName = "RockBot",
+                SessionId = "scheduled", Source = ReplySource.Scheduled,
+            },
+            new ConversationHistoryTurn
+            {
+                Role = "assistant", Content = "audit alert", Timestamp = At(6), AgentName = "RockBot",
+                SessionId = "scheduled-system", Source = ReplySource.Scheduled,
+            },
+            new ConversationHistoryTurn
+            {
+                Role = "assistant", Content = "agents reached out", Timestamp = At(7), AgentName = "A2A-Inbox",
+                SessionId = "a2a-inbound", Source = ReplySource.A2A,
+            },
+        ], Session) { Timestamp = At(30) });
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                MessageCategory.UserInput, MessageCategory.SubagentActivity, MessageCategory.A2AActivity,
+                MessageCategory.PrimaryFinal, MessageCategory.ScheduledUser, MessageCategory.ScheduledSystem,
+                MessageCategory.A2AActivity,
+            },
+            loaded.Messages.Select(m => m.Category).ToArray());
+        Assert.IsTrue(loaded.Messages[0].IsFromUser);
+        Assert.IsFalse(loaded.Messages[1].IsFromUser, "a stored result isn't something the user typed");
+        Assert.AreEqual("scheduled", loaded.Messages[4].SessionId, "a broadcast turn keeps its own session");
+        Assert.AreEqual(Session, loaded.Messages[0].SessionId);
+    }
+
+    [TestMethod]
+    public void HistoryLoaded_ABridgeNoticeAndAnInboundSubSession_MatchTheirLiveCategories()
+    {
+        // Live, a bridge notice is the agent's reply (PrimaryFinal) and an a2a-inbound/… reply is
+        // A2A activity; the reloaded copies must agree.
+        var loaded = ChatReducer.Reduce(ChatViewState.Empty with { AgentName = "RockBot" }, new HistoryLoaded(
+        [
+            new ConversationHistoryTurn
+            {
+                Role = "user", Content = "The agent restarted before you answered.", Timestamp = At(1),
+                AgentName = "mcp-bridge", SessionId = Session, Source = ReplySource.Bridge,
+            },
+            new ConversationHistoryTurn
+            {
+                Role = "assistant", Content = "peer digest", Timestamp = At(2), AgentName = "A2A-Inbox",
+                SessionId = "a2a-inbound/peer",
+            },
+            new ConversationHistoryTurn
+            {
+                // A bridge tool result stored as the agent's input, with no source: as before.
+                Role = "user", Content = "[MCP task t1 result]", Timestamp = At(3), AgentName = "mcp-bridge", SessionId = Session,
+            },
+        ], Session) { Timestamp = At(30) });
+
+        CollectionAssert.AreEqual(
+            new[] { MessageCategory.PrimaryFinal, MessageCategory.A2AActivity, MessageCategory.A2AActivity },
+            loaded.Messages.Select(m => m.Category).ToArray());
+        Assert.IsFalse(loaded.Messages[0].IsFromUser);
+        Assert.AreEqual("mcp-bridge", loaded.Messages[0].AgentName, "the notice keeps the bridge's name, as live");
+    }
+
+    [TestMethod]
+    public void HistoryLoaded_UsesEachTurnsId_OrItsPositionFromAnOlderAgent()
+    {
+        var loaded = ChatReducer.Reduce(ChatViewState.Empty, new HistoryLoaded(
+        [
+            new ConversationHistoryTurn { Role = "user", Content = "hello", Timestamp = At(1), Id = "turn-a" },
+            new ConversationHistoryTurn { Role = "assistant", Content = "hi", Timestamp = At(2) },
+        ], Session) { Timestamp = At(30), IdPrefix = "h" });
+
+        CollectionAssert.AreEqual(new[] { "turn-a", "h-1" }, loaded.Messages.Select(m => m.MessageId).ToArray());
+    }
+
+    [TestMethod]
+    public void AReplyHistoryAlreadyHas_IsNotShownTwice()
+    {
+        // The agent stores a reply before it sends it, so a history request can read it before the
+        // live copy arrives. The two share an id.
+        var loaded = ChatReducer.Reduce(ChatViewState.Empty, new HistoryLoaded(
+        [
+            new ConversationHistoryTurn { Role = "assistant", Content = "daily report", Timestamp = At(1), Id = "r-1" },
+        ], Session) { Timestamp = At(2) });
+
+        var again = ChatReducer.Reduce(loaded,
+            new ReplyReceived(Reply("daily report") with { MessageId = "r-1" }, MessageCategory.ScheduledUser) { Timestamp = At(3) });
+        var other = ChatReducer.Reduce(again,
+            new ReplyReceived(Reply("another") with { MessageId = "r-2" }, MessageCategory.PrimaryFinal) { Timestamp = At(4) });
+
+        Assert.AreEqual(1, again.Messages.Count);
+        CollectionAssert.AreEqual(new[] { "r-1", "r-2" }, other.Messages.Select(m => m.MessageId).ToArray());
+    }
+
+    [TestMethod]
     public void ConversationCleared_ResetsEverythingButAgentInfo()
     {
         var state = ChatReducer.Replay(

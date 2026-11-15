@@ -50,6 +50,10 @@ internal sealed class InMemoryConversationMemory : IConversationMemory, IDisposa
         });
         List<ConversationTurn>? evicted = null;
 
+        // Every stored turn has an id (#809), so history can be matched with what a client saw.
+        if (string.IsNullOrEmpty(turn.Id))
+            turn = turn with { Id = ConversationTurn.NewId() };
+
         lock (session.Lock)
         {
             session.Turns.AddLast(turn);
@@ -97,7 +101,10 @@ internal sealed class InMemoryConversationMemory : IConversationMemory, IDisposa
 
         foreach (var kvp in _sessions)
         {
-            if (kvp.Value.LastAccessed < cutoff)
+            // Broadcast sessions don't idle out (#809): they're merged into every thread's history,
+            // so they must last as long as the threads do, not expire an hour after the last
+            // report while the user is still chatting. MaxTurnsPerSession bounds them.
+            if (kvp.Value.LastAccessed < cutoff && !WellKnownSessions.IsBroadcast(kvp.Key))
             {
                 if (_sessions.TryRemove(kvp.Key, out _))
                     removed++;

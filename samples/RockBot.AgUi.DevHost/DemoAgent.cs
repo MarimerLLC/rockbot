@@ -66,7 +66,7 @@ public sealed class DemoAgent : IAsyncDisposable
         await agent.SubscribeAsync<McpQuestionAnswer>(subscriber, UserProxyTopics.McpAnswer, agent.OnAnswerAsync);
 
         await agent.AnswerAsync<ConversationHistoryRequest, ConversationHistoryResponse>(
-            subscriber, UserProxyTopics.ConversationHistoryRequest, r => new ConversationHistoryResponse { Turns = agent.History(r.SessionId) });
+            subscriber, UserProxyTopics.ConversationHistoryRequest, r => new ConversationHistoryResponse { Turns = agent.History(r) });
         await agent.AnswerAsync<AgentInfoRequest, AgentInfoResponse>(
             subscriber, UserProxyTopics.AgentInfoRequest, _ => new AgentInfoResponse { AgentName = DevProxy.AgentName, AgentVersion = "demo" });
         await agent.AnswerAsync<ActiveStatusRequest, ActiveStatusResponse>(
@@ -217,7 +217,13 @@ public sealed class DemoAgent : IAsyncDisposable
 
     private async Task OnClearAsync(MessageEnvelope envelope, ClearContextRequest request)
     {
-        lock (_lock) _history.Remove(request.SessionId);
+        lock (_lock)
+        {
+            _history.Remove(request.SessionId);
+            // The scheduled reports are every thread's; this thread's history leaves out the ones
+            // from before its clear, as the agent's does.
+            _clearedAt[request.SessionId] = DateTimeOffset.UtcNow;
+        }
         await OnCancelAsync(envelope, new CancelSessionRequest { SessionId = request.SessionId });
         await BroadcastAsync(new AgentReply
         {
@@ -265,13 +271,17 @@ public sealed class DemoAgent : IAsyncDisposable
                 Outcome = SubagentOutcome.Success, FinishedAt = DateTimeOffset.UtcNow,
             });
 
-            // A scheduled task replies in its own session, which every thread hears.
-            await BroadcastAsync(new AgentReply
+            // A scheduled task replies in its own session, which every thread hears. Like the real
+            // agent, the demo keeps it there for history (#809).
+            var report = new AgentReply
             {
-                Content = "**Daily summary.** Nothing needs your attention today.", SessionId = "scheduled",
+                Content = "**Daily summary.** Nothing needs your attention today.", SessionId = ScheduledSession,
                 AgentName = DevProxy.AgentName, Source = ReplySource.Scheduled,
-                Origin = new ReplyOrigin("scheduler", "Daily summary", started.AddMinutes(-5), "scheduled"),
-            });
+                Origin = new ReplyOrigin("scheduler", "Daily summary", started.AddMinutes(-5), ScheduledSession),
+                MessageId = Guid.NewGuid().ToString("N"),
+            };
+            Remember(ScheduledSession, "assistant", report.Content, null, report);
+            await BroadcastAsync(report);
         }
         catch (OperationCanceledException)
         {
@@ -328,12 +338,14 @@ public sealed class DemoAgent : IAsyncDisposable
         var said = answer.Decline
             ? "Okay, I won't book it."
             : $"Booked. Your answer was `{answer.Answers}`.";
-        Remember(answer.SessionId, "assistant", said, null);
-        await BroadcastAsync(new AgentReply
+        var followUp = new AgentReply
         {
             Content = said, SessionId = answer.SessionId, AgentName = DevProxy.AgentName,
             Source = ReplySource.Primary, FollowsQuestionId = answer.QuestionId,
-        });
+            MessageId = Guid.NewGuid().ToString("N"),
+        };
+        Remember(answer.SessionId, "assistant", said, null, followUp);
+        await BroadcastAsync(followUp);
     }
 
     // ── Uploads, history ─────────────────────────────────────────────────────
@@ -355,7 +367,15 @@ public sealed class DemoAgent : IAsyncDisposable
         };
     }
 
-    private void Remember(string session, string role, string content, IReadOnlyList<AgentAttachment>? attachments)
+    /// <summary>The session a scheduled task's report goes out in, which every thread hears.</summary>
+    private const string ScheduledSession = "scheduled";
+
+    /// <summary>When each thread's context was last cleared.</summary>
+    private readonly Dictionary<string, DateTimeOffset> _clearedAt = new(StringComparer.Ordinal);
+
+    /// <param name="reply">The reply this turn is the stored copy of, whose id, origin and source it takes.</param>
+    private void Remember(string session, string role, string content, IReadOnlyList<AgentAttachment>? attachments,
+        AgentReply? reply = null)
     {
         lock (_lock)
         {
@@ -365,13 +385,30 @@ public sealed class DemoAgent : IAsyncDisposable
             {
                 Role = role, Content = content, Timestamp = DateTimeOffset.UtcNow, Attachments = attachments,
                 AgentName = role == "assistant" ? DevProxy.AgentName : null,
+                Id = reply?.MessageId ?? Guid.NewGuid().ToString("N"),
+                SessionId = session,
+                Origin = reply?.Origin,
+                Source = reply?.Source,
             });
         }
     }
 
-    private IReadOnlyList<ConversationHistoryTurn> History(string session)
+    /// <summary>A session's history, with the scheduled reports merged in by time when asked, as the agent does.</summary>
+    private IReadOnlyList<ConversationHistoryTurn> History(ConversationHistoryRequest request)
     {
-        lock (_lock) return _history.TryGetValue(session, out var turns) ? [.. turns] : [];
+        lock (_lock)
+        {
+            List<ConversationHistoryTurn> turns = _history.TryGetValue(request.SessionId, out var own) ? [.. own] : [];
+            if (request.IncludeBroadcast && request.SessionId != ScheduledSession
+                && _history.TryGetValue(ScheduledSession, out var all))
+            {
+                var reports = _clearedAt.TryGetValue(request.SessionId, out var cleared)
+                    ? all.Where(t => t.Timestamp > cleared)
+                    : all;
+                turns = [.. turns.Concat(reports).OrderBy(t => t.Timestamp)];
+            }
+            return turns;
+        }
     }
 
     private bool IsRunning(string session)

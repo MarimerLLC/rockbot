@@ -94,7 +94,11 @@ internal sealed class A2ATaskStatusHandler(
         await conversationMemory.AddTurnAsync(
             rawSessionId,
             new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
-            { AgentName = pending.TargetAgent },
+            {
+                AgentName = pending.TargetAgent,
+                Source = new ConversationTurnSource(UserProxy.ReplySourceKind.A2A),
+                Origin = originStore.Get(rawSessionId).ToTurnOrigin(),
+            },
             ct);
 
         var chatMessages = await agentContextBuilder.BuildAsync(
@@ -128,12 +132,6 @@ internal sealed class A2ATaskStatusHandler(
                 chatMessages, chatOptions, rawSessionId,
                 enableFollowUp: false, cancellationToken: ct);
 
-            await conversationMemory.AddTurnAsync(
-                rawSessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
-                { AgentName = agent.Name },
-                ct);
-
             var reply = new AgentReply
             {
                 Source = UserProxy.ReplySource.A2A,
@@ -141,8 +139,13 @@ internal sealed class A2ATaskStatusHandler(
                 SessionId = rawSessionId,
                 AgentName = DisplayName,
                 IsFinal = false,
-                Origin = originStore.Get(rawSessionId)
+                Origin = originStore.Get(rawSessionId),
+                MessageId = ConversationTurn.NewId(),
             };
+            await conversationMemory.AddTurnAsync(
+                rawSessionId,
+                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow) { AgentName = agent.Name }.Matching(reply),
+                ct);
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
         }

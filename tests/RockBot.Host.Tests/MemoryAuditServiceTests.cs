@@ -130,6 +130,31 @@ public class MemoryAuditServiceTests
     }
 
     [TestMethod]
+    public async Task AnAlertIsStoredInTheScheduledSystemSession_WithTheIdItWasSentWith()
+    {
+        // #809: a thread's reloaded history includes the alert, and a client can match it with
+        // the live copy.
+        WriteEntry(Entry("a"));
+        WriteEntry(Entry("b"));
+        var publisher = new RecordingPublisher();
+        using var conversations = new InMemoryConversationMemory(
+            Options.Create(new ConversationMemoryOptions()), NullLogger<InMemoryConversationMemory>.Instance);
+        var service = CreateService(publisher: publisher, conversationMemory: conversations);
+
+        await service.RunAuditAsync(CancellationToken.None);
+        File.Delete(Path.Combine(_memoryRoot, "b.json"));
+        await service.RunAuditAsync(CancellationToken.None);
+
+        var (_, reply) = publisher.Published.Single();
+        var stored = (await conversations.GetTurnsAsync(WellKnownSessions.ScheduledSystem)).Single();
+        Assert.IsFalse(string.IsNullOrEmpty(reply.MessageId));
+        Assert.AreEqual(reply.MessageId, stored.Id);
+        Assert.AreEqual(reply.Content, stored.Content);
+        Assert.AreEqual("memory-audit", stored.Origin?.Channel);
+        Assert.AreEqual(ReplySourceKind.Scheduled, stored.Source?.Kind);
+    }
+
+    [TestMethod]
     public async Task AnUnchangedWarningIsNotRepublished_ButOneThatReturnsAfterRecoveryIs()
     {
         WriteEntry(Entry("a"));
@@ -428,7 +453,8 @@ public class MemoryAuditServiceTests
         IAgentWorkSerializer? serializer = null,
         IMessagePublisher? publisher = null,
         ThrowingWriteMemory? memory = null,
-        ILlmClient? llmClient = null) =>
+        ILlmClient? llmClient = null,
+        IConversationMemory? conversationMemory = null) =>
         new(memory ?? new ThrowingWriteMemory(),
             serializer ?? new AgentWorkSerializer(),
             new AgentClock(
@@ -442,7 +468,8 @@ public class MemoryAuditServiceTests
             NullLogger<MemoryAuditService>.Instance,
             llmClient: llmClient,
             publisher: publisher,
-            agent: publisher is null ? null : new AgentIdentity("TestBot", "inst"));
+            agent: publisher is null ? null : new AgentIdentity("TestBot", "inst"),
+            conversationMemory: conversationMemory);
 
     /// <summary>
     /// A store whose every write path throws. The audit holds <see cref="ILongTermMemory"/> only

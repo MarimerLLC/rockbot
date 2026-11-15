@@ -60,6 +60,34 @@ public class SessionSummaryServiceTests
         Assert.AreEqual(FeedbackSignalType.SessionSummary, entry.SignalType);
     }
 
+    // ── Broadcast sessions hold no conversation (#809) ────────────────────────
+
+    [TestMethod]
+    public async Task BroadcastSessions_AreNotEvaluated()
+    {
+        var memory = new FakeConversationMemory();
+        var old = DateTimeOffset.UtcNow.AddHours(-2);
+        foreach (var session in WellKnownSessions.Broadcast)
+            memory.AddSession(session, [new ConversationTurn("assistant", "a report", old)]);
+        memory.AddSession("idle-session", [new ConversationTurn("user", "Hello", old)]);
+        var feedbackStore = new FakeFeedbackStore();
+        var llm = new FakeLlmClient(responseJson: """{"summary":"ok","overallQuality":"good"}""");
+
+        var svc = CreateService(memory, feedbackStore, llm, idleThreshold: TimeSpan.FromMinutes(30));
+        await svc.StartAsync(CancellationToken.None);
+
+        // The ordinary idle session is evaluated; by then the broadcast ones would have been too.
+        var deadline = DateTime.UtcNow.Add(WaitTimeout);
+        while (feedbackStore.AppendedEntries.Count == 0 && DateTime.UtcNow < deadline)
+            await Task.Delay(50);
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        await svc.StopAsync(CancellationToken.None);
+        svc.Dispose();
+
+        CollectionAssert.AreEqual(new[] { "idle-session" }, feedbackStore.AppendedEntries.Select(e => e.SessionId).ToArray());
+    }
+
     // ── Already-evaluated sessions are not re-evaluated (idempotency) ─────────
 
     [TestMethod]

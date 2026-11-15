@@ -1063,11 +1063,14 @@ public sealed class UserProxyService(
 
     /// <summary>
     /// Requests the full conversation history for the given session from the agent.
-    /// Returns null if the request times out or the agent is unavailable.
+    /// Returns null if the request times out or the agent is unavailable. With
+    /// <paramref name="includeBroadcast"/>, the broadcast sessions' output (scheduled tasks, system
+    /// jobs, inbound A2A) is merged in, as a client that shows it live needs on reload.
     /// </summary>
     public async Task<ConversationHistoryResponse?> GetHistoryAsync(
         string sessionId,
         TimeSpan? timeout = null,
+        bool includeBroadcast = false,
         CancellationToken cancellationToken = default)
     {
         var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
@@ -1080,7 +1083,7 @@ public sealed class UserProxyService(
         {
             await EnsureHistorySubscribedAsync(cancellationToken);
 
-            var request = new ConversationHistoryRequest { SessionId = sessionId };
+            var request = new ConversationHistoryRequest { SessionId = sessionId, IncludeBroadcast = includeBroadcast };
             var envelope = request.ToEnvelope<ConversationHistoryRequest>(
                 source: options.ProxyId,
                 correlationId: correlationId,

@@ -29,6 +29,22 @@ public static class ReplyOriginFormatter
         return $"↳ Re: \"{summary}\"\n   started {localTime} from {origin.Channel} · {ago}";
     }
 
+    /// <summary>
+    /// <paramref name="content"/> with the anchor for <paramref name="origin"/> above it as a markdown
+    /// blockquote, as the Blazor UI and the AG-UI sample show it; <paramref name="content"/> alone
+    /// when <see cref="RenderAnchor"/> gives no anchor. Used for live replies and for the same
+    /// replies reloaded from history.
+    /// </summary>
+    public static string WithQuotedAnchor(
+        string content, ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now)
+    {
+        var anchor = RenderAnchor(origin, currentChannel, currentSessionId, now);
+        if (anchor is null)
+            return content;
+        var quoted = string.Join("\n", anchor.Split('\n').Select(line => "> " + line.TrimStart()));
+        return quoted + "\n\n" + content;
+    }
+
     /// <summary>Formats the gap between <paramref name="then"/> and <paramref name="now"/> as a coarse "ago" string.</summary>
     public static string RelativeTime(DateTimeOffset then, DateTimeOffset now)
     {

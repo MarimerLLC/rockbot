@@ -103,7 +103,9 @@ internal sealed class SessionSummaryService : IHostedService, IDisposable
 
             foreach (var sessionId in sessionIds)
             {
-                if (_evaluated.Contains(sessionId))
+                // Broadcast sessions only hold the agent's unsolicited replies (#809); there is no
+                // conversation in them to evaluate.
+                if (WellKnownSessions.IsBroadcast(sessionId) || _evaluated.Contains(sessionId))
                     continue;
 
                 var turns = await _conversationMemory.GetTurnsAsync(sessionId);

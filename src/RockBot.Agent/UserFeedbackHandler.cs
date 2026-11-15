@@ -63,6 +63,12 @@ internal sealed class UserFeedbackHandler(
             Detail: $"MessageId={message.MessageId}, Agent={message.AgentName ?? "(unknown)"}",
             Timestamp: DateTimeOffset.UtcNow), ct);
 
+        // A broadcast session (a scheduled report, the inbound A2A digest) holds no conversation to
+        // reinforce or re-run, and its stored turns are merged into every thread's history (#809):
+        // a note written there would show up in all of them. The signal above is all it gets.
+        if (WellKnownSessions.IsBroadcast(message.SessionId))
+            return;
+
         if (message.IsPositive)
         {
             await HandlePositiveFeedbackAsync(message, ct);
@@ -174,11 +180,6 @@ internal sealed class UserFeedbackHandler(
         }
 
         // Record the re-evaluation in conversation history.
-        await conversationMemory.AddTurnAsync(
-            message.SessionId,
-            new ConversationTurn("assistant", freshResponse, DateTimeOffset.UtcNow),
-            ct);
-
         // Publish the fresh reply as an unsolicited message — the proxy forwards
         // unsolicited replies directly to the frontend.
         var reply = new AgentReply
@@ -187,8 +188,14 @@ internal sealed class UserFeedbackHandler(
             Content = freshResponse,
             SessionId = message.SessionId,
             AgentName = agent.Name,
-            IsFinal = true
+            IsFinal = true,
+            MessageId = ConversationTurn.NewId(),
         };
+
+        await conversationMemory.AddTurnAsync(
+            message.SessionId,
+            new ConversationTurn("assistant", freshResponse, DateTimeOffset.UtcNow).Matching(reply),
+            ct);
 
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);

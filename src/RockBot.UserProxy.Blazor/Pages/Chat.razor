@@ -561,9 +561,12 @@
 
             try
             {
-                var history = await ProxyService.GetHistoryAsync(SessionId, timeout: TimeSpan.FromSeconds(10));
+                // With the broadcast sessions' output (#809): this view shows it live, so a
+                // reload has to bring it back too.
+                var history = await ProxyService.GetHistoryAsync(SessionId, timeout: TimeSpan.FromSeconds(10),
+                    includeBroadcast: true);
                 if (history is not null && history.Turns.Count > 0)
-                    ChatState.Apply(new HistoryLoaded(history.Turns, SessionId));
+                    ChatState.Apply(BlazorUserFrontend.HistoryEvent(history, SessionId, DateTimeOffset.UtcNow));
             }
             catch (Exception ex)
             {

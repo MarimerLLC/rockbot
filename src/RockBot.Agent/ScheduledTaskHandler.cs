@@ -34,7 +34,8 @@ internal sealed class ScheduledTaskHandler(
     ISkillUsageStore? skillUsageStore = null,
     IMcpSkillSurface? mcpSkillSurface = null,
     IOptions<WorkingMemoryOptions>? workingMemoryOptions = null,
-    ResultArchive? resultArchive = null) : IMessageHandler<ScheduledTaskMessage>
+    ResultArchive? resultArchive = null,
+    IConversationMemory? conversationMemory = null) : IMessageHandler<ScheduledTaskMessage>
 {
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
@@ -122,7 +123,7 @@ internal sealed class ScheduledTaskHandler(
         // starting during execution will fire that token so the LLM loop stops
         // cleanly. If preemption happens, re-throw so the scheduler can retry.
 
-        var replySessionId = message.IsSystemTask ? WellKnownSessions.ScheduledSystem : "scheduled";
+        var replySessionId = message.IsSystemTask ? WellKnownSessions.ScheduledSystem : WellKnownSessions.Scheduled;
 
         string finalText;
         bool succeeded;
@@ -197,6 +198,9 @@ internal sealed class ScheduledTaskHandler(
                 StartedAt: DateTimeOffset.UtcNow,
                 SessionId: replySessionId)
         };
+
+        // #809: stored in its broadcast session so a client's reloaded history still has it.
+        reply = await conversationMemory.RecordBroadcastReplyAsync(reply, logger, ct);
 
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);

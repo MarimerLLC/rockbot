@@ -17,6 +17,42 @@ public class BlazorUserFrontendTests
         _frontend = new BlazorUserFrontend(_chatState);
     }
 
+    // ── history reload (#809) ────────────────────────────────────────────
+
+    [TestMethod]
+    public void HistoryEvent_GivesUnsolicitedTurnsTheAnchorTheyHadLive()
+    {
+        var now = DateTimeOffset.Parse("2026-11-14T10:00:00Z");
+        var history = new ConversationHistoryResponse
+        {
+            Turns =
+            [
+                new ConversationHistoryTurn { Role = "user", Content = "hello", Timestamp = now.AddMinutes(-30), SessionId = "blazor-session" },
+                new ConversationHistoryTurn
+                {
+                    Role = "assistant", Content = "Nothing needs your attention.", Timestamp = now.AddMinutes(-5),
+                    SessionId = "scheduled", Source = ReplySource.Scheduled,
+                    Origin = new ReplyOrigin("scheduled", "daily-summary", now.AddMinutes(-6), "scheduled"),
+                },
+                new ConversationHistoryTurn
+                {
+                    // Started here, in this session: the anchor is suppressed, as it is live.
+                    Role = "assistant", Content = "Vendor B.", Timestamp = now.AddMinutes(-1), SessionId = "blazor-session",
+                    Origin = new ReplyOrigin("blazor", "research vendors", now.AddMinutes(-20), "blazor-session"),
+                },
+            ],
+        };
+
+        var loaded = BlazorUserFrontend.HistoryEvent(history, "blazor-session", now);
+
+        Assert.AreEqual("blazor-session", loaded.SessionId);
+        Assert.AreEqual("hello", loaded.Turns[0].Content);
+        StringAssert.StartsWith(loaded.Turns[1].Content, "> ↳ Re: \"daily-summary\"");
+        StringAssert.Contains(loaded.Turns[1].Content, "from scheduled · 6m ago");
+        StringAssert.EndsWith(loaded.Turns[1].Content, "\n\nNothing needs your attention.");
+        Assert.AreEqual("Vendor B.", loaded.Turns[2].Content);
+    }
+
     // ── session-based categorization ─────────────────────────────────────
 
     [TestMethod]

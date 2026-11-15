@@ -127,6 +127,11 @@ internal sealed record HistoryDetail
     public DateTimeOffset? Timestamp { get; init; }
     public string? AgentName { get; init; }
     public List<WireAttachment>? Attachments { get; init; }
+
+    /// <summary>The session the turn is from: the thread, or a broadcast session merged into it (#809).</summary>
+    public string? SessionId { get; init; }
+    public ReplyOrigin? Origin { get; init; }
+    public ReplySource? Source { get; init; }
 }
 
 internal sealed record QuestionsResponse

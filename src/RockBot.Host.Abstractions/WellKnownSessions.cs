@@ -18,6 +18,27 @@ public static class WellKnownSessions
     /// </summary>
     public const string ScheduledSystem = "scheduled-system";
 
+    /// <summary>Session carrying the output of the user's own scheduled tasks.</summary>
+    public const string Scheduled = "scheduled";
+
+    /// <summary>Session carrying the idle-flushed batch of inbound A2A notifications.</summary>
+    public const string A2AInbound = "a2a-inbound";
+
+    /// <summary>
+    /// Sessions whose replies go to every connected client rather than one conversation. Their
+    /// replies are stored under these ids (#809) so a reloaded thread's history can include them;
+    /// no agent loop runs in them.
+    /// </summary>
+    public static IReadOnlyList<string> Broadcast { get; } = [Scheduled, ScheduledSystem, A2AInbound];
+
+    /// <summary>
+    /// Whether <paramref name="sessionId"/> is a broadcast session: one of <see cref="Broadcast"/>, or
+    /// an <c>a2a-inbound/…</c> session, which the user proxies also send to every client.
+    /// </summary>
+    public static bool IsBroadcast(string? sessionId) =>
+        sessionId is Scheduled or ScheduledSystem or A2AInbound
+        || sessionId?.StartsWith(A2AInbound + "/", StringComparison.Ordinal) == true;
+
     /// <summary>
     /// Prefix of the session a scheduled task's agent loop runs in (<c>patrol/{task name}</c>).
     /// </summary>

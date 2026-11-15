@@ -17,6 +17,7 @@ public readonly record struct ChatReduction(ChatViewState State, bool Accepted);
 /// </summary>
 public static class ChatReducer
 {
+
     public static ChatViewState Reduce(ChatViewState state, ChatEvent e) => Apply(state, e).State;
 
     /// <summary>Applies <paramref name="events"/> in order, starting from <paramref name="initial"/> or an empty chat.</summary>
@@ -116,16 +117,20 @@ public static class ChatReducer
             // Use the current display name for primary agent turns so history reflects a name
             // change (e.g. "RockBot" → "DockerBot").
             var effectiveName = category is MessageCategory.PrimaryFinal or MessageCategory.PrimaryProgress
+                && turn.Source?.Kind != ReplySourceKind.Bridge
                 ? state.AgentName ?? turn.AgentName
                 : turn.AgentName;
 
+            // The turn's own id when the agent sent one (#809): a live copy of the same reply then
+            // has the same id. Positions stand in for older agents.
+            var position = index++;
             messages.Add(new ChatMessage
             {
-                MessageId = $"{e.IdPrefix}-{index++}",
+                MessageId = string.IsNullOrEmpty(turn.Id) ? $"{e.IdPrefix}-{position}" : turn.Id,
                 Content = turn.Content,
                 IsFromUser = isFromUser,
                 Timestamp = turn.Timestamp.UtcDateTime,
-                SessionId = e.SessionId,
+                SessionId = turn.SessionId ?? e.SessionId,
                 AgentName = effectiveName,
                 Category = category,
                 Attachments = turn.Attachments,
@@ -151,12 +156,29 @@ public static class ChatReducer
     }
 
     /// <summary>
-    /// The display category for a restored history turn, from its AgentName and role.
+    /// The display category for a restored history turn. From its source and session when the
+    /// agent recorded them (#809), as a live reply is categorized; otherwise from its AgentName
+    /// and role.
     /// </summary>
     private static (MessageCategory Category, bool IsFromUser) CategorizeHistoryTurn(
         ConversationHistoryTurn turn, string? primaryAgentName)
     {
-        if (turn.Role == "user")
+        var isUserRole = turn.Role == "user";
+
+        // A remote agent's result, stored as the agent's input: that agent's output. (The agent's
+        // answer from it is an assistant turn with the same source, and the agent's reply.)
+        if (isUserRole && turn.Source?.Kind == ReplySourceKind.A2A && !ReplyCategories.IsA2AInbound(turn.SessionId))
+            return (MessageCategory.A2AActivity, false);
+
+        // Otherwise the rules a live reply goes by; every stored reply is a final one.
+        if (ReplyCategories.FromSource(turn.Source, turn.SessionId, isFinal: true) is { } category)
+            return (category, false);
+
+        // The inbound A2A digest, from an agent that recorded no source.
+        if (ReplyCategories.IsA2AInbound(turn.SessionId))
+            return (MessageCategory.A2AActivity, false);
+
+        if (isUserRole)
         {
             // Subagent and worker synthetic turns are stored as "user" role with a subagent- or
             // worker- prefixed AgentName. Both represent spawned activity.
@@ -314,12 +336,19 @@ public static class ChatReducer
         else if (closesSource)
             logs = logs.Remove(ActivityLogKey(category, reply.AgentName));
 
+        // A reply the agent also stored carries its history id (#809). The message takes that id,
+        // so a reply that history already brought in (it was stored before it was sent, and the
+        // history request read it) isn't shown twice.
+        if (!string.IsNullOrEmpty(reply.MessageId))
+            messageId = reply.MessageId;
+        var alreadyShown = state.Messages.Any(m => m.MessageId == messageId);
+
         return state with
         {
             FormWaits = formWaits,
             OpenActivityLogs = logs,
             CurrentTurn = turn,
-            Messages = state.Messages.Add(new ChatMessage
+            Messages = alreadyShown ? state.Messages : state.Messages.Add(new ChatMessage
             {
                 MessageId = messageId,
                 Content = reply.Content,

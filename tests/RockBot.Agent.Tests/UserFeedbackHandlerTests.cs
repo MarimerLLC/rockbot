@@ -187,6 +187,36 @@ public class UserFeedbackHandlerTests
     }
 
     [TestMethod]
+    public async Task Feedback_OnABroadcastReply_WritesNothingToThatSession()
+    {
+        // #809: a broadcast session's turns are merged into every thread's history, so a
+        // reinforcement note or a re-run there would show up in all of them.
+        await _conversationMemory.AddTurnAsync(WellKnownSessions.Scheduled,
+            new ConversationTurn("assistant", "daily report", DateTimeOffset.UtcNow));
+
+        await _handler.HandleAsync(MakeFeedback(isPositive: true) with { SessionId = WellKnownSessions.Scheduled }, MakeContext());
+        await _handler.HandleAsync(MakeFeedback(isPositive: false) with { SessionId = WellKnownSessions.Scheduled }, MakeContext());
+
+        Assert.AreEqual(1, (await _conversationMemory.GetTurnsAsync(WellKnownSessions.Scheduled)).Count);
+        Assert.AreEqual(0, _publisher.Published.Count);
+    }
+
+    [TestMethod]
+    public async Task NegativeFeedback_StoredTurnHasTheReplysId()
+    {
+        // #809: a client that reloads history can match the fresh reply with its stored copy.
+        await SeedConversationHistory();
+
+        await _handler.HandleAsync(MakeFeedback(isPositive: false), MakeContext());
+
+        var reply = _publisher.Published.Single().Envelope.GetPayload<AgentReply>()!;
+        var stored = (await _conversationMemory.GetTurnsAsync(SessionId)).Last();
+        Assert.IsFalse(string.IsNullOrEmpty(reply.MessageId));
+        Assert.AreEqual(reply.MessageId, stored.Id);
+        Assert.AreEqual(ReplySourceKind.Primary, stored.Source?.Kind);
+    }
+
+    [TestMethod]
     public async Task NegativeFeedback_NoUserTurns_DoesNotPublish()
     {
         // No conversation history seeded — no user turns exist

@@ -13,10 +13,11 @@ internal static class AgUiHistoryMapper
     private const string SystemRole = "system";
 
     /// <summary>
-    /// One message per turn, in order. A turn's id is <c>{threadId}-{index}</c>: history has no
-    /// ids of its own, and a position is stable for as long as the context isn't cleared. What
-    /// AG-UI has no field for (RockBot's timestamp, the agent's name, attachments) is under
-    /// <c>metadata.rockbot</c>.
+    /// One message per turn, in order. A message's id is the turn's own (#809), which is also the
+    /// <c>messageId</c> its live copy had on a stream; from an older agent, whose turns have none, it is
+    /// <c>{threadId}-{index}</c>, stable for as long as the context isn't cleared. What AG-UI has no
+    /// field for (RockBot's timestamp, the agent's name, attachments, and the session, origin and
+    /// source a live reply's <c>rockbot.origin</c> event carries) is under <c>metadata.rockbot</c>.
     /// </summary>
     public static MessagesSnapshotEvent ToSnapshot(string threadId, ConversationHistoryResponse history, TimeProvider? clock = null)
     {
@@ -24,7 +25,7 @@ internal static class AgUiHistoryMapper
         for (var i = 0; i < history.Turns.Count; i++)
         {
             var turn = history.Turns[i];
-            var id = $"{threadId}-{i}";
+            var id = string.IsNullOrEmpty(turn.Id) ? $"{threadId}-{i}" : turn.Id;
             var metadata = JsonSerializer.SerializeToElement(
                 new
                 {
@@ -36,6 +37,11 @@ internal static class AgUiHistoryMapper
                         Attachments = turn.Attachments is { Count: > 0 } attachments
                             ? attachments.Select(a => new { a.Mime, a.Path, a.FileName, Url = AttachmentLinks.Url(a) }).ToList()
                             : null,
+                        // Which session the turn is from: the thread, or a broadcast session
+                        // (scheduled, scheduled-system, a2a-inbound) merged into it.
+                        turn.SessionId,
+                        turn.Origin,
+                        turn.Source,
                     },
                 },
                 TurnEventMapper.PayloadJson);

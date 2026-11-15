@@ -270,12 +270,10 @@ public sealed class AgUiEventMapper
 
         // Where the work started, as a quoted line above the reply, as the Blazor UI shows it. A
         // reply to something asked on this thread through this channel needs none.
-        var anchor = ReplyOriginFormatter.RenderAnchor(reply.Origin, _channel, sessionId, _clock.GetUtcNow());
-        if (anchor is not null)
+        reply = reply with
         {
-            var quoted = string.Join("\n", anchor.Split('\n').Select(line => "> " + line.TrimStart()));
-            reply = reply with { Content = quoted + "\n\n" + reply.Content };
-        }
+            Content = ReplyOriginFormatter.WithQuotedAnchor(reply.Content, reply.Origin, _channel, sessionId, _clock.GetUtcNow()),
+        };
 
         if (subagent is not null)
             _openActivities.Remove(subagent);
@@ -648,10 +646,13 @@ public sealed class AgUiEventMapper
     /// <summary>
     /// The conversation as <c>GET /threads/{id}/messages</c> returns it (one
     /// <c>MESSAGES_SNAPSHOT</c>), as the event that replaces the transcript. Attachment URLs go to
-    /// <paramref name="attachmentUrls"/>, by path.
+    /// <paramref name="attachmentUrls"/>, by path. A turn the agent recorded an origin for gets the
+    /// anchor its live copy had (#809), seen from <paramref name="channel"/> at <paramref name="clock"/>'s now.
     /// </summary>
-    public static HistoryLoaded History(JsonElement snapshot, string threadId, IDictionary<string, string>? attachmentUrls = null)
+    public static HistoryLoaded History(JsonElement snapshot, string threadId, IDictionary<string, string>? attachmentUrls = null,
+        TimeProvider? clock = null, string channel = "agui")
     {
+        var now = (clock ?? TimeProvider.System).GetUtcNow();
         var turns = new List<ConversationHistoryTurn>();
         foreach (var message in Read(snapshot, WireJson.Default.HistorySnapshot)?.Messages ?? [])
         {
@@ -662,17 +663,24 @@ public sealed class AgUiEventMapper
                     attachmentUrls[attachment.Path] = attachment.Url!;
             }
 
+            // A message's content is text here; AG-UI also allows a list of parts, which the proxy
+            // never sends.
+            var content = message.Content is { ValueKind: JsonValueKind.String } text ? text.GetString() ?? "" : "";
+            var sessionId = detail?.SessionId ?? threadId;
             turns.Add(new ConversationHistoryTurn
             {
                 Role = message.Role ?? "assistant",
-                // A message's content is text here; AG-UI also allows a list of parts, which the
-                // proxy never sends.
-                Content = message.Content is { ValueKind: JsonValueKind.String } text ? text.GetString() ?? "" : "",
+                Content = ReplyOriginFormatter.WithQuotedAnchor(content, detail?.Origin, channel, sessionId, now),
                 Timestamp = detail?.Timestamp ?? default,
                 AgentName = detail?.AgentName ?? message.Name,
                 Attachments = detail?.Attachments is { Count: > 0 } attachments
                     ? [.. attachments.Select(a => a.ToAttachment())]
                     : null,
+                // The proxy's message id is the turn's own, which its live copy also had.
+                Id = message.Id,
+                SessionId = detail?.SessionId,
+                Origin = detail?.Origin,
+                Source = detail?.Source,
             });
         }
 

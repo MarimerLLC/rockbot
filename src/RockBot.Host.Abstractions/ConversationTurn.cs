@@ -20,7 +20,55 @@ public sealed record ConversationTurn(string Role, string Content, DateTimeOffse
     /// conversation store is not enrolled in schema migrations, so no version bump is needed.
     /// </summary>
     public IReadOnlyList<ConversationTurnAttachment>? Attachments { get; init; }
+
+    /// <summary>
+    /// Stable id of the turn. The conversation store assigns one when the writer leaves it null; a
+    /// writer that also publishes the turn as a reply sets it to the reply's
+    /// <c>AgentReply.MessageId</c>, so a frontend can match the live message with its copy in
+    /// history. Additive, like <see cref="Attachments"/>.
+    /// </summary>
+    public string? Id { get; init; }
+
+    /// <summary>
+    /// Provenance of an unsolicited turn (a subagent, A2A or scheduled result): the request that
+    /// started the work, mirroring the user-proxy <c>ReplyOrigin</c>. Null for the user's own turns
+    /// and the agent's direct replies.
+    /// </summary>
+    public ConversationTurnOrigin? Origin { get; init; }
+
+    /// <summary>
+    /// Which part of the agent produced the turn, mirroring the user-proxy <c>ReplySource</c>. Null
+    /// for the user's own turns and for turns stored before it was recorded.
+    /// </summary>
+    public ConversationTurnSource? Source { get; init; }
+
+    /// <summary>
+    /// A new value for <see cref="Id"/>. A writer that publishes the turn as a reply uses the same
+    /// value for the reply's message id.
+    /// </summary>
+    public static string NewId() => Guid.NewGuid().ToString("N");
 }
+
+/// <summary>
+/// Mirror of the user-proxy <c>ReplyOrigin</c> on a <see cref="ConversationTurn"/>, declared here for
+/// the same reason as <see cref="ConversationTurnAttachment"/>.
+/// </summary>
+/// <param name="Channel">Originating channel, e.g. "blazor", "scheduled", "a2a-inbound".</param>
+/// <param name="PromptSummary">Truncated first user turn that started the work.</param>
+/// <param name="StartedAt">When the originating request started.</param>
+/// <param name="SessionId">Original session id.</param>
+public sealed record ConversationTurnOrigin(
+    string Channel,
+    string PromptSummary,
+    DateTimeOffset StartedAt,
+    string? SessionId);
+
+/// <summary>
+/// Mirror of the user-proxy <c>ReplySource</c> on a <see cref="ConversationTurn"/>.
+/// </summary>
+/// <param name="Kind">One of the user-proxy <c>ReplySourceKind</c> values (primary, subagent, worker, a2a, scheduled, bridge).</param>
+/// <param name="TaskId">The subagent's or worker's task id, when there is one.</param>
+public sealed record ConversationTurnSource(string Kind, string? TaskId = null);
 
 /// <summary>
 /// A file attached to a <see cref="ConversationTurn"/>, mirroring the user-proxy

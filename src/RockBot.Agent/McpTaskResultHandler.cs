@@ -285,19 +285,21 @@ internal sealed class McpTaskResultHandler(
         if (string.IsNullOrWhiteSpace(finalContent))
             finalContent = $"{Subject(message)} has an update.";
 
+        var reply = new AgentReply
+        {
+            Source = UserProxy.ReplySource.Primary,
+            Content = finalContent,
+            SessionId = conversationId,
+            AgentName = agent.Name,
+            IsFinal = true,
+            Origin = originStore?.Get(conversationId),
+            MessageId = ConversationTurn.NewId(),
+        };
         await conversationMemory.AddTurnAsync(conversationId,
-            new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow), ct);
+            new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow).Matching(reply), ct);
 
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}",
-            new AgentReply
-            {
-                Source = UserProxy.ReplySource.Primary,
-                Content = finalContent,
-                SessionId = conversationId,
-                AgentName = agent.Name,
-                IsFinal = true,
-                Origin = originStore?.Get(conversationId),
-            }.ToEnvelope<AgentReply>(source: agent.Name), ct);
+            reply.ToEnvelope<AgentReply>(source: agent.Name), ct);
 
         logger.LogInformation("Replied to background task {TaskId}'s {Kind} in {Session} ({Length} chars)",
             message.TaskId, message.Kind, conversationId, finalContent.Length);

@@ -9,6 +9,20 @@ namespace RockBot.UserProxy.Blazor.Services;
 /// </summary>
 public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStateService? signIns = null) : IUserFrontend
 {
+    /// <summary>This front end's channel, as a <see cref="ReplyOrigin.Channel"/> names it.</summary>
+    internal const string Channel = "blazor";
+
+    /// <summary>
+    /// The conversation as loaded from history, with the origin anchor a live copy of each
+    /// unsolicited reply had (#809), so a reloaded transcript reads as the live one did.
+    /// </summary>
+    public static HistoryLoaded HistoryEvent(ConversationHistoryResponse history, string sessionId, DateTimeOffset now) =>
+        new([.. history.Turns.Select(t => t.Origin is null ? t : t with
+            {
+                Content = ReplyOriginFormatter.WithQuotedAnchor(t.Content, t.Origin, Channel, t.SessionId ?? sessionId, now),
+            })],
+            sessionId);
+
     /// <summary>
     /// Learned from the first IsFinal=true reply. Used to distinguish primary agent
     /// progress from external A2A agent progress (both arrive as unsolicited non-final
@@ -36,14 +50,11 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
         // work started elsewhere, so the user can re-ground a message that arrived in this
         // client after the originating session is gone. Suppressed for replies delivered on
         // their own blazor session (origin channel + session match).
-        var displayReply = reply;
-        var anchor = ReplyOriginFormatter.RenderAnchor(
-            reply.Origin, currentChannel: "blazor", currentSessionId: reply.SessionId, DateTimeOffset.UtcNow);
-        if (anchor is not null)
+        var displayReply = reply with
         {
-            var quoted = string.Join("\n", anchor.Split('\n').Select(l => "> " + l.TrimStart()));
-            displayReply = reply with { Content = quoted + "\n\n" + reply.Content };
-        }
+            Content = ReplyOriginFormatter.WithQuotedAnchor(
+                reply.Content, reply.Origin, Channel, reply.SessionId, DateTimeOffset.UtcNow),
+        };
 
         // Final result — a permanent chat bubble; clears the progress indicator
         chatState.Apply(new ReplyReceived(displayReply, category));
@@ -157,35 +168,10 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
 
     internal MessageCategory CategorizeReply(AgentReply reply)
     {
-        // Newer agents say where a reply came from; older ones leave it to the heuristics below.
-        switch (reply.Source?.Kind)
-        {
-            case ReplySourceKind.Subagent or ReplySourceKind.Worker:
-                return MessageCategory.SubagentActivity;
-            case ReplySourceKind.A2A:
-                // Inbound notifications are A2A activity. The A2A result handlers, though, post the
-                // agent's own answer in the user's session: that is the agent's reply, and their
-                // progress is told apart (the agent's own vs a remote agent's) by the checks below.
-                if (reply.SessionId?.StartsWith("a2a-inbound", StringComparison.OrdinalIgnoreCase) == true)
-                    return MessageCategory.A2AActivity;
-                if (reply.IsFinal)
-                    return MessageCategory.PrimaryFinal;
-                break;
-            case ReplySourceKind.Scheduled:
-                // Background system jobs and the user's own scheduled tasks share the kind; the
-                // session tells them apart.
-                return reply.SessionId == WellKnownSessions.ScheduledSystem
-                    ? MessageCategory.ScheduledSystem
-                    : MessageCategory.ScheduledUser;
-            case ReplySourceKind.Primary or ReplySourceKind.Bridge:
-                return reply.IsFinal ? MessageCategory.PrimaryFinal : MessageCategory.PrimaryProgress;
-        }
-
-        if (reply.SessionId == WellKnownSessions.ScheduledSystem)
-            return MessageCategory.ScheduledSystem;
-
-        if (reply.SessionId == "scheduled")
-            return MessageCategory.ScheduledUser;
+        // Newer agents say where a reply came from (rules shared with reloaded history); older
+        // ones leave it to the heuristics below.
+        if (ReplyCategories.FromSource(reply.Source, reply.SessionId, reply.IsFinal) is { } category)
+            return category;
 
         // Both "subagent-" and "worker-" prefixed AgentNames represent spawned activity
         // the primary agent is supervising — workers are a lean rung of the same family.
@@ -196,7 +182,7 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
             return MessageCategory.SubagentActivity;
 
         // Inbound A2A notifications use a dedicated session ID regardless of IsFinal
-        if (reply.SessionId?.StartsWith("a2a-inbound", StringComparison.OrdinalIgnoreCase) == true)
+        if (ReplyCategories.IsA2AInbound(reply.SessionId))
             return MessageCategory.A2AActivity;
 
         if (reply.IsFinal)

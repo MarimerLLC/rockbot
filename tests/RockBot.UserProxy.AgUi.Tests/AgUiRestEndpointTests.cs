@@ -569,6 +569,19 @@ public sealed class AgUiRestEndpointTests
         AssertAttachmentsWithUrls(message.GetProperty("metadata").GetProperty("rockbot").GetProperty("attachments"));
     }
 
+    [TestMethod]
+    public async Task History_AsksForTheBroadcastSessionsToo()
+    {
+        // #809: the thread's notify stream carries scheduled and inbound A2A output, so the history a
+        // client refetches after rockbot.resync has to as well.
+        _agent.History = new ConversationHistoryResponse { Turns = [] };
+
+        using var response = await _client.GetAsync("/threads/agui-session/messages");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.AreEqual("agui-session", _agent.LastHistoryRequest?.SessionId);
+        Assert.IsTrue(_agent.LastHistoryRequest?.IncludeBroadcast);
+    }
     // ── Feedback ─────────────────────────────────────────────────────────────
 
     [TestMethod]

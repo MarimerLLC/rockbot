@@ -356,7 +356,7 @@ public sealed class ChatSession : IAsyncDisposable
         try
         {
             var snapshot = await _client.GetMessagesAsync(ThreadId, cancellationToken).ConfigureAwait(false);
-            Chat.Apply(AgUiEventMapper.History(snapshot, ThreadId, _attachmentUrls));
+            Chat.Apply(AgUiEventMapper.History(snapshot, ThreadId, _attachmentUrls, _clock));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
