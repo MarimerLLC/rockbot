@@ -9,7 +9,7 @@ A Blazor Server web application that provides a chat interface for interacting w
 - **Responsive Design**: Works seamlessly on desktop, tablet, and mobile devices
 - **Dark/Light Mode**: Toggle between light and dark themes
 - **Progress Indicators**: Visual feedback when agents are processing requests
-- **Bootstrap Styling**: Clean, modern UI using Bootstrap 5
+- **RockBot Design System**: styled to the RockBot Design System's tokens (`wwwroot/css/tokens.css`) on a Bootstrap 5 base; see [UI-DESIGN.md](UI-DESIGN.md)
 
 ## Running the Application
 
