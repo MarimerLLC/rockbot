@@ -397,6 +397,21 @@ else
     Console.WriteLine("Set Embedding:Endpoint and Embedding:Model to enable hybrid vector search.");
 }
 
+// Key-free description of the models above, written to the profile volume at startup so the
+// introspection sidecar (which has no access to the LLM secret) can tell the agent what it runs on.
+builder.Services.AddSingleton(LlmConfigSnapshot.Create(
+    tierOptions,
+    globalProvider,
+    embeddingOptions,
+    fixedTier: builder.Configuration["LLM:FixedTier"],
+    agentVersion: typeof(Program).Assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+        .FirstOrDefault()?.InformationalVersion.Split('+')[0],
+    llmConfigured: anyConfigured,
+    now: DateTimeOffset.UtcNow));
+builder.Services.AddHostedService<LlmConfigSnapshotWriter>();
+
 // Register memory tools as singleton — AIFunction instances are built once at construction
 builder.Services.AddSingleton<MemoryTools>();
 // Rules tools — requires WithRules() in the agent builder below
