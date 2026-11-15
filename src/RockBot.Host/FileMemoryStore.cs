@@ -135,6 +135,104 @@ internal sealed partial class FileMemoryStore
         return result;
     }
 
+    public async Task<TagEditResult> EditTagsAsync(
+        string id,
+        IReadOnlyList<string> add,
+        IReadOnlyList<string> remove,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(add);
+        ArgumentNullException.ThrowIfNull(remove);
+
+        var toAdd = NormalizeTags(add);
+        var toRemove = NormalizeTags(remove);
+
+        if (toAdd.Count == 0 && toRemove.Count == 0)
+            return TagEditResult.Failed("Nothing to change: pass at least one tag to add or to remove.");
+
+        var conflicting = toAdd.Where(t => toRemove.Contains(t, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (conflicting.Count > 0)
+        {
+            return TagEditResult.Failed(
+                $"Tag(s) {string.Join(", ", conflicting.Select(t => $"'{t}'"))} appear in both add and remove; " +
+                "pass each tag in only one of them.");
+        }
+
+        TagEditResult result;
+        MemoryEntry updated;
+
+        // Same contract as EditAsync: the read-modify-write cycle runs under the store lock so
+        // a concurrent save or edit cannot land between the read and the write and be erased.
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var index = await EnsureIndexAsync(cancellationToken);
+
+            if (!index.TryGetValue(id, out var existing))
+            {
+                return TagEditResult.Failed(
+                    $"No memory entry found with id '{id}'. Search memory to find the id — it appears " +
+                    "in brackets in search results, e.g. [abc123].");
+            }
+
+            var before = existing.Tags.ToList();
+
+            var removed = before.Where(t => toRemove.Contains(t, StringComparer.OrdinalIgnoreCase)).ToList();
+            var notPresent = toRemove.Where(t => !before.Contains(t, StringComparer.OrdinalIgnoreCase)).ToList();
+
+            var after = before.Where(t => !toRemove.Contains(t, StringComparer.OrdinalIgnoreCase)).ToList();
+            var alreadyPresent = toAdd.Where(t => after.Contains(t, StringComparer.OrdinalIgnoreCase)).ToList();
+            var added = toAdd.Where(t => !after.Contains(t, StringComparer.OrdinalIgnoreCase)).ToList();
+            after.AddRange(added);
+
+            if (added.Count == 0 && removed.Count == 0)
+            {
+                // Nothing moves, so nothing is written: UpdatedAt stays put and the vector is still valid.
+                return TagEditResult.Applied(before, before, [], [], alreadyPresent, notPresent);
+            }
+
+            // Only Tags and UpdatedAt move — id, content, category, CreatedAt, LastSeenAt,
+            // ReinforcementCount, ImportanceScore, Metadata and the archive/supersession fields
+            // all carry through, exactly as they do for a content edit.
+            updated = existing with
+            {
+                Tags = after,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+
+            await WriteEntryAsync(index, updated, cancellationToken);
+
+            result = TagEditResult.Applied(before, after, added, removed, alreadyPresent, notPresent);
+
+            _logger.LogInformation(
+                "Edited tags on memory entry {Id} ({Category}, reinforced={Count}x): [{Before}] → [{After}]",
+                id, existing.Category ?? "(none)", existing.ReinforcementCount,
+                string.Join(", ", before), string.Join(", ", after));
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+
+        // Tags are part of the BM25/vector document text, so the edit invalidates the vector.
+        if (_embeddingCache is not null)
+            _ = _embeddingCache.UpdateAsync(updated.Id, GetDocumentText(updated), cancellationToken);
+
+        return result;
+    }
+
+    /// <summary>
+    /// Trims tags, drops empty ones, and removes case-insensitive duplicates, keeping the first
+    /// spelling and the original order.
+    /// </summary>
+    internal static List<string> NormalizeTags(IEnumerable<string?> tags) =>
+        tags
+            .Select(t => t?.Trim())
+            .Where(t => !string.IsNullOrEmpty(t))
+            .Select(t => t!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     /// <summary>
     /// Persists <paramref name="entry"/> and updates <paramref name="index"/>. Callers must
     /// already hold <see cref="_semaphore"/> — it is not reentrant, so this is the shared body

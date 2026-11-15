@@ -26,7 +26,7 @@ public static class DeferredToolFamilies
         ("wisp", ["spawn_wisps"]),
         ("worker", ["spawn_workers"]),
         ("skills", ["save_skill", "edit_skill", "delete_skill"]),
-        ("memory", ["edit_memory", "delete_memory", "update_memory_importance"]),
+        ("memory", ["edit_memory", "edit_memory_tags", "delete_memory", "update_memory_importance"]),
         ("mcp", ["mcp_register_server", "mcp_unregister_server", "mcp_get_prompt", "mcp_list_resources", "mcp_read_resource"]),
     ];
 

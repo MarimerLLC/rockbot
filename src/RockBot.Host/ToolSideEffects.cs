@@ -44,7 +44,7 @@ public static partial class ToolSideEffects
         "task_create", "task_update",
         "report_progress", "feedback",
         "save_to_working_memory", "edit_working_memory", "delete_from_working_memory",
-        "save_memory", "edit_memory", "delete_memory", "update_memory_importance", "memory",
+        "save_memory", "edit_memory", "edit_memory_tags", "delete_memory", "update_memory_importance", "memory",
         "resume_memory_consolidation",
         "set_timezone",
         "cancel_subagent", "spawn_workers",

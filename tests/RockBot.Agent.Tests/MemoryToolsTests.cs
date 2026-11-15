@@ -166,6 +166,84 @@ public class MemoryToolsTests
     }
 
     // -------------------------------------------------------------------------
+    // EditMemoryTags
+    // -------------------------------------------------------------------------
+
+    [TestMethod]
+    public void Tools_ExposeEditMemoryTags()
+    {
+        var tools = MakeTools(new StubLongTermMemory());
+
+        var names = tools.Tools.OfType<AIFunction>().Select(f => f.Name).ToList();
+
+        CollectionAssert.Contains(names, MemoryTools.EditMemoryTagsToolName);
+        Assert.AreEqual("edit_memory_tags", MemoryTools.EditMemoryTagsToolName);
+    }
+
+    [TestMethod]
+    public async Task EditMemoryTags_ParsesCommaSeparatedLists_AndReportsBeforeAndAfter()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(new MemoryEntry("abc123", "Balanced tier runs Haiku", null, ["routing", "claude-sonnet-5-5"], DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.EditMemoryTags("abc123", add: " claude-haiku-5-5 , openrouter", remove: "claude-sonnet-5-5");
+
+        var call = memory.TagEdits.Single();
+        CollectionAssert.AreEqual(new[] { "claude-haiku-5-5", "openrouter" }, call.Add.ToArray());
+        CollectionAssert.AreEqual(new[] { "claude-sonnet-5-5" }, call.Remove.ToArray());
+
+        StringAssert.Contains(result, "Updated tags on memory entry 'abc123'");
+        StringAssert.Contains(result, "[routing, claude-sonnet-5-5] → [routing, claude-haiku-5-5, openrouter]");
+        StringAssert.Contains(result, "Removed: claude-sonnet-5-5");
+        StringAssert.Contains(result, "reinforcement history are unchanged");
+    }
+
+    [TestMethod]
+    public async Task EditMemoryTags_NoOp_SaysNothingChanged_AndNamesTheSkippedTags()
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(new MemoryEntry("abc123", "content", null, ["routing"], DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.EditMemoryTags("abc123", add: "routing", remove: "not-there");
+
+        StringAssert.Contains(result, "No change to tags on memory entry 'abc123': [routing]");
+        StringAssert.Contains(result, "Already present: routing");
+        StringAssert.Contains(result, "Not present, so not removed: not-there");
+    }
+
+    [TestMethod]
+    public async Task EditMemoryTags_Refusal_ReachesTheModelVerbatim()
+    {
+        const string refusal = "No memory entry found with id 'zzz'. Search memory to find the id.";
+        var memory = new StubLongTermMemory { TagEditResult = TagEditResult.Failed(refusal) };
+        var tools = MakeTools(memory);
+
+        var result = await tools.EditMemoryTags("zzz", add: "a");
+
+        StringAssert.Contains(result, "Tag edit failed on memory entry 'zzz'");
+        StringAssert.Contains(result, refusal);
+    }
+
+    [TestMethod]
+    [DataRow("Correction", null)]
+    [DataRow(null, "kind=observation")]
+    public async Task EditMemoryTags_SystemManagedTag_IsRefused_BeforeReachingTheStore(string? add, string? remove)
+    {
+        var memory = new StubLongTermMemory();
+        memory.Add(new MemoryEntry("abc123", "content", null, ["kind=observation"], DateTimeOffset.UtcNow));
+        var tools = MakeTools(memory);
+
+        var result = await tools.EditMemoryTags("abc123", add: add is null ? null : $"ok,{add}", remove: remove);
+
+        StringAssert.Contains(result, "system-managed");
+        StringAssert.Contains(result, "Nothing was changed");
+        Assert.AreEqual(0, memory.TagEdits.Count, "A refused system tag must not reach the store.");
+        CollectionAssert.AreEqual(new[] { "kind=observation" }, (await memory.GetAsync("abc123"))!.Tags.ToArray());
+    }
+
+    // -------------------------------------------------------------------------
     // DeleteMemory
     // -------------------------------------------------------------------------
 
@@ -958,6 +1036,44 @@ internal sealed class StubLongTermMemory : ILongTermMemory
             _entries[index] = existing with { Content = edit.Content!, UpdatedAt = DateTimeOffset.UtcNow };
             return Task.FromResult(ContentEditResult.Applied(
                 edit.ReplacementCount, existing.Content.Length, edit.Content!.Length));
+        }
+    }
+
+    /// <summary>When set, <see cref="EditTagsAsync"/> returns this instead of applying the edit.</summary>
+    public TagEditResult? TagEditResult { get; set; }
+
+    /// <summary>Every (id, add, remove) passed to <see cref="EditTagsAsync"/>.</summary>
+    public List<(string Id, IReadOnlyList<string> Add, IReadOnlyList<string> Remove)> TagEdits { get; } = [];
+
+    public Task<TagEditResult> EditTagsAsync(
+        string id, IReadOnlyList<string> add, IReadOnlyList<string> remove,
+        CancellationToken cancellationToken = default)
+    {
+        TagEdits.Add((id, add, remove));
+        if (TagEditResult is { } canned)
+            return Task.FromResult(canned);
+
+        lock (_entries)
+        {
+            var index = _entries.FindIndex(e => e.Id == id);
+            if (index < 0)
+                return Task.FromResult(RockBot.Host.TagEditResult.Failed($"No memory entry found with id '{id}'."));
+
+            var existing = _entries[index];
+            var before = existing.Tags.ToList();
+            var cmp = StringComparer.OrdinalIgnoreCase;
+            var removed = before.Where(t => remove.Contains(t, cmp)).ToList();
+            var notPresent = remove.Where(t => !before.Contains(t, cmp)).ToList();
+            var after = before.Where(t => !remove.Contains(t, cmp)).ToList();
+            var alreadyPresent = add.Where(t => after.Contains(t, cmp)).ToList();
+            var added = add.Where(t => !after.Contains(t, cmp)).ToList();
+            after.AddRange(added);
+
+            if (added.Count > 0 || removed.Count > 0)
+                _entries[index] = existing with { Tags = after, UpdatedAt = DateTimeOffset.UtcNow };
+
+            return Task.FromResult(RockBot.Host.TagEditResult.Applied(
+                before, after, added, removed, alreadyPresent, notPresent));
         }
     }
 

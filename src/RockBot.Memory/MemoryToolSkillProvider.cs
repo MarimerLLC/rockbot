@@ -120,6 +120,10 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         of that away and leaves a fact that has been seen once — so the fix for a wrong detail
         costs the agent everything it knew about how well-established the fact was.
 
+        Tags count too. Search matches on an entry's tags as well as its content, so a
+        corrected entry that keeps a stale tag keeps turning up for the thing it no longer
+        says. When a content fix makes a tag wrong, follow it with `edit_memory_tags`.
+
         ### edit_memory
 
         Replaces an exact piece of text inside an existing entry's content, leaving the rest
@@ -147,6 +151,33 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         - A refused edit is information, not an obstacle. "Not found" means your `old_string`
           does not match; re-read the entry rather than retrying the same text. Do not fall
           back to delete + save to work around a refusal — that is the loss this tool avoids.
+
+
+        ### edit_memory_tags
+
+        Adds and removes tags on an existing entry, leaving its id, content, category, age,
+        and reinforcement count untouched. Name only the tags that change; the rest stay.
+
+        **Parameters**
+        - `id` (string, required) — the ID from search results (e.g. `abc123`)
+        - `add` (string, optional) — comma-separated tags to add
+        - `remove` (string, optional) — comma-separated tags to remove (case-insensitive)
+
+        ```
+        edit_memory_tags(
+          id: "abc123",
+          add: "claude-haiku-5-5",
+          remove: "claude-sonnet-5-5"
+        )
+        ```
+
+        Rules:
+        - The result shows the tag list before and after, so you can confirm the change
+          without searching again.
+        - Removing a tag the entry doesn't have, or adding one it already has, is not an error.
+          The result reports it, and nothing is written.
+        - `correction` and `kind=observation` are system-managed and are refused.
+        - This tool can't change the category.
 
 
         ### delete_memory
@@ -345,8 +376,9 @@ public sealed class MemoryToolSkillProvider : IToolSkillProvider
         - **Use consistent category conventions** — `user-preferences/*`, `project/*`,
           `domain/*` for long-term; `email`, `calendar`, `research` for working memory
         - **Correct wrong facts promptly** — stale or incorrect long-term memories can
-          silently degrade future responses. Fix the detail with `edit_memory`; reserve
-          `delete_memory` for entries that are wrong as a whole
+          silently degrade future responses. Fix the detail with `edit_memory` (and any
+          tag it made stale with `edit_memory_tags`); reserve `delete_memory` for entries
+          that are wrong as a whole
 
 
         ## Common Pitfalls

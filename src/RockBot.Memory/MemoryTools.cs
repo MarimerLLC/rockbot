@@ -76,6 +76,22 @@ public sealed class MemoryTools
     /// </summary>
     public const string SearchMemoryToolName = "search_memory";
 
+    /// <summary>Registered name of the in-place tag edit tool.</summary>
+    public const string EditMemoryTagsToolName = "edit_memory_tags";
+
+    /// <summary>
+    /// Tags that carry meaning for the framework rather than for search, so the tag edit tool
+    /// will not add or remove them. <c>correction</c> makes a feedback entry win contradictions
+    /// as a user correction; <c>kind=observation</c> marks an entry for observation eviction.
+    /// Letting the model toggle either would let it re-rank its own inferences as user facts,
+    /// or rescue an observation from its scheduled re-check.
+    /// </summary>
+    private static readonly string[] SystemManagedTags =
+    [
+        FeedbackMemoryCategories.UserCorrectionTag,
+        ObservationLanguageDetector.ObservationTag,
+    ];
+
     private readonly ILongTermMemory _memory;
     private readonly ILlmClient _llmClient;
     private readonly IMemoryContradictionDetector? _contradictionDetector;
@@ -117,6 +133,8 @@ public sealed class MemoryTools
                 new AIFunctionFactoryOptions { Name = SearchMemoryToolName }),
             AIFunctionFactory.Create(EditMemory,
                 new AIFunctionFactoryOptions { Name = "edit_memory" }),
+            AIFunctionFactory.Create(EditMemoryTags,
+                new AIFunctionFactoryOptions { Name = EditMemoryTagsToolName }),
             AIFunctionFactory.Create(DeleteMemory,
                 new AIFunctionFactoryOptions { Name = "delete_memory" }),
             AIFunctionFactory.Create(UpdateMemoryImportance,
@@ -437,6 +455,66 @@ public sealed class MemoryTools
                $"({result.OldLength} → {result.NewLength} characters). " +
                "Its id, age, and reinforcement history are unchanged.";
     }
+
+    [Description("Add or remove tags on an existing memory entry in place, keeping its id, content, category, " +
+                 "age, and reinforcement history. Tags are part of what search matches on, so when a correction " +
+                 "(e.g. via edit_memory) makes a tag wrong, fix the tag too — otherwise the entry keeps matching " +
+                 "searches for the thing it no longer says. Find the ID first by calling SearchMemory — IDs appear " +
+                 "in brackets, e.g. [abc123], and current tags are listed under each result. " +
+                 "Name only the tags to change; you do not need to restate the existing list. " +
+                 "Use this rather than delete_memory + save_memory, which resets the entry's history.")]
+    public async Task<string> EditMemoryTags(
+        [Description("The ID of the memory entry to edit (from SearchMemory results, shown in brackets)")] string id,
+        [Description("Optional comma-separated tags to add, e.g. 'claude-haiku-5-5,routing'")] string? add = null,
+        [Description("Optional comma-separated tags to remove (case-insensitive), e.g. 'claude-sonnet-5-5'")] string? remove = null)
+    {
+        _logger.LogInformation("Tool call: EditMemoryTags(id={Id}, add={Add}, remove={Remove})", id, add, remove);
+
+        var addList = ParseTagsList(add) ?? [];
+        var removeList = ParseTagsList(remove) ?? [];
+
+        var reserved = addList.Concat(removeList)
+            .Where(t => SystemManagedTags.Contains(t, StringComparer.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (reserved.Count > 0)
+        {
+            return $"Tag edit failed on memory entry '{id}': {FormatTagList(reserved)} " +
+                   (reserved.Count == 1 ? "is a system-managed tag" : "are system-managed tags") +
+                   " and cannot be added or removed with this tool. Nothing was changed.";
+        }
+
+        var result = await _memory.EditTagsAsync(id, addList, removeList);
+
+        if (!result.IsSuccess)
+        {
+            _logger.LogInformation("EditMemoryTags refused for {Id}: {Error}", id, result.Error);
+            return $"Tag edit failed on memory entry '{id}': {result.Error}";
+        }
+
+        var sb = new StringBuilder();
+        if (result.IsNoOp)
+            sb.Append($"No change to tags on memory entry '{id}': {FormatTagList(result.Before)}.");
+        else
+            sb.Append($"Updated tags on memory entry '{id}': {FormatTagList(result.Before)} → {FormatTagList(result.After)}.");
+
+        if (result.Added.Count > 0)
+            sb.Append($" Added: {string.Join(", ", result.Added)}.");
+        if (result.Removed.Count > 0)
+            sb.Append($" Removed: {string.Join(", ", result.Removed)}.");
+        if (result.AlreadyPresent.Count > 0)
+            sb.Append($" Already present: {string.Join(", ", result.AlreadyPresent)}.");
+        if (result.NotPresent.Count > 0)
+            sb.Append($" Not present, so not removed: {string.Join(", ", result.NotPresent)}.");
+
+        if (!result.IsNoOp)
+            sb.Append(" Its id, content, age, and reinforcement history are unchanged.");
+
+        return sb.ToString();
+    }
+
+    private static string FormatTagList(IReadOnlyList<string> tags) =>
+        tags.Count == 0 ? "[]" : $"[{string.Join(", ", tags)}]";
 
     [Description("Delete a memory entry by its ID. Use this to remove facts that are wrong, outdated, or " +
                  "superseded in full. Find the ID first by calling SearchMemory — IDs appear in brackets, " +

@@ -41,6 +41,34 @@ public interface ILongTermMemory
         => Task.FromResult(ContentEditResult.NotSupported);
 
     /// <summary>
+    /// Adds and removes tags on an existing entry in place, leaving every other field —
+    /// id, content, category, <see cref="MemoryEntry.CreatedAt"/>,
+    /// <see cref="MemoryEntry.LastSeenAt"/>, <see cref="MemoryEntry.ReinforcementCount"/>,
+    /// importance and metadata — untouched. Only <see cref="MemoryEntry.Tags"/> and
+    /// <see cref="MemoryEntry.UpdatedAt"/> move.
+    /// </summary>
+    /// <param name="id">Entry to edit.</param>
+    /// <param name="add">Tags to add. Trimmed, empties dropped, compared case-insensitively.</param>
+    /// <param name="remove">Tags to remove. Trimmed, empties dropped, compared case-insensitively.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Tags are part of the text search matches on, so a content correction that leaves a stale
+    /// tag behind keeps the entry matching the thing it no longer says. Add/remove rather than
+    /// replace, for the same reason <see cref="EditAsync"/> takes a targeted edit: the caller
+    /// does not have to reproduce the existing list. A request that changes nothing succeeds
+    /// without writing. Category is deliberately not editable here — moving an entry in or out
+    /// of a scoped category (<c>feedback/*</c>, <c>claim/capability/*</c>) is a different
+    /// operation with contradiction-detector consequences. Implementations must apply the
+    /// whole read-modify-write cycle under the lock that guards their other writes.
+    /// </remarks>
+    Task<TagEditResult> EditTagsAsync(
+        string id,
+        IReadOnlyList<string> add,
+        IReadOnlyList<string> remove,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(TagEditResult.NotSupported);
+
+    /// <summary>
     /// Searches memory entries matching the given criteria.
     /// </summary>
     Task<IReadOnlyList<MemoryEntry>> SearchAsync(MemorySearchCriteria criteria, CancellationToken cancellationToken = default);

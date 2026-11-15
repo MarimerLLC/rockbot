@@ -231,6 +231,8 @@ acting as actionable constraints during inference.
 |---|---|
 | `save_memory(content, category?, tags?, source?)` | Queue a memory for background enrichment and save; `source` records provenance (see below) |
 | `search_memory(query?, category?, mode?)` | Hybrid/regex search with an optional category prefix filter; omit `query` to browse and get the category taxonomy |
+| `edit_memory(id, old_string, new_string, replace_all?)` | Exact-match edit of an entry's content in place; id, age and reinforcement history are kept |
+| `edit_memory_tags(id, add?, remove?)` | Add/remove tags in place (comma-separated); reports before/after; refuses the system-managed `correction` and `kind=observation` tags; category is not editable |
 | `delete_memory(id)` | Archive an entry (recoverable until purge) |
 | `update_memory_importance(id, importance)` | Re-score an existing entry |
 

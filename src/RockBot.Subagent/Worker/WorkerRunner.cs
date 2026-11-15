@@ -67,6 +67,7 @@ internal sealed class WorkerRunner(
         "mcp_unregister_server",
         "save_memory",
         "edit_memory",
+        "edit_memory_tags",
         "save_skill",
         "edit_skill",
         "promote_skill_asset",
