@@ -162,4 +162,38 @@ public class LlmCostEstimatorTests
             File.Delete(path);
         }
     }
+
+    [TestMethod]
+    public void FindEntry_IsTheRowEstimateCostUses()
+    {
+        using var estimator = NewEstimator(Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.json"));
+
+        Assert.AreEqual("gpt-5.4-pro", estimator.FindEntry("azure/GPT-5.4-PRO-2026")!.Prefix, "longest prefix, any case");
+        Assert.AreEqual("gpt-5.4", estimator.FindEntry("gpt-5.4")!.Prefix);
+        Assert.IsNull(estimator.FindEntry("totally-unknown-model"));
+    }
+
+    [TestMethod]
+    public void EntriesAndLoadedFrom_DescribeTheTableInUse()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"pricing-{Guid.NewGuid():N}.json");
+        using (var builtIn = NewEstimator(path))
+        {
+            Assert.IsNull(builtIn.LoadedFrom, "no file: the built-in table");
+            Assert.IsTrue(builtIn.Entries.Count > 10);
+        }
+
+        File.WriteAllText(path, """[ { "prefix": "a", "inputPerM": 1, "outputPerM": 2 }, { "prefix": "abc", "inputPerM": 3, "outputPerM": 4 } ]""");
+        try
+        {
+            using var fromFile = NewEstimator(path);
+
+            Assert.AreEqual(path, fromFile.LoadedFrom);
+            CollectionAssert.AreEqual(new[] { "abc", "a" }, fromFile.Entries.Select(e => e.Prefix).ToArray());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

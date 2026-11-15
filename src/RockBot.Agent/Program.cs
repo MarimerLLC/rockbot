@@ -550,6 +550,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.HandleMessage<ConversationHistoryRequest, ConversationHistoryRequestHandler>();
     agent.HandleMessage<AgentInfoRequest, AgentInfoRequestHandler>();
     agent.HandleMessage<ActiveStatusRequest, ActiveStatusRequestHandler>();
+    agent.HandleMessage<AgentIntrospectionRequest, AgentIntrospectionRequestHandler>();
     agent.WithSavedResponses(opts => builder.Configuration.GetSection("SavedResponses").Bind(opts));
     agent.HandleMessage<SaveResponseRequest, SaveResponseRequestHandler>();
     agent.HandleMessage<ListSavedResponsesRequest, ListSavedResponsesRequestHandler>();
@@ -565,6 +566,7 @@ builder.Services.AddRockBotHost(agent =>
     agent.SubscribeTo($"{UserProxyTopics.ConversationHistoryRequest}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.AgentInfoRequest}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.ActiveStatusRequest}.{agentName}");
+    agent.SubscribeTo($"{UserProxyTopics.AgentIntrospectionRequest}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.SaveResponseRequest}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.ListSavedResponsesRequest}.{agentName}");
     agent.SubscribeTo($"{UserProxyTopics.GetSavedResponseRequest}.{agentName}");

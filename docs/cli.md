@@ -14,7 +14,7 @@ That one-shot form is how scripts and live tests drive the agent.
 | Command | What it does |
 |---|---|
 | `chat` (default) | Interactive chat, or one turn with `--message <TEXT>` (`-` reads stdin) |
-| `info` | The agent's name and version |
+| `info` | The agent's name and version; with `--models`, `--pricing` or `--all`, what it is configured with. See [Agent info](#agent-info-rockbot-info) |
 | `status` | The agent's current activity (processing, subagents) |
 | `history` | Stored conversation history for a session |
 | `clear` | Reset the agent's in-memory conversation context for a session |
@@ -25,6 +25,36 @@ Connection options work on every subcommand: `--rabbitmq-host`, `--rabbitmq-port
 `--rabbitmq-password`, `--agent`, `-s|--session`, `-u|--user`, `--timeout`, `--proxy-id`, `-v|--verbose`.
 They override the matching configuration keys (`RabbitMq:HostName` and so on) from `appsettings.json`,
 environment variables and user secrets. Put the subcommand first: `rockbot clear --session X`.
+
+## Agent info: `rockbot info`
+
+`rockbot info` prints the agent's name and version. The flags add what the agent is configured
+with. The agent answers these from its own state, without calling its LLM, so they work while the
+LLM is failing and cost no tokens.
+
+| Flag | Adds |
+|---|---|
+| `--models` | Each tier (Low, Balanced, High) with its models in fallback order, the service and endpoint host of each, the pricing row it is costed with, the embedding model and the decision model |
+| `--pricing` | The pricing table the agent estimates cost with, in USD per million tokens, and whether it came from `llm-pricing.json` or the built-in fallback table |
+| `--all` | Every section |
+| `--json` | The agent's answer as JSON instead of text. With no section flag, every section |
+
+```
+$ rockbot info --models
+RockBot 0.18.4 (started 2026-11-15 08:00:00Z)
+
+Models (loaded 2026-11-15 08:00:01Z; a change needs a restart)
+  Low       gpt-5.6-luna (Azure AI Foundry, rocky.cognitiveservices.azure.com)  $0.20 in / $1.20 out per M
+  Balanced  1. claude-haiku-5-5 (Anthropic API, api.anthropic.com, images)  $0.10 in / $0.50 out per M
+            2. anthropic/claude-haiku-5.5 (OpenRouter, openrouter.ai, text only)  (no pricing row; costed at $0)
+  High      (no model of its own; uses the Balanced model)
+  A numbered list is a fallback chain: each later model is used only when the ones before it fail.
+  Embeddings: text-embedding-3-small (Azure AI Foundry)
+  Decision model: decision-1 (Azure AI Foundry, Foundry decision API)
+```
+
+No output ever carries an API key; endpoints are shown as a host only. An agent older than this CLI
+doesn't answer these requests, and the command exits `2` after the timeout.
 
 ## One-shot output
 

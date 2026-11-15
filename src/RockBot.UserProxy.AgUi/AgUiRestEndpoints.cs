@@ -65,6 +65,7 @@ internal static class AgUiRestEndpoints
         api.MapPost("/threads/{id}/clear", ClearAsync);
         api.MapGet("/threads/{id}/questions", Questions);
         api.MapGet("/agent", AgentAsync);
+        api.MapGet("/agent/introspection", IntrospectionAsync);
     }
 
     // ── Attachments ──────────────────────────────────────────────────────────
@@ -670,6 +671,28 @@ internal static class AgUiRestEndpoints
                 .Where(w => w.ThreadId is null || string.Equals(w.ThreadId, thread, StringComparison.Ordinal))
                 .ToList(),
         });
+    }
+
+    /// <summary>
+    /// <c>GET /agent/introspection?sections=models,pricing</c>: what the agent is configured with,
+    /// as the agent describes it without invoking its LLM (#834). <c>sections</c> is a
+    /// comma-separated list of <see cref="IntrospectionSections"/>; without it, every section.
+    /// About the agent as a whole, so it takes no thread.
+    /// </summary>
+    private static async Task<IResult> IntrospectionAsync(
+        string? sections, UserProxyService proxy, AgUiOptions options, CancellationToken ct)
+    {
+        if (!proxy.IsConnected)
+            return NotConnected();
+
+        var wanted = (sections ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return await proxy.GetIntrospectionAsync(wanted, options.RequestTimeout, ct) is { } introspection
+            ? Json(introspection)
+            : NoAnswer("the request to describe itself");
     }
 
     // ── Shared ───────────────────────────────────────────────────────────────

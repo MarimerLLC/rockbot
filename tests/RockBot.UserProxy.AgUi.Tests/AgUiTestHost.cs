@@ -98,6 +98,8 @@ internal sealed class FakeAgent : IAsyncDisposable
 
     public Func<ActiveStatusRequest, ActiveStatusResponse?>? OnStatus { get; set; }
 
+    public Func<AgentIntrospectionRequest, AgentIntrospectionResponse?>? OnIntrospection { get; set; }
+
     public ListSavedResponsesResponse? Saved { get; set; }
 
     public Func<SaveResponseRequest, SaveResponseAck?>? OnSave { get; set; }
@@ -168,6 +170,9 @@ internal sealed class FakeAgent : IAsyncDisposable
         await AnswerAsync<AgentInfoRequest, AgentInfoResponse>(subscriber, UserProxyTopics.AgentInfoRequest, _ => Info);
         await AnswerAsync<ActiveStatusRequest, ActiveStatusResponse>(
             subscriber, UserProxyTopics.ActiveStatusRequest, r => OnStatus?.Invoke(r));
+        // Answered on the proxy's point-to-point reply topic, which the request names.
+        await AnswerAsync<AgentIntrospectionRequest, AgentIntrospectionResponse>(
+            subscriber, UserProxyTopics.AgentIntrospectionRequest, r => OnIntrospection?.Invoke(r));
         await AnswerAsync<ListSavedResponsesRequest, ListSavedResponsesResponse>(
             subscriber, UserProxyTopics.ListSavedResponsesRequest, _ => Saved);
         await AnswerAsync<SaveResponseRequest, SaveResponseAck>(
