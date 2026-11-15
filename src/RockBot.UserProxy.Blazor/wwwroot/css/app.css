@@ -133,6 +133,13 @@ h1:focus {
     background: rgba(255, 255, 255, 0.28);
 }
 
+/* A toggle that is on (the detail toggle in Detailed view): a brighter fill and a white ring,
+   so the state never rests on colour alone. */
+.icon-btn[aria-pressed="true"] {
+    background: rgba(255, 255, 255, 0.34);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+}
+
 .icon-btn.text-btn {
     width: auto;
     padding: 0 var(--rb-space-3);

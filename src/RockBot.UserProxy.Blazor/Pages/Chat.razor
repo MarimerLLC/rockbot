@@ -16,6 +16,10 @@
     // are being applied on other threads.
     var state = ChatState.State;
     var isBusy = state.IsBusy(ChatState.UtcNow);
+
+    // What this view draws: Simple leaves the agent's working detail out of the transcript (#828).
+    var visibleMessages = ChatVisibility.VisibleMessages(state, _detailLevel, ChatState.UtcNow);
+    _drawnMessageCount = visibleMessages.Count;
 }
 
 <PageTitle>@(state.AgentName ?? "RockBot") Chat</PageTitle>
@@ -53,6 +57,12 @@
                     title="Saved responses" aria-label="Saved responses">
                 <RbIcon Name="bookmark" Size="14" />
             </button>
+            @* Simple ↔ Detailed view. The label stays put; aria-pressed carries the state. *@
+            <button type="button" class="icon-btn" @onclick="ToggleDetailLevel"
+                    aria-pressed="@(IsDetailed ? "true" : "false")" aria-label="Show agent details"
+                    title="@(IsDetailed ? "Detailed view: showing agent details" : "Simple view: show agent details")">
+                <RbIcon Name="list-tree" Size="15" />
+            </button>
             <button type="button" class="icon-btn" @onclick="ToggleDarkMode"
                     title="Toggle dark/light mode" aria-label="@(IsDarkMode ? "Switch to light mode" : "Switch to dark mode")">
                 @(IsDarkMode ? "☀️" : "🌙")
@@ -84,7 +94,7 @@
     <div inert="@_showSavedModal"><McpSignInBanner /></div>
 
     <div class="chat-messages flex-grow-1" inert="@_showSavedModal" @ref="messagesContainer">
-        @foreach (var message in state.Messages)
+        @foreach (var message in visibleMessages)
         {
             @if (message.IsActivityLog)
             {
@@ -298,8 +308,9 @@
         @{
             // Only a log that is still receiving entries carries its own spinner. Testing
             // for a collapsed bubble instead would match every finished turn's leftover
-            // log and suppress this indicator for the rest of the conversation.
-            var hasActiveActivityLog = state.HasOpenActivityLog;
+            // log and suppress this indicator for the rest of the conversation. Simple view
+            // draws no logs, so there the thinking line shows whenever the agent is busy.
+            var hasActiveActivityLog = IsDetailed && state.HasOpenActivityLog;
         }
         @if ((isBusy && !hasActiveActivityLog) || (!isBusy && !string.IsNullOrEmpty(state.ThinkingMessage)))
         {
@@ -323,11 +334,14 @@
         }
     </div>
 
-    @if (state.TaskLists.Count > 0)
+    @{
+        var plans = ChatVisibility.VisibleTaskLists(state, _detailLevel);
+    }
+    @if (plans.Count > 0)
     {
-        <!-- The agent's plans: the primary turn's task list, and any running subagent's -->
+        <!-- The agent's plans: the primary turn's task list, and (Detailed) any running subagent's -->
         <div class="plan-panel" inert="@_showSavedModal">
-            @foreach (var list in state.TaskLists.Values.OrderBy(l => l.Key == ReplySourceKind.Primary ? 0 : 1).ThenBy(l => l.UpdatedAt))
+            @foreach (var list in plans)
             {
                 <div class="plan-list">
                     <div class="plan-title">
@@ -507,6 +521,21 @@
     private Action? _connectionChangedHandler;
     private int _renderedMessageCount = 0;
 
+    // Simple (the default) or Detailed: what the transcript draws. Per view, not chat state —
+    // ChatStateService is shared by every browser. Remembered in the browser's localStorage.
+    private ChatDetailLevel _detailLevel = ChatDetailLevel.Simple;
+    private bool IsDetailed => _detailLevel == ChatDetailLevel.Detailed;
+
+    // How many messages the last render drew, and whether the next render follows a view switch
+    // (which changes the count without anything new arriving, so it mustn't scroll).
+    private int _drawnMessageCount;
+    private bool _viewSwitched;
+
+    // Simple view shows a subagent result RockBot never answered once its grace runs out, with
+    // no event to prompt a render then; this timer prompts it.
+    private Timer? _visibilityTimer;
+    private DateTime? _visibilityRenderAt;
+
     // Save flow state
     private string? _savingMessageId;
     private string _saveLabel = string.Empty;
@@ -548,6 +577,12 @@
 
         _connectionChangedHandler = () => InvokeAsync(StateHasChanged);
         ProxyService.OnConnectionChanged += _connectionChangedHandler;
+
+        _visibilityTimer = new Timer(_ => InvokeAsync(() =>
+        {
+            _visibilityRenderAt = null;
+            StateHasChanged();
+        }));
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -569,6 +604,10 @@
             var tzId = await JSRuntime.InvokeAsync<string>("chatHelpers.getBrowserTimezone");
             try { _displayZone = TimeZoneInfo.FindSystemTimeZoneById(tzId); }
             catch { _displayZone = TimeZoneInfo.Utc; }
+
+            // The view this browser last chose; ApplyDarkMode's render below picks it up.
+            var level = await JSRuntime.InvokeAsync<string>("chatHelpers.getDetailLevel");
+            _detailLevel = level == "detailed" ? ChatDetailLevel.Detailed : ChatDetailLevel.Simple;
 
             // Check for system dark mode preference
             IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval",
@@ -620,15 +659,48 @@
             await _savedModal.FocusAsync();
         }
 
-        // Only scroll when a new message has been added — not on every re-render
-        // (e.g. theme toggles should not move the scroll position).
-        // Scroll to the TOP of the new message so long responses are read top-to-bottom.
-        var currentCount = ChatState.State.Messages.Count;
-        if (currentCount > _renderedMessageCount)
+        // Only scroll when a new message has been drawn — not on every re-render (theme toggles,
+        // or a message Simple view leaves out, should not move the scroll position), and not
+        // when a view switch changed what is drawn. Scroll to the TOP of the new message so long
+        // responses are read top-to-bottom. The count follows the drawn transcript down too
+        // (a /clear, a switch to Simple), so the next new message still scrolls.
+        var drawn = _drawnMessageCount;
+        var grew = drawn > _renderedMessageCount && !_viewSwitched;
+        _renderedMessageCount = drawn;
+        _viewSwitched = false;
+        if (grew)
         {
-            _renderedMessageCount = currentCount;
             await JSRuntime.InvokeVoidAsync("eval",
                 "var msgs = document.querySelectorAll('.message-wrapper'); if (msgs.length) msgs[msgs.length - 1].scrollIntoView({ behavior: 'smooth', block: 'start' });");
+        }
+
+        ScheduleVisibilityRender(ChatVisibility.NextVisibilityChange(ChatState.State, _detailLevel, ChatState.UtcNow));
+    }
+
+    /// <summary>Arms the timer for the next time Simple view draws something with no event to prompt it.</summary>
+    private void ScheduleVisibilityRender(DateTime? at)
+    {
+        if (at == _visibilityRenderAt)
+            return;
+
+        _visibilityRenderAt = at;
+        var due = at is { } when
+            ? (when - ChatState.UtcNow) + TimeSpan.FromMilliseconds(50)
+            : Timeout.InfiniteTimeSpan;
+        _visibilityTimer?.Change(due < TimeSpan.Zero ? TimeSpan.Zero : due, Timeout.InfiniteTimeSpan);
+    }
+
+    private async Task ToggleDetailLevel()
+    {
+        _detailLevel = IsDetailed ? ChatDetailLevel.Simple : ChatDetailLevel.Detailed;
+        _viewSwitched = true;
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("chatHelpers.setDetailLevel", IsDetailed ? "detailed" : "simple");
+        }
+        catch (JSException)
+        {
+            // Not remembered; this page still switches.
         }
     }
 
@@ -1122,6 +1194,8 @@
     {
         ChatState.OnStateChanged -= _stateChangedHandler;
         ProxyService.OnConnectionChanged -= _connectionChangedHandler;
+        _visibilityTimer?.Dispose();
+        _visibilityTimer = null;
         _sendCts?.Dispose();
         _sendCts = null;
     }
