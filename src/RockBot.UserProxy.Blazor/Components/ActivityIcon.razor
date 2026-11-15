@@ -2,20 +2,37 @@
    fixed order: the row of slots is the status map, so an idle slot dims instead of disappearing.
    The ring glow and pulse are reserved for live activity — the only glow allowed in product chrome.
    The glyph is the kind's own (CategoryAvatar.Glyph) and the ring colour comes from app.css
-   (.activity-icon.<kind>), so the header slot and the bubble avatar can't drift apart. *@
+   (.activity-icon.<kind>), so the header slot and the bubble avatar can't drift apart.
+   With OnClick the slot is a button that opens the activity panel on its tab (#828). *@
 
 @{
     var label = Label(Kind);
     var showCount = Active && Count > 1;
+    var state = Active ? showCount ? $"{Count} active" : "active" : "idle";
 }
-<span class="activity-icon @Kind @(Active ? "active" : null)" title="@(Title ?? label)">
-    <span class="activity-icon-inner"><RbIcon Name="@CategoryAvatar.Glyph(Kind)" Size="@(Kind is "agent" or "subagent" ? 14 : 13)" /></span>
-    @if (showCount)
-    {
-        <span class="activity-icon-count" aria-hidden="true">@Count</span>
-    }
-    <span class="visually-hidden">@label: @(Active ? showCount ? $"{Count} active" : "active" : "idle")</span>
-</span>
+@if (OnClick.HasDelegate)
+{
+    <button type="button" class="activity-icon @Kind @(Active ? "active" : null)" title="@(Title ?? label)"
+            aria-expanded="@(Expanded ? "true" : "false")" aria-controls="@Controls" @onclick="OnClick">
+        <span class="activity-icon-inner"><RbIcon Name="@CategoryAvatar.Glyph(Kind)" Size="@(Kind is "agent" or "subagent" ? 14 : 13)" /></span>
+        @if (showCount)
+        {
+            <span class="activity-icon-count" aria-hidden="true">@Count</span>
+        }
+        <span class="visually-hidden">@label: @state. Show details</span>
+    </button>
+}
+else
+{
+    <span class="activity-icon @Kind @(Active ? "active" : null)" title="@(Title ?? label)">
+        <span class="activity-icon-inner"><RbIcon Name="@CategoryAvatar.Glyph(Kind)" Size="@(Kind is "agent" or "subagent" ? 14 : 13)" /></span>
+        @if (showCount)
+        {
+            <span class="activity-icon-count" aria-hidden="true">@Count</span>
+        }
+        <span class="visually-hidden">@label: @state</span>
+    </span>
+}
 
 @code {
     /// <summary><c>agent</c>, <c>subagent</c>, <c>a2a</c> or <c>scheduled</c>.</summary>
@@ -28,6 +45,15 @@
 
     /// <summary>Tooltip; defaults to the slot's label.</summary>
     [Parameter] public string? Title { get; set; }
+
+    /// <summary>Makes the slot a button: opens (or closes) the activity panel on this slot's tab.</summary>
+    [Parameter] public EventCallback OnClick { get; set; }
+
+    /// <summary>True while the activity panel shows this slot's tab.</summary>
+    [Parameter] public bool Expanded { get; set; }
+
+    /// <summary>The activity panel's id.</summary>
+    [Parameter] public string? Controls { get; set; }
 
     private static string Label(string kind) => kind switch
     {
