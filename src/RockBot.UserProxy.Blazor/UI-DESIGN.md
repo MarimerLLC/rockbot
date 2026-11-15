@@ -6,8 +6,9 @@ reference mock; `components/chat.css` is the reference CSS.
 
 - `wwwroot/css/tokens.css` is a verbatim copy of the design system's generated `tokens.css`
   (`--rb-*` colours, radii, shadows, type scale). Re-sync it by copying the file again.
-- `wwwroot/css/app.css` is written entirely in terms of those tokens. App-level overrides (fonts,
-  a few darker text colours for contrast) sit in its first `:root` block.
+- `wwwroot/css/app.css` is written entirely in terms of those tokens. Its first `:root` block
+  holds the app-level overrides: system fonts, and four dark-mode interaction shades
+  (`--app-*`) the design system doesn't define yet.
 - Bootstrap 5 stays as the base layer (forms, buttons in forms, utilities); colour comes from the
   tokens, not Bootstrap's colour utilities.
 

@@ -7,7 +7,11 @@
    own. The rest are Lucide icons (https://lucide.dev, ISC licence, Copyright (c) Lucide Contributors). *@
 
 @{
-    var icon = Icons.TryGetValue(Name, out var found) ? found : Icons["x"];
+    // An unknown name is a typo in markup, not data: fail on first render rather than draw a
+    // stand-in glyph that could read as the wrong action.
+    var icon = Icons.TryGetValue(Name, out var found)
+        ? found
+        : throw new ArgumentException($"Unknown icon '{Name}'.", nameof(Name));
 }
 <svg class="rb-icon @Class" viewBox="@icon.ViewBox" width="@Size" height="@Size"
      fill="@(Filled ? "currentColor" : "none")" stroke="currentColor" stroke-width="@icon.Stroke"

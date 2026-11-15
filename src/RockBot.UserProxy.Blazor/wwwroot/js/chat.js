@@ -1,3 +1,10 @@
+// Every page (App.razor loads this script) starts in the system's colour scheme. The static
+// /login and /access-denied pages have no circuit, so this is their only way into dark mode; the
+// chat page sets the same class again on first render and then follows its own toggle.
+if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    document.body.classList.add('dark-mode');
+}
+
 window.chatHelpers = {
     setPageTitle: function (title) {
         document.title = title;

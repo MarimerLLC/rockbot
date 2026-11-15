@@ -20,11 +20,15 @@
     /// <summary><c>agent</c>, <c>subagent</c>, <c>a2a</c>, <c>scheduled</c>, <c>saved</c>, or null for an empty slot.</summary>
     [Parameter] public string? Kind { get; set; }
 
-    private static string Glyph(string kind) => kind switch
+    /// <summary>
+    /// The one glyph per actor kind, shared with the header's <see cref="ActivityIcon"/> slots.
+    /// </summary>
+    internal static string Glyph(string kind) => kind switch
     {
-        "subagent" => "robot",
+        "agent" or "subagent" => "robot",
         "a2a" => "exchange",
         "scheduled" => "hourglass",
-        _ => "bookmark",
+        "saved" => "bookmark",
+        _ => throw new ArgumentException($"Unknown actor kind '{kind}'.", nameof(kind)),
     };
 }

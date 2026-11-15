@@ -1,6 +1,8 @@
 /* RockBot chat UI.
-   Styled to the RockBot Design System (https://claude.ai/artifact/By42C3bKBZFMSpH1ushPZ5): every
-   colour, radius and shadow comes from the --rb-* tokens in tokens.css, which loads first.
+   Styled to the RockBot Design System (https://claude.ai/artifact/By42C3bKBZFMSpH1ushPZ5): the
+   --rb-* tokens in tokens.css (loaded first) supply every colour, radius and shadow. The only
+   colours defined here are the four --app-* shades in the override block below, which the token
+   set doesn't have yet, and translucent rgba() washes.
    The rules this file keeps:
    - Blue does interaction (header, user bubbles, buttons, focus); orange is RockBot itself (the
      agent avatar and the left edge of its replies, interim lines, subagents, brand moments).
@@ -17,14 +19,11 @@
     --font-body: var(--font-sans);
     --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, Menlo, monospace;
 
-    /* Darker steps of design-system colours where the token itself misses 4.5:1 as small text
-       on its tinted ground. */
-    --app-fg-muted: #5b636b;          /* --rb-fg-muted is ~4.5:1 on the bubble tints */
-    --app-orange-text: #a8480e;       /* --rb-orange-700 is 4.4:1 on --rb-cat-subagent-bg */
-    --app-subagent-badge-fg: #9a3f0b; /* --rb-cat-subagent-badge-fg is 3.9:1 on its badge */
-    --app-header-dark: #10243f;       /* the header's muted navy in dark mode */
-    --app-interim-border: #ffc9a0;
-    --app-dark-panel: #262b30;        /* activity / category bubbles in dark mode */
+    /* Dark-mode interaction shades the design system doesn't have yet. */
+    --app-blue-tint-dark: #1e3a5f;    /* hover / badge fill for blue controls on dark panels */
+    --app-blue-fg-dark: #bfdbfe;      /* text and icons on that fill; chosen feedback */
+    --app-saved-active-dark: #c7d2fe; /* the save bookmark once chosen */
+    --app-control-border-dark: #6b7280; /* Bootstrap outline-secondary buttons on dark panels */
 }
 
 body {
@@ -127,7 +126,7 @@ h1:focus {
     font-size: 14px;
     line-height: 1;
     cursor: pointer;
-    transition: background-color var(--rb-duration-fast, 0.15s) ease;
+    transition: background-color 0.15s ease;
 }
 
 .icon-btn:hover {
@@ -197,8 +196,8 @@ h1:focus {
     padding: 8px 10px;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: var(--rb-radius-lg);
-    background: #0d1929;
-    color: #e6ebf2;
+    background: var(--rb-popover-bg);
+    color: var(--rb-popover-fg);
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
     font-size: 0.78rem;
 }
@@ -262,6 +261,12 @@ h1:focus {
     align-items: center;
     justify-content: center;
 }
+
+/* Ring colours per kind, from the design system's ACTIVITY_SPECS (the same family as .cat-avatar). */
+.activity-icon.agent     { --ring: var(--rb-orange);     --glow: rgba(255, 122, 26, 0.55); }
+.activity-icon.subagent  { --ring: var(--rb-orange-300); --glow: rgba(255, 155, 77, 0.50); }
+.activity-icon.a2a       { --ring: var(--rb-eye-glow);   --glow: rgba(58, 184, 255, 0.55); }
+.activity-icon.scheduled { --ring: var(--rb-warning);    --glow: rgba(251, 191, 36, 0.55); }
 
 .activity-icon.active {
     background: rgba(10, 18, 32, 0.55);
@@ -347,8 +352,8 @@ h1:focus {
 
 .cat-avatar.subagent  { border: 2px solid var(--rb-orange);      color: var(--rb-orange-300); }
 .cat-avatar.a2a       { border: 2px solid var(--rb-blue);        color: var(--rb-eye-glow); }
-.cat-avatar.scheduled { border: 2px solid #d97706;               color: var(--rb-warning); }
-.cat-avatar.saved     { border: 2px solid var(--rb-saved-border); color: #a5b4fc; }
+.cat-avatar.scheduled { border: 2px solid var(--rb-cat-scheduled-accent);               color: var(--rb-warning); }
+.cat-avatar.saved     { border: 2px solid var(--rb-saved-border); color: var(--rb-saved-glyph); }
 
 /* ── Bubbles ────────────────────────────────────────────────────────────── */
 
@@ -385,8 +390,8 @@ h1:focus {
 /* Interim lines and the thinking indicator: dashed, orange-tinted, italic. */
 .message-bubble.interim-message {
     background-color: var(--rb-cat-subagent-bg);
-    border: 1px dashed var(--app-interim-border);
-    color: var(--app-orange-text);
+    border: 1px dashed var(--rb-interim-border);
+    color: var(--rb-interim-fg);
     font-style: italic;
     box-shadow: none;
 }
@@ -407,14 +412,14 @@ h1:focus {
 
 .category-badge.thinking-badge {
     background-color: var(--rb-cat-subagent-badge-bg);
-    color: var(--app-subagent-badge-fg);
+    color: var(--rb-cat-subagent-badge-fg);
     font-style: normal;
 }
 
 .message-bubble.error-message {
     background-color: var(--rb-danger);
     border: 1px solid var(--rb-danger);
-    color: #fff;
+    color: var(--rb-fg-on-primary);
 }
 
 .message-agent-name {
@@ -483,7 +488,7 @@ h1:focus {
 
 .user-bubble .message-content a:hover,
 .error-message .message-content a:hover {
-    color: #fff;
+    color: var(--rb-fg-on-primary);
 }
 
 .user-bubble .message-content code {
@@ -492,7 +497,7 @@ h1:focus {
 
 .user-bubble .message-content pre {
     background-color: rgba(0, 0, 0, 0.25);
-    color: #fff;
+    color: var(--rb-fg-on-primary);
 }
 
 /* ── Attachments (rendered outside the markdown sanitizer) ─────────────── */
@@ -637,7 +642,7 @@ h1:focus {
 
 .category-subagentactivity .category-badge {
     background-color: var(--rb-cat-subagent-badge-bg);
-    color: var(--app-subagent-badge-fg);
+    color: var(--rb-cat-subagent-badge-fg);
 }
 
 .category-a2aactivity .category-badge {
@@ -664,8 +669,8 @@ h1:focus {
 
 .message-bubble.collapsible-bubble,
 .message-bubble.activity-log-bubble {
-    border: 1px dashed #ced4da;
-    background-color: #fafafa;
+    border: 1px dashed var(--rb-border-dashed);
+    background-color: var(--rb-cat-neutral-bg);
     box-shadow: none;
     color: var(--rb-fg);
 }
@@ -676,7 +681,7 @@ h1:focus {
 
 .message-bubble.category-subagentactivity {
     background-color: var(--rb-cat-subagent-bg);
-    border-color: var(--app-interim-border);
+    border-color: var(--rb-interim-border);
 }
 
 .message-bubble.category-a2aactivity {
@@ -692,7 +697,7 @@ h1:focus {
     align-items: center;
     gap: 0.45rem;
     font-size: var(--rb-text-sm);
-    color: var(--app-fg-muted);
+    color: var(--rb-fg-muted-on-tint);
     cursor: pointer;
 }
 
@@ -703,7 +708,7 @@ h1:focus {
 .collapsible-agent-name {
     flex-shrink: 0;
     font-weight: var(--rb-weight-medium);
-    color: #4b5563;
+    color: var(--rb-fg-secondary);
 }
 
 .collapsible-preview {
@@ -712,7 +717,7 @@ h1:focus {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--app-fg-muted);
+    color: var(--rb-fg-muted-on-tint);
     font-style: italic;
 }
 
@@ -725,7 +730,7 @@ h1:focus {
 }
 
 .message-bubble.activity-log-bubble:hover {
-    background-color: #f3f4f6;
+    background-color: var(--rb-cat-neutral-bg-hover);
 }
 
 .activity-log-header {
@@ -734,7 +739,7 @@ h1:focus {
     gap: 0.4rem;
     min-width: 0;
     font-size: var(--rb-text-sm);
-    color: var(--app-fg-muted);
+    color: var(--rb-fg-muted-on-tint);
 }
 
 .activity-log-header .spinner-border {
@@ -771,12 +776,12 @@ h1:focus {
     display: flex;
     gap: var(--rb-space-2);
     padding: 0.15rem 0;
-    color: #4b5563;
+    color: var(--rb-fg-secondary);
 }
 
 .entry-time {
     flex-shrink: 0;
-    color: var(--app-fg-muted);
+    color: var(--rb-fg-muted-on-tint);
     font-size: 0.75rem;
 }
 
@@ -788,9 +793,9 @@ h1:focus {
 .tool-call-card { display: inline-block; vertical-align: top; }
 .tool-call-card summary { cursor: pointer; }
 .tool-call-name { font-family: var(--font-mono); }
-.tool-call-duration { margin-left: 0.5em; color: var(--app-fg-muted); font-size: 0.85em; }
+.tool-call-duration { margin-left: 0.5em; color: var(--rb-fg-muted-on-tint); font-size: 0.85em; }
 .tool-call-failed .tool-call-status, .tool-call-error { color: var(--rb-danger); }
-.tool-call-finished .tool-call-status { color: #198754; }
+.tool-call-finished .tool-call-status { color: var(--rb-success-fg); }
 .tool-call-field { margin: 0.15em 0 0 1.2em; white-space: pre-wrap; word-break: break-word; }
 .tool-call-label { font-weight: var(--rb-weight-semi); margin-right: 0.3em; }
 
@@ -813,14 +818,14 @@ h1:focus {
 
 .category-badge.saved-badge {
     background-color: var(--rb-saved-badge-bg);
-    color: #fff;
+    color: var(--rb-fg-on-primary);
 }
 
 .saved-label {
     flex: 1;
     font-size: var(--rb-text-sm);
     font-weight: var(--rb-weight-medium);
-    color: #4338ca;
+    color: var(--rb-saved-fg);
 }
 
 /* ── MCP question (a server's question, answered in a form) ────────────── */
@@ -829,7 +834,7 @@ h1:focus {
 .message-bubble.mcp-question-bubble {
     border: 2px solid var(--rb-primary);
     border-radius: var(--rb-radius-xl);
-    background-color: #f3f8ff;
+    background-color: var(--rb-question-bg);
 }
 
 .mcp-question-header {
@@ -842,7 +847,7 @@ h1:focus {
 
 .category-badge.mcp-question-badge {
     background-color: var(--rb-primary-700);
-    color: #fff;
+    color: var(--rb-fg-on-primary);
 }
 
 .mcp-question-server {
@@ -853,7 +858,7 @@ h1:focus {
 
 .mcp-question-tool {
     font-size: 0.8rem;
-    color: var(--app-fg-muted);
+    color: var(--rb-fg-muted-on-tint);
     overflow-wrap: anywhere;
 }
 
@@ -885,13 +890,13 @@ h1:focus {
 
 .mcp-question-error {
     margin-top: 0.15rem;
-    color: #b91c1c;
+    color: var(--rb-danger-fg);
 }
 
 .mcp-question-closed {
     padding-top: 0.4rem;
     border-top: 1px solid var(--rb-divider);
-    color: #4b5563;
+    color: var(--rb-fg-secondary);
     font-style: italic;
 }
 
@@ -903,7 +908,7 @@ h1:focus {
     align-items: center;
     gap: var(--rb-space-3);
     padding: var(--rb-space-2) var(--rb-space-4);
-    border-bottom: 1px solid #f3d27a;
+    border-bottom: 1px solid var(--rb-warning-border);
     background-color: var(--rb-cat-scheduled-badge-bg);
     color: var(--rb-cat-scheduled-badge-fg);
     font-size: 0.9rem;
@@ -916,7 +921,7 @@ h1:focus {
 
 .mcp-signin-error {
     margin-top: var(--rb-space-1);
-    color: #b91c1c;
+    color: var(--rb-danger-fg);
     font-size: var(--rb-text-sm);
 }
 
@@ -933,6 +938,11 @@ h1:focus {
     gap: 0.35rem;
 }
 
+/* Bootstrap's link blue is under 4.5:1 on the amber banner; use the banner's own text colour. */
+.mcp-signin-actions .btn-link {
+    color: var(--rb-cat-scheduled-badge-fg);
+}
+
 /* ── Plan panel (#795) ─────────────────────────────────────────────────── */
 
 .plan-panel {
@@ -947,12 +957,12 @@ h1:focus {
 
 .plan-list + .plan-list { margin-top: 0.5em; }
 .plan-title { font-weight: var(--rb-weight-semi); }
-.plan-progress { margin-left: 0.5em; color: var(--app-fg-muted); font-weight: normal; }
+.plan-progress { margin-left: 0.5em; color: var(--rb-fg-muted-on-tint); font-weight: normal; }
 .plan-item { display: flex; gap: 0.5em; align-items: baseline; margin-left: 0.5em; }
 .plan-item input { accent-color: var(--rb-primary); }
 .plan-item-in-progress { font-weight: var(--rb-weight-semi); }
 .plan-item-in-progress span { box-shadow: inset 0 -2px 0 var(--rb-orange); }
-.plan-item-completed span { text-decoration: line-through; color: var(--app-fg-muted); }
+.plan-item-completed span { text-decoration: line-through; color: var(--rb-fg-muted-on-tint); }
 
 /* ── Composer ───────────────────────────────────────────────────────────── */
 
@@ -1025,7 +1035,7 @@ h1:focus {
     padding: 0 12px;
     border: 1px solid var(--rb-border);
     background: transparent;
-    color: var(--app-fg-muted);
+    color: var(--rb-fg-muted-on-tint);
 }
 
 .btn-ghost:hover {
@@ -1091,7 +1101,7 @@ h1:focus {
     border: none;
     border-radius: 50%;
     background: none;
-    color: var(--app-fg-muted);
+    color: var(--rb-fg-muted-on-tint);
     cursor: pointer;
 }
 
@@ -1100,8 +1110,8 @@ h1:focus {
     color: var(--rb-fg);
 }
 
-.staged-status { font-size: var(--rb-text-sm); color: var(--app-fg-muted); }
-.staged-error { font-size: var(--rb-text-sm); color: #b91c1c; }
+.staged-status { font-size: var(--rb-text-sm); color: var(--rb-fg-muted-on-tint); }
+.staged-error { font-size: var(--rb-text-sm); color: var(--rb-danger-fg); }
 
 /* ── Saved responses modal ─────────────────────────────────────────────── */
 
@@ -1142,7 +1152,7 @@ h1:focus {
 }
 
 .saved-item-meta {
-    color: var(--app-fg-muted);
+    color: var(--rb-fg-muted-on-tint);
 }
 
 .row-icon-btn {
@@ -1154,7 +1164,7 @@ h1:focus {
     border: 1px solid var(--rb-border);
     border-radius: var(--rb-radius-sm);
     background: transparent;
-    color: var(--app-fg-muted);
+    color: var(--rb-fg-muted-on-tint);
     cursor: pointer;
     transition: background-color 0.15s ease, color 0.15s ease;
 }
@@ -1165,8 +1175,8 @@ h1:focus {
 }
 
 .row-icon-btn.danger:hover {
-    background-color: #fde2e4;
-    color: #b02a37;
+    background-color: var(--rb-danger-100);
+    color: var(--rb-danger-700);
 }
 
 .saved-view-header {
@@ -1202,6 +1212,8 @@ h1:focus {
 .staged-chip-remove:focus-visible,
 .login-btn:focus-visible,
 .collapsible-header:focus-visible,
+.activity-log-header:focus-visible,
+.saved-modal:focus-visible,
 .form-control:focus,
 .form-select:focus {
     outline: 2px solid var(--rb-primary);
@@ -1211,7 +1223,7 @@ h1:focus {
 /* On the blue header the ring is white, or it would vanish into the bar. */
 .chat-header .icon-btn:focus-visible,
 .chat-header .conn-pill:focus-visible {
-    outline-color: #fff;
+    outline-color: var(--rb-fg-on-primary);
 }
 
 .composer textarea:focus {
@@ -1332,12 +1344,12 @@ body.dark-mode .chat-messages {
 
 /* The bright blue bar flares against a dark canvas: drop it to a muted navy. */
 body.dark-mode .chat-header {
-    background-color: var(--app-header-dark);
+    background-color: var(--rb-header-dark);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 body.dark-mode .activity-icon-count {
-    box-shadow: 0 0 0 1.5px var(--app-header-dark);
+    box-shadow: 0 0 0 1.5px var(--rb-header-dark);
 }
 
 body.dark-mode .agent-message .message-bubble {
@@ -1348,41 +1360,41 @@ body.dark-mode .agent-message .message-bubble {
 
 /* A thicker edge with a soft glow so the orange still reads against the dark panel. */
 body.dark-mode .message-bubble.agent-reply {
-    border-left: 4px solid #ff8a33;
+    border-left: 4px solid var(--rb-agent-accent-dark);
     box-shadow: -2px 0 12px rgba(255, 122, 26, 0.28);
 }
 
 body.dark-mode .message-bubble.user-bubble {
-    background-color: #2b6fd8;
-    border-color: #2b6fd8;
+    background-color: var(--rb-blue-dark);
+    border-color: var(--rb-blue-dark);
 }
 
 body.dark-mode .message-bubble.interim-message {
-    background-color: var(--app-dark-panel);
-    border-color: #7a4a26;
-    color: #fdba74;
+    background-color: var(--rb-panel-dark);
+    border-color: var(--rb-interim-border-dark);
+    color: var(--rb-interim-fg-dark);
 }
 
 body.dark-mode .category-badge.thinking-badge,
 body.dark-mode .category-subagentactivity .category-badge {
-    background-color: #4a2a12;
-    color: #fed7aa;
+    background-color: var(--rb-cat-subagent-badge-bg-dark);
+    color: var(--rb-cat-subagent-badge-fg-dark);
 }
 
 body.dark-mode .message-bubble.error-message {
-    background-color: #b02a37;
-    border-color: #b02a37;
+    background-color: var(--rb-danger-dark);
+    border-color: var(--rb-danger-dark);
 }
 
 body.dark-mode .message-content code {
     background-color: rgba(255, 255, 255, 0.1);
-    color: #e8e8e8;
+    color: var(--rb-code-fg-dark);
 }
 
 body.dark-mode .message-content pre {
-    background-color: #0f1113;
+    background-color: var(--rb-code-bg-dark);
     border: 1px solid var(--rb-border-dark);
-    color: #e8e8e8;
+    color: var(--rb-code-fg-dark);
 }
 
 body.dark-mode .message-content pre code {
@@ -1390,7 +1402,13 @@ body.dark-mode .message-content pre code {
 }
 
 body.dark-mode .message-content a {
-    color: #8bb9fe;
+    color: var(--rb-link-dark);
+}
+
+/* ...but links on the blue and red bubbles stay white, as in light mode. */
+body.dark-mode .user-bubble .message-content a,
+body.dark-mode .error-message .message-content a {
+    color: rgba(255, 255, 255, 0.92);
 }
 
 body.dark-mode .message-attachments .attachment-image,
@@ -1414,57 +1432,57 @@ body.dark-mode .btn-feedback {
 }
 
 body.dark-mode .btn-feedback:hover:not(:disabled) {
-    color: #fff;
+    color: var(--rb-fg-dark);
     background-color: rgba(255, 255, 255, 0.08);
 }
 
 body.dark-mode .btn-feedback.active {
-    color: #bfdbfe;
+    color: var(--app-blue-fg-dark);
     background-color: rgba(59, 130, 246, 0.22);
     box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.45);
 }
 
 body.dark-mode .btn-feedback.save-btn {
-    color: #a5b4fc;
+    color: var(--rb-saved-glyph);
 }
 
 body.dark-mode .btn-feedback.save-btn.active {
-    color: #c7d2fe;
+    color: var(--app-saved-active-dark);
     background-color: rgba(99, 102, 241, 0.22);
 }
 
 /* Activity, category and saved bubbles. */
 body.dark-mode .message-bubble.collapsible-bubble,
 body.dark-mode .message-bubble.activity-log-bubble {
-    background-color: var(--app-dark-panel);
+    background-color: var(--rb-panel-dark);
     border-color: var(--rb-border-dark-muted);
     color: var(--rb-fg-dark-muted);
 }
 
 body.dark-mode .message-bubble.activity-log-bubble:hover {
-    background-color: #2d3338;
+    background-color: var(--rb-panel-dark-hover);
 }
 
 body.dark-mode .message-bubble.category-subagentactivity {
-    border-color: #7a4a26;
+    border-color: var(--rb-interim-border-dark);
 }
 
 body.dark-mode .message-bubble.category-a2aactivity {
-    background-color: #1f2735;
+    background-color: var(--rb-cat-a2a-bg-dark);
 }
 
 body.dark-mode .message-bubble.category-scheduledsystem {
-    background-color: #2a271c;
+    background-color: var(--rb-cat-scheduled-bg-dark);
 }
 
 body.dark-mode .category-a2aactivity .category-badge {
-    background-color: #1e3a5f;
-    color: #93c5fd;
+    background-color: var(--rb-cat-a2a-badge-bg-dark);
+    color: var(--rb-cat-a2a-badge-fg-dark);
 }
 
 body.dark-mode .category-scheduledsystem .category-badge {
-    background-color: #44380d;
-    color: #fcd34d;
+    background-color: var(--rb-cat-scheduled-badge-bg-dark);
+    color: var(--rb-cat-scheduled-badge-fg-dark);
 }
 
 body.dark-mode .collapsible-header,
@@ -1480,7 +1498,7 @@ body.dark-mode .collapsible-header:hover {
 }
 
 body.dark-mode .collapsible-agent-name {
-    color: #e5e7eb;
+    color: var(--rb-fg-dark-strong);
 }
 
 body.dark-mode .activity-log-entries {
@@ -1493,7 +1511,7 @@ body.dark-mode .activity-log-entry {
 
 body.dark-mode .tool-call-failed .tool-call-status,
 body.dark-mode .tool-call-error {
-    color: #f87171;
+    color: var(--rb-danger-fg-dark);
 }
 
 body.dark-mode .tool-call-finished .tool-call-status {
@@ -1501,24 +1519,24 @@ body.dark-mode .tool-call-finished .tool-call-status {
 }
 
 body.dark-mode .message-bubble.saved-reference-bubble {
-    background-color: #1e1b3a;
-    border-color: #818cf8;
-    color: #e5e7eb;
+    background-color: var(--rb-saved-bg-dark);
+    border-color: var(--rb-saved-border-dark);
+    color: var(--rb-fg-dark-strong);
 }
 
 body.dark-mode .saved-label {
-    color: #c4b5fd;
+    color: var(--rb-saved-fg-dark);
 }
 
 body.dark-mode .message-bubble.mcp-question-bubble {
-    background-color: #142338;
-    border-color: #93c5fd;
-    color: #e5e7eb;
+    background-color: var(--rb-question-bg-dark);
+    border-color: var(--rb-question-border-dark);
+    color: var(--rb-fg-dark-strong);
 }
 
 body.dark-mode .category-badge.mcp-question-badge {
-    background-color: #1e3a5f;
-    color: #bfdbfe;
+    background-color: var(--app-blue-tint-dark);
+    color: var(--rb-question-badge-fg-dark);
 }
 
 body.dark-mode .mcp-question-tool,
@@ -1531,25 +1549,25 @@ body.dark-mode .mcp-question-closed {
 }
 
 body.dark-mode .mcp-question-decision {
-    background-color: #451a03;
-    color: #fcd34d;
+    background-color: var(--rb-cat-scheduled-badge-bg-dark);
+    color: var(--rb-cat-scheduled-badge-fg-dark);
 }
 
 body.dark-mode .mcp-question-error,
 body.dark-mode .mcp-signin-error,
 body.dark-mode .staged-error {
-    color: #fca5a5;
+    color: var(--rb-danger-fg-dark);
 }
 
 /* Bootstrap's outline-secondary is drawn for light grounds. */
 body.dark-mode .btn-outline-secondary {
-    border-color: #6b7280;
+    border-color: var(--app-control-border-dark);
     color: var(--rb-fg-dark-muted);
 }
 
 body.dark-mode .btn-outline-secondary:hover {
     background-color: rgba(255, 255, 255, 0.08);
-    color: #fff;
+    color: var(--rb-fg-dark);
 }
 
 body.dark-mode .mcp-question-bubble .form-text,
@@ -1557,10 +1575,14 @@ body.dark-mode .mcp-question-bubble .text-muted {
     color: var(--rb-fg-dark-subtle) !important;
 }
 
+body.dark-mode .mcp-signin-banner,
+body.dark-mode .mcp-signin-actions .btn-link {
+    color: var(--rb-warning-fg-dark);
+}
+
 body.dark-mode .mcp-signin-banner {
-    background-color: #2a240f;
-    border-bottom-color: #5c4a12;
-    color: #fde68a;
+    background-color: var(--rb-warning-bg-dark);
+    border-bottom-color: var(--rb-warning-border-dark);
 }
 
 /* Form controls, the composer and the plan panel. */
@@ -1589,11 +1611,11 @@ body.dark-mode .composer {
 }
 
 body.dark-mode .btn-send {
-    background-color: #2b6fd8;
+    background-color: var(--rb-blue-dark);
 }
 
 body.dark-mode .btn-send:hover:not(:disabled) {
-    background-color: #3b82f6;
+    background-color: var(--rb-blue-dark-hover);
 }
 
 body.dark-mode .btn-ghost,
@@ -1622,7 +1644,7 @@ body.dark-mode .staged-status {
 body.dark-mode .plan-panel {
     background-color: var(--rb-bg-dark);
     border-top-color: var(--rb-border-dark);
-    color: #dee2e6;
+    color: var(--rb-fg-dark-muted);
 }
 
 body.dark-mode .plan-progress,
@@ -1633,7 +1655,7 @@ body.dark-mode .plan-item-completed span {
 /* The saved responses modal. */
 body.dark-mode .saved-modal {
     background: var(--rb-bg-dark-subtle);
-    color: #e5e7eb;
+    color: var(--rb-fg-dark-strong);
 }
 
 body.dark-mode .saved-item {
@@ -1641,7 +1663,7 @@ body.dark-mode .saved-item {
 }
 
 body.dark-mode .saved-item:hover {
-    background-color: #374151;
+    background-color: var(--rb-hover-dark);
 }
 
 body.dark-mode .saved-item-meta {
@@ -1649,13 +1671,13 @@ body.dark-mode .saved-item-meta {
 }
 
 body.dark-mode .row-icon-btn:hover {
-    background-color: #1e3a5f;
-    color: #bfdbfe;
+    background-color: var(--app-blue-tint-dark);
+    color: var(--app-blue-fg-dark);
 }
 
 body.dark-mode .row-icon-btn.danger:hover {
-    background-color: #4c1d24;
-    color: #fca5a5;
+    background-color: var(--rb-danger-100-dark);
+    color: var(--rb-danger-fg-dark);
 }
 
 body.dark-mode .saved-view-header {
@@ -1663,9 +1685,9 @@ body.dark-mode .saved-view-header {
 }
 
 body.dark-mode .saved-view-content {
-    background: #1f2937;
+    background: var(--rb-panel-dark);
     border-color: var(--rb-border-dark-muted);
-    color: #e5e7eb;
+    color: var(--rb-fg-dark-strong);
 }
 
 /* The sign-in pages. */
@@ -1677,7 +1699,7 @@ body.dark-mode .login-card,
 body.dark-mode .login-btn {
     background-color: var(--rb-bg-dark-subtle);
     border-color: var(--rb-border-dark);
-    color: #dee2e6;
+    color: var(--rb-fg-dark-muted);
 }
 
 body.dark-mode .login-card {
@@ -1690,14 +1712,14 @@ body.dark-mode .login-note {
 }
 
 body.dark-mode .login-btn:hover {
-    background-color: #1e3a5f;
-    border-color: #93c5fd;
-    color: #fff;
+    background-color: var(--app-blue-tint-dark);
+    border-color: var(--rb-link-dark);
+    color: var(--rb-fg-dark);
 }
 
 body.dark-mode .login-badge {
-    background-color: #1e3a5f;
-    color: #bfdbfe;
+    background-color: var(--app-blue-tint-dark);
+    color: var(--app-blue-fg-dark);
 }
 
 /* ═══ Responsive ══════════════════════════════════════════════════════════ */

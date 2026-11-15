@@ -21,7 +21,9 @@
 <PageTitle>@(state.AgentName ?? "RockBot") Chat</PageTitle>
 
 <div class="chat-container d-flex flex-column">
-    <header class="chat-header">
+    @* While the saved-responses dialog is open everything behind it is inert, so focus and the
+       reading order stay inside the dialog (what its aria-modal promises). *@
+    <header class="chat-header" inert="@_showSavedModal">
         <h1 class="chat-title">
             <img class="brand-mark" src="@Assets["images/rockbot-mark-64.png"]"
                  srcset="@Assets["images/rockbot-mark-64.png"] 1x, @Assets["images/rockbot-mark-128.png"] 2x"
@@ -79,9 +81,9 @@
         </div>
     </header>
 
-    <McpSignInBanner />
+    <div inert="@_showSavedModal"><McpSignInBanner /></div>
 
-    <div class="chat-messages flex-grow-1" @ref="messagesContainer">
+    <div class="chat-messages flex-grow-1" inert="@_showSavedModal" @ref="messagesContainer">
         @foreach (var message in state.Messages)
         {
             @if (message.IsActivityLog)
@@ -91,7 +93,10 @@
                     <CategoryAvatar Kind="@CategoryKind(message.Category)" />
                     <div class="message-bubble activity-log-bubble category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")"
                          @onclick="() => ToggleExpanded(message.MessageId)">
-                        <div class="activity-log-header">
+                        @* The bubble's own click toggles; the header is the keyboard way in. *@
+                        <div class="activity-log-header" role="button" tabindex="0"
+                             aria-expanded="@(message.IsExpanded ? "true" : "false")"
+                             @onkeydown="e => ToggleExpandedByKey(e, message.MessageId)">
                             <RbIcon Name="chevron-right" Size="12" Class="@($"chevron-indicator {(message.IsExpanded ? "open" : "")}")" />
                             @if (state.IsActivityLogOpen(message.MessageId))
                             {
@@ -161,7 +166,10 @@
                 <div class="message-wrapper agent-message">
                     <CategoryAvatar Kind="@CategoryKind(message.Category)" />
                     <div class="message-bubble collapsible-bubble category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")">
-                        <div class="collapsible-header" @onclick="() => ToggleExpanded(message.MessageId)" @onclick:stopPropagation="true">
+                        <div class="collapsible-header" role="button" tabindex="0"
+                             aria-expanded="@(message.IsExpanded ? "true" : "false")"
+                             @onclick="() => ToggleExpanded(message.MessageId)" @onclick:stopPropagation="true"
+                             @onkeydown="e => ToggleExpandedByKey(e, message.MessageId)">
                             <RbIcon Name="chevron-right" Size="12" Class="@($"chevron-indicator {(message.IsExpanded ? "open" : "")}")" />
                             <span class="category-badge">@GetCategoryLabel(message.Category)</span>
                             @if (!string.IsNullOrEmpty(message.AgentName))
@@ -214,7 +222,8 @@
             {
                 <!-- A question an MCP server handed back, answered in a form built from its schema -->
                 <div class="message-wrapper agent-message">
-                    <CategoryAvatar Kind="agent" />
+                    @* An MCP server is asking, not RockBot: no RB mark. *@
+                    <CategoryAvatar />
                     <div class="message-bubble mcp-question-bubble">
                         <McpQuestionCard Message="message" DisplayZone="_displayZone" OnSubmit="SubmitMcpAnswer" />
                     </div>
@@ -226,8 +235,9 @@
                 <div class="message-wrapper @(message.IsFromUser ? "user-message" : "agent-message")">
                     @if (!message.IsFromUser)
                     {
-                        @* Orange "RB" marks RockBot speaking; interim and error lines keep the indent without it. *@
-                        <CategoryAvatar Kind="@(message.IsInterim || message.IsError ? null : "agent")" />
+                        @* Orange "RB" marks RockBot itself speaking; interim and error lines, and other
+                           agents' replies, keep the indent without it. *@
+                        <CategoryAvatar Kind="@(message.IsInterim || message.IsError || !IsPrimaryAgent(message, state) ? null : "agent")" />
                     }
                     <div class="message-bubble @BubbleVariant(message)">
                         @if (!message.IsFromUser && !message.IsError && !string.IsNullOrEmpty(message.AgentName))
@@ -316,7 +326,7 @@
     @if (state.TaskLists.Count > 0)
     {
         <!-- The agent's plans: the primary turn's task list, and any running subagent's -->
-        <div class="plan-panel">
+        <div class="plan-panel" inert="@_showSavedModal">
             @foreach (var list in state.TaskLists.Values.OrderBy(l => l.Key == ReplySourceKind.Primary ? 0 : 1).ThenBy(l => l.UpdatedAt))
             {
                 <div class="plan-list">
@@ -339,7 +349,8 @@
     @if (_showSavedModal)
     {
         <div class="modal-overlay" @onclick="ToggleSavedModal">
-            <div class="saved-modal" role="dialog" aria-modal="true" aria-label="Saved responses" @onclick:stopPropagation="true">
+            <div class="saved-modal" role="dialog" aria-modal="true" aria-label="Saved responses" tabindex="-1"
+                 @ref="_savedModal" @onkeydown="HandleSavedModalKeyDown" @onclick:stopPropagation="true">
                 @if (_viewingItem is not null)
                 {
                     <div class="saved-view-header">
@@ -393,7 +404,7 @@
         </div>
     }
 
-    <div class="composer">
+    <div class="composer" inert="@_showSavedModal">
         @if (_stagedAttachments.Count > 0 || _attachmentError is not null || _isUploading)
         {
             <div class="staged-attachments">
@@ -501,6 +512,11 @@
     private string _saveLabel = string.Empty;
     private bool _showSavedModal;
     private IReadOnlyList<SavedResponseSummary>? _savedItems;
+    private ElementReference _savedModal;
+
+    // Set when the dialog opens or swaps its content (list ↔ one item), which would otherwise
+    // drop focus to the inert page behind it; the next render moves focus onto the dialog.
+    private bool _focusSavedModal;
 
     /// <summary>
     /// Marks entries the user didn't save themselves (#418): results saved automatically when
@@ -596,6 +612,12 @@
                     ChatState.Apply(new ActiveStatusReconciled(status));
             }
             catch { /* non-fatal — stale indicators clear on next user message */ }
+        }
+
+        if (_focusSavedModal && _showSavedModal)
+        {
+            _focusSavedModal = false;
+            await _savedModal.FocusAsync();
         }
 
         // Only scroll when a new message has been added — not on every re-render
@@ -833,6 +855,21 @@
     private void ToggleExpanded(string messageId) =>
         ChatState.Apply(new MessageExpandToggled(messageId));
 
+    // Keyboard equivalent of clicking a collapsible header (role="button"): Enter or Space.
+    private void ToggleExpandedByKey(KeyboardEventArgs e, string messageId)
+    {
+        if (e.Key is "Enter" or " ")
+            ToggleExpanded(messageId);
+    }
+
+    /// <summary>
+    /// Whether a message is RockBot's own (the agent this UI talks to), and so earns the RB mark.
+    /// Replies with no name are the primary agent's; any other name is another agent's.
+    /// </summary>
+    private static bool IsPrimaryAgent(ChatMessage message, ChatViewState state) =>
+        string.IsNullOrEmpty(message.AgentName)
+        || string.Equals(message.AgentName, state.AgentName ?? "RockBot", StringComparison.OrdinalIgnoreCase);
+
     // The user answered (or declined) a handed-back MCP question in its form. The answer goes to
     // the agent, which hands it straight to the bridge; the agent replies once the call resumes.
     private async Task SubmitMcpAnswer(McpQuestionSubmission submission)
@@ -992,12 +1029,19 @@
         if (e.Key == "Escape") CancelSave();
     }
 
+    private async Task HandleSavedModalKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+            await ToggleSavedModal();
+    }
+
     private async Task ToggleSavedModal()
     {
         _showSavedModal = !_showSavedModal;
         _viewingItem = null;
         if (_showSavedModal)
         {
+            _focusSavedModal = true;
             _savedItems = null;
             StateHasChanged();
             try
@@ -1034,7 +1078,10 @@
         {
             var response = await ProxyService.GetSavedResponseAsync(id);
             if (response is not null && response.Found)
+            {
                 _viewingItem = response;
+                _focusSavedModal = true;
+            }
         }
         catch (Exception ex)
         {
@@ -1045,6 +1092,7 @@
     private void BackToSavedList()
     {
         _viewingItem = null;
+        _focusSavedModal = true;
     }
 
     private void InsertViewedItem()

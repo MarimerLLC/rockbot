@@ -1,19 +1,20 @@
 @* One header activity slot (RockBot Design System "ActivityIcon"). Every slot is always drawn, in a
    fixed order: the row of slots is the status map, so an idle slot dims instead of disappearing.
-   The ring glow and pulse are reserved for live activity — the only glow allowed in product chrome. *@
+   The ring glow and pulse are reserved for live activity — the only glow allowed in product chrome.
+   The glyph is the kind's own (CategoryAvatar.Glyph) and the ring colour comes from app.css
+   (.activity-icon.<kind>), so the header slot and the bubble avatar can't drift apart. *@
 
 @{
-    var spec = Specs[Kind];
+    var label = Label(Kind);
     var showCount = Active && Count > 1;
 }
-<span class="activity-icon @(Active ? "active" : null)" style="--ring: @spec.Ring; --glow: @spec.Glow"
-      title="@(Title ?? spec.Label)">
-    <span class="activity-icon-inner"><RbIcon Name="@spec.Icon" Size="@spec.Size" /></span>
+<span class="activity-icon @Kind @(Active ? "active" : null)" title="@(Title ?? label)">
+    <span class="activity-icon-inner"><RbIcon Name="@CategoryAvatar.Glyph(Kind)" Size="@(Kind is "agent" or "subagent" ? 14 : 13)" /></span>
     @if (showCount)
     {
         <span class="activity-icon-count" aria-hidden="true">@Count</span>
     }
-    <span class="visually-hidden">@spec.Label: @(Active ? showCount ? $"{Count} active" : "active" : "idle")</span>
+    <span class="visually-hidden">@label: @(Active ? showCount ? $"{Count} active" : "active" : "idle")</span>
 </span>
 
 @code {
@@ -28,15 +29,12 @@
     /// <summary>Tooltip; defaults to the slot's label.</summary>
     [Parameter] public string? Title { get; set; }
 
-    private sealed record Spec(string Icon, int Size, string Ring, string Glow, string Label);
-
-    // Ring colours from the design system's ACTIVITY_SPECS: agent --rb-orange, subagent
-    // --rb-orange-300, A2A --rb-eye-glow, scheduled --rb-warning.
-    private static readonly Dictionary<string, Spec> Specs = new(StringComparer.Ordinal)
+    private static string Label(string kind) => kind switch
     {
-        ["agent"] = new("robot", 14, "var(--rb-orange)", "rgba(255, 122, 26, 0.55)", "RockBot"),
-        ["subagent"] = new("robot", 14, "var(--rb-orange-300)", "rgba(255, 155, 77, 0.50)", "Subagents"),
-        ["a2a"] = new("exchange", 13, "var(--rb-eye-glow)", "rgba(58, 184, 255, 0.55)", "Inbound A2A"),
-        ["scheduled"] = new("hourglass", 13, "var(--rb-warning)", "rgba(251, 191, 36, 0.55)", "Background tasks"),
+        "agent" => "RockBot",
+        "subagent" => "Subagents",
+        "a2a" => "Inbound A2A",
+        "scheduled" => "Background tasks",
+        _ => throw new ArgumentException($"Unknown activity kind '{kind}'.", nameof(Kind)),
     };
 }
