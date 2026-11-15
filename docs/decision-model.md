@@ -178,6 +178,9 @@ capacity if it climbs. Billing is per token, so headroom doesn't add cost.
 - `rockbot.decision.duration` (ms): tagged the same way.
 - Each use logs its verdict at Information, starting `Decision model:`. Failures log at Warning
   with the response body (truncated).
+- The introspection tool `get_llm_config` reports the configured decision model (service,
+  endpoint host, deployment, uses switched off, threshold overrides; never the key), so the agent
+  can say what it runs on. Like the LLM tiers, this is the config loaded at the last restart.
 
 ## Adding a use
 

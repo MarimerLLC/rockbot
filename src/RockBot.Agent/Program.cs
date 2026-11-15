@@ -421,7 +421,13 @@ builder.Services.AddSingleton(LlmConfigSnapshot.Create(
         .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
         .FirstOrDefault()?.InformationalVersion.Split('+')[0],
     llmConfigured: anyConfigured,
-    now: DateTimeOffset.UtcNow));
+    now: DateTimeOffset.UtcNow) with
+{
+    // Bound here as well as by Configure<DecisionModelOptions> below; the config is env-only,
+    // so both read the same values.
+    DecisionModel = (builder.Configuration.GetSection("DecisionModel").Get<DecisionModelOptions>()
+                     ?? new DecisionModelOptions()).ToSnapshot()
+});
 builder.Services.AddHostedService<LlmConfigSnapshotWriter>();
 
 // Register memory tools as singleton — AIFunction instances are built once at construction

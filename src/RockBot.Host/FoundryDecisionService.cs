@@ -49,6 +49,19 @@ public sealed class DecisionModelOptions
     /// <summary>True when the endpoint, key and deployment are all set.</summary>
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(ApiKey) && !string.IsNullOrWhiteSpace(Deployment);
+
+    /// <summary>
+    /// Key-free description for the introspection snapshot, or null when the model is not
+    /// configured (the same test <see cref="FoundryDecisionService.IsEnabled"/> applies).
+    /// </summary>
+    public LlmDecisionModelSnapshot? ToSnapshot() => IsConfigured
+        ? LlmDecisionModelSnapshot.Create(
+            Endpoint,
+            Deployment!,
+            TimeoutSeconds,
+            Uses.Where(u => !u.Value.Enabled).Select(u => u.Key),
+            Uses.Where(u => u.Value.Threshold is not null).ToDictionary(u => u.Key, u => u.Value.Threshold!.Value))
+        : null;
 }
 
 /// <summary>Settings for one <see cref="DecisionPurposes"/> use of the decision model.</summary>
