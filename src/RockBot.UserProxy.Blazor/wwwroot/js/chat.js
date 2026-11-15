@@ -10,6 +10,24 @@ window.chatHelpers = {
         document.title = title;
     },
 
+    // The Simple / Detailed view, remembered per browser. Storage can be unavailable (private
+    // windows, blocked site data): reading then gives Simple, and the choice lasts the page only.
+    getDetailLevel: function () {
+        try {
+            return window.localStorage.getItem('rockbot.detailLevel') === 'detailed' ? 'detailed' : 'simple';
+        } catch (e) {
+            return 'simple';
+        }
+    },
+
+    setDetailLevel: function (level) {
+        try {
+            window.localStorage.setItem('rockbot.detailLevel', level === 'detailed' ? 'detailed' : 'simple');
+        } catch (e) {
+            // Not remembered; the page still switches.
+        }
+    },
+
     getBrowserTimezone: function () {
         try {
             return Intl.DateTimeFormat().resolvedOptions().timeZone;
