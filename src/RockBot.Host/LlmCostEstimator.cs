@@ -73,8 +73,11 @@ public sealed class LlmCostEstimator : IDisposable
     private Timer? _debounce;
     private int _reloadPending;
 
-    // Sorted longest-prefix-first so "gpt-5.4-pro" wins over "gpt-5.4".
-    private LlmPricingEntry[] _table = SortLongestFirst(BuiltInDefaults);
+    // Sorted longest-prefix-first so "gpt-5.4-pro" wins over "gpt-5.4". Swapped whole on reload,
+    // so a reader never sees one table's entries with another table's source.
+    private PricingTable _table = new(SortLongestFirst(BuiltInDefaults), FromFile: false);
+
+    private sealed record PricingTable(LlmPricingEntry[] Entries, bool FromFile);
 
     public LlmCostEstimator(IOptions<LlmPricingOptions> options, ILogger<LlmCostEstimator> logger)
     {
@@ -82,6 +85,26 @@ public sealed class LlmCostEstimator : IDisposable
         _logger = logger;
         Reload();
         StartWatching();
+    }
+
+    /// <summary>The pricing table in use, longest prefix first: the order <see cref="FindEntry"/> tries them.</summary>
+    public IReadOnlyList<LlmPricingEntry> Entries => _table.Entries;
+
+    /// <summary>
+    /// The pricing file the table was loaded from, or null when the built-in fallback table is in
+    /// use (the file is missing, empty or has never parsed).
+    /// </summary>
+    public string? LoadedFrom => _table.FromFile ? _options.ConfigPath : null;
+
+    /// <summary>The entry that prices <paramref name="modelId"/>: the longest prefix it contains, or null.</summary>
+    public LlmPricingEntry? FindEntry(string modelId)
+    {
+        foreach (var entry in _table.Entries)
+        {
+            if (modelId.Contains(entry.Prefix, StringComparison.OrdinalIgnoreCase))
+                return entry;
+        }
+        return null;
     }
 
     /// <summary>Estimates cost in USD, all input at the full rate. Returns 0 when no prefix matches.</summary>
@@ -107,12 +130,8 @@ public sealed class LlmCostEstimator : IDisposable
     public double EstimateCost(string modelId, long inputTokens, long outputTokens,
         long cachedInputTokens, long cacheWriteTokens, long cacheWrite1hTokens)
     {
-        var table = _table;
-        foreach (var entry in table)
+        if (FindEntry(modelId) is { } entry)
         {
-            if (!modelId.Contains(entry.Prefix, StringComparison.OrdinalIgnoreCase))
-                continue;
-
             var write1h = Math.Clamp(cacheWrite1hTokens, 0, cacheWriteTokens);
             var write5m = cacheWriteTokens - write1h;
             var uncached = Math.Max(0, inputTokens - cachedInputTokens - cacheWriteTokens);
@@ -133,7 +152,7 @@ public sealed class LlmCostEstimator : IDisposable
             if (!File.Exists(_options.ConfigPath))
             {
                 _logger.LogInformation("LLM pricing file {Path} not found, using built-in defaults", _options.ConfigPath);
-                _table = SortLongestFirst(BuiltInDefaults);
+                _table = new(SortLongestFirst(BuiltInDefaults), FromFile: false);
                 return;
             }
 
@@ -142,11 +161,11 @@ public sealed class LlmCostEstimator : IDisposable
             if (entries is null || entries.Length == 0)
             {
                 _logger.LogWarning("LLM pricing file {Path} parsed as empty, using built-in defaults", _options.ConfigPath);
-                _table = SortLongestFirst(BuiltInDefaults);
+                _table = new(SortLongestFirst(BuiltInDefaults), FromFile: false);
                 return;
             }
 
-            _table = SortLongestFirst(entries);
+            _table = new(SortLongestFirst(entries), FromFile: true);
             _logger.LogInformation("Loaded {Count} LLM pricing entries from {Path}", entries.Length, _options.ConfigPath);
         }
         catch (Exception ex)

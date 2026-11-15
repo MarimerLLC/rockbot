@@ -40,6 +40,7 @@ public sealed class UserProxyService(
 
     // MCP sign-in (#738): replies arrive on the point-to-point topic, outcomes on the broadcast one.
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MessageEnvelope>> _pendingSignInReplies = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<AgentIntrospectionResponse>> _pendingIntrospection = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<McpSignInStatus>> _signInWaiters = new();
     private readonly ConcurrentDictionary<string, McpSignInStatus> _settledSignIns = new();
     private ISubscription? _subscription;
@@ -241,6 +242,11 @@ public sealed class UserProxyService(
         foreach (var kvp in _pendingSignInReplies)
         {
             if (_pendingSignInReplies.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetCanceled();
+        }
+        foreach (var kvp in _pendingIntrospection)
+        {
+            if (_pendingIntrospection.TryRemove(kvp.Key, out var tcs))
                 tcs.TrySetCanceled();
         }
         foreach (var kvp in _signInWaiters)
@@ -693,6 +699,27 @@ public sealed class UserProxyService(
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Failed to handle McpQuestionStatus notification");
+            }
+            return Task.FromResult(MessageResult.Ack);
+        }
+
+        // Replies to this proxy's introspection requests.
+        if (envelope.MessageType == typeof(AgentIntrospectionResponse).FullName)
+        {
+            if (envelope.CorrelationId is not null && _pendingIntrospection.TryRemove(envelope.CorrelationId, out var pending))
+            {
+                try
+                {
+                    if (envelope.GetPayload<AgentIntrospectionResponse>() is { } introspection)
+                        pending.TrySetResult(introspection);
+                    else
+                        pending.TrySetException(new InvalidOperationException("The agent sent an empty introspection response."));
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to deserialize AgentIntrospectionResponse");
+                    pending.TrySetException(ex);
+                }
             }
             return Task.FromResult(MessageResult.Ack);
         }
@@ -1249,6 +1276,52 @@ public sealed class UserProxyService(
             envelope.CorrelationId, response.AgentName, response.AgentVersion);
 
         return Task.FromResult(MessageResult.Ack);
+    }
+
+    // ── Introspection ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Asks the agent to describe its configuration (<see cref="IntrospectionSections"/>): the
+    /// agent answers from its own state, without invoking the LLM (#834). Null or empty
+    /// <paramref name="sections"/> asks for all of them. Returns null when the agent doesn't answer
+    /// in time, which is also what an agent older than this request does.
+    /// </summary>
+    public async Task<AgentIntrospectionResponse?> GetIntrospectionAsync(
+        IReadOnlyList<string>? sections = null,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
+        var correlationId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<AgentIntrospectionResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingIntrospection[correlationId] = tcs;
+
+        try
+        {
+            var request = new AgentIntrospectionRequest { Sections = sections is { Count: > 0 } ? sections : null };
+            var envelope = request.ToEnvelope<AgentIntrospectionRequest>(
+                source: options.ProxyId,
+                correlationId: correlationId,
+                replyTo: UserResponsePointToPointTopic);
+
+            await publisher.PublishAsync($"{UserProxyTopics.AgentIntrospectionRequest}.{options.AgentName}", envelope, cancellationToken);
+            logger.LogDebug("Published AgentIntrospectionRequest {CorrelationId}", correlationId);
+
+            try
+            {
+                return await tcs.Task.WaitAsync(effectiveTimeout, cancellationToken);
+            }
+            catch (TimeoutException)
+            {
+                logger.LogWarning("Agent introspection request {CorrelationId} timed out after {Timeout}",
+                    correlationId, effectiveTimeout);
+                return null;
+            }
+        }
+        finally
+        {
+            _pendingIntrospection.TryRemove(correlationId, out _);
+        }
     }
 
     // ── Active status ──────────────────────────────────────────────────────────

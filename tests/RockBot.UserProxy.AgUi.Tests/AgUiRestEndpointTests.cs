@@ -1282,6 +1282,77 @@ public sealed class AgUiRestEndpointTests
         await AssertProblemAsync(half, HttpStatusCode.GatewayTimeout);
     }
 
+    // ── Introspection (#834) ─────────────────────────────────────────────────
+
+    private void AgentDescribesItself() => _agent.OnIntrospection = request => new AgentIntrospectionResponse
+    {
+        AgentName = "Rocky",
+        AgentVersion = "1.2.3",
+        Models = request.Sections is null || request.Sections.Contains(IntrospectionSections.Models)
+            ? new ModelsIntrospection
+            {
+                Summary = "Balanced: claude-haiku-5-5 (Anthropic API)",
+                Tiers =
+                [
+                    new TierIntrospection
+                    {
+                        Tier = "Balanced",
+                        Models = [new ModelIntrospection
+                        {
+                            Provider = "Anthropic", Service = "Anthropic API", ModelId = "claude-haiku-5-5",
+                            Price = new PriceIntrospection { Prefix = "claude-haiku-5-5", InputPerM = 0.1, OutputPerM = 0.5 },
+                        }],
+                    },
+                ],
+            }
+            : null,
+        Pricing = request.Sections is null || request.Sections.Contains(IntrospectionSections.Pricing)
+            ? new PricingIntrospection { Rows = [new PriceIntrospection { Prefix = "claude-haiku-5-5", InputPerM = 0.1, OutputPerM = 0.5 }] }
+            : null,
+    };
+
+    [TestMethod]
+    public async Task Introspection_ReturnsWhatTheAgentReports()
+    {
+        AgentDescribesItself();
+
+        using var response = await _client.GetAsync("/agent/introspection");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, await response.Content.ReadAsStringAsync());
+        var body = await BodyAsync(response);
+        Assert.AreEqual("Rocky", body.GetProperty("agentName").GetString());
+        var model = body.GetProperty("models").GetProperty("tiers")[0].GetProperty("models")[0];
+        Assert.AreEqual("claude-haiku-5-5", model.GetProperty("modelId").GetString());
+        Assert.AreEqual(0.5, model.GetProperty("price").GetProperty("outputPerM").GetDouble(), 1e-9);
+        Assert.AreEqual(1, body.GetProperty("pricing").GetProperty("rows").GetArrayLength());
+        Assert.IsFalse(body.GetProperty("pricing").TryGetProperty("loadedFrom", out _), "nulls are left out, as on every endpoint");
+
+        Assert.IsNull(_agent.Received<AgentIntrospectionRequest>().Single().Sections, "no sections asks for all of them");
+    }
+
+    [TestMethod]
+    public async Task Introspection_PassesTheSectionsAskedFor()
+    {
+        AgentDescribesItself();
+
+        using var response = await _client.GetAsync("/agent/introspection?sections=models,%20models,");
+
+        var body = await BodyAsync(response);
+        Assert.IsTrue(body.TryGetProperty("models", out _));
+        Assert.IsFalse(body.TryGetProperty("pricing", out _));
+        CollectionAssert.AreEqual(new[] { "models" }, _agent.Received<AgentIntrospectionRequest>().Single().Sections!.ToArray());
+    }
+
+    [TestMethod]
+    public async Task Introspection_WhenTheAgentDoesNotAnswer_Is504()
+    {
+        await RestartAsync(Impatient);
+
+        using var response = await _client.GetAsync("/agent/introspection");
+
+        await AssertProblemAsync(response, HttpStatusCode.GatewayTimeout, "describe itself");
+    }
+
     // ── What stays reachable without a thread ────────────────────────────────
 
     [TestMethod]

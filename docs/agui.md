@@ -56,6 +56,7 @@ browser apps. A small Blazor WebAssembly app in the repository shows a client us
 | `GET /mcp-signin`, `POST /mcp-signin/{server}/start` | Signing in to an OAuth-protected MCP server. See [MCP sign-in](#mcp-sign-in). |
 | `GET /mcp-oauth/callback` | Where an authorization server sends the browser back. Not called by a client. |
 | `GET /agent` | The agent's name, version and current work. See [Agent info](#agent-info-get-agent). |
+| `GET /agent/introspection` | What the agent is configured with: its models and its pricing table. See [Introspection](#introspection-get-agentintrospection). |
 | `POST /tickets` | A short-lived URL for an attachment or the notify stream, for a browser request that can't send a token. See [Access tickets](#access-tickets-post-tickets). |
 | `GET /healthz` | `200` while the proxy is subscribed on the message bus, `503` otherwise. |
 
@@ -940,6 +941,50 @@ thread's turn right now (`isProcessing`), and the thread's running subagents and
 so it can show a busy indicator without having seen the events that started them. After that the
 notify stream keeps it current (`SUBAGENT_*`, `rockbot.agent_name`, `rockbot.active_work`).
 
+### Introspection: `GET /agent/introspection`
+
+```bash
+curl 'http://rockbot-agui/agent/introspection?sections=models,pricing'
+```
+
+```json
+{ "agentName": "RockBot", "agentVersion": "0.18.4", "startedAt": "2026-11-15T08:00:00+00:00",
+  "models": {
+    "loadedAt": "2026-11-15T08:00:01+00:00",
+    "summary": "Low: gpt-5.6-luna (Azure AI Foundry)\nBalanced: claude-haiku-5-5 (Anthropic API) …",
+    "tiers": [
+      { "tier": "Balanced", "acceptsImages": true,
+        "models": [ { "provider": "Anthropic", "service": "Anthropic API", "endpointHost": "api.anthropic.com",
+                      "modelId": "claude-haiku-5-5", "supportsImageInput": true,
+                      "price": { "prefix": "claude-haiku-5-5", "inputPerM": 0.1, "outputPerM": 0.5, "cachedInputPerM": 0.01 } } ] },
+      { "tier": "High", "usesTier": "Balanced", "acceptsImages": true, "models": [ … ] }
+    ],
+    "embedding": { "modelId": "text-embedding-3-small", "service": "Azure AI Foundry", "endpointHost": "…" },
+    "decisionModel": { "provider": "Foundry decision API", "service": "Azure AI Foundry", "deployment": "decision-1",
+                       "disabledUses": [], "summary": "Decision model: decision-1 (Azure AI Foundry, Foundry decision API)" } },
+  "pricing": {
+    "loadedFrom": "/data/agent/llm-pricing.json",
+    "rows": [ { "prefix": "claude-haiku-5-5", "inputPerM": 0.1, "outputPerM": 0.5, "cachedInputPerM": 0.01 }, … ] } }
+```
+
+What the agent is configured with, for an info screen. The agent answers from its own state without
+calling its LLM, so this works while the LLM is failing and costs no tokens. It is about the agent
+as a whole and takes no `threadId`.
+
+- **`sections`** (optional) is a comma-separated list: `models`, `pricing`. Without it, every
+  section. A section the agent doesn't know, or can't report, is left out of the answer.
+- **`models`**: each tier's models in the order the agent tries them (more than one is a fallback
+  chain; `usesTier` means the tier has no model of its own), with the pricing row each is costed
+  with (no `price` means no row matches and the model is costed at $0), the embedding model and the
+  decision model. LLM configuration is read at startup, so this is what runs until the next restart.
+- **`pricing`**: the rows, longest prefix first, in USD per million tokens. A model is priced by the
+  first row whose prefix its id contains. No `loadedFrom` means the agent is using its built-in
+  fallback table. A missing cache rate defaults as described in the agent's pricing file docs: cache
+  reads at the input rate, cache writes at 1.25× (5-minute TTL) and 2× (1-hour TTL) input.
+
+Nothing in the answer is a credential: there are no API keys, and endpoints are a host only. An agent
+older than this endpoint doesn't answer, so the proxy answers `504`.
+
 ## App auth
 
 The proxy has two modes, like the [Blazor UI](blazor-ui):
@@ -1194,7 +1239,7 @@ leaving it open or locked: no allowlist entry, no audience, an authority that is
 ticket key that is too short. The message names every setting that is wrong.
 | `AgUi:KeepAliveInterval` | `00:00:15` | How often an idle run or notify stream gets an SSE comment. Zero or less turns it off. |
 | `AgUi:ResumeReplyTimeout` | `00:05:00` | How long a run with `resume` waits for the agent's reply after the agent accepted an answer, before it ends with `rockbot.reply_pending`. |
-| `AgUi:RequestTimeout` | `00:00:30` | How long a REST endpoint waits for the agent's answer (agent info, saved responses, the sign-in list, an upload) before it answers `504`. |
+| `AgUi:RequestTimeout` | `00:00:30` | How long a REST endpoint waits for the agent's answer (agent info, introspection, saved responses, the sign-in list, an upload) before it answers `504`. |
 | `AgUi:SignInStartTimeout` | `00:01:30` | How long `POST /mcp-signin/{server}/start` waits for the agent. |
 | `AgUi:PublicBaseUrl` | | The address browsers reach the proxy at. The MCP sign-in redirect URI is built from it; see [The redirect URI](#the-redirect-uri). Empty uses the address of the request. |
 | `UserProxy:AttachmentUploadUrl` | | The agent's upload endpoint (`http://<agent>:8082`). When set, an uploaded file goes to the agent over HTTP; otherwise, or if that fails, over the message bus. |

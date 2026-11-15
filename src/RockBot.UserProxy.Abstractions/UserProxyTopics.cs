@@ -34,6 +34,12 @@ public static class UserProxyTopics
     public const string ActiveStatusRequest = "agent.status.request";
     public const string ActiveStatusResponse = "agent.status.response";
 
+    /// <summary>
+    /// <see cref="AgentIntrospectionRequest"/>s, suffixed with the agent name (#834). The answer
+    /// goes to the request's reply topic, the proxy's point-to-point response topic.
+    /// </summary>
+    public const string AgentIntrospectionRequest = "agent.introspect.request";
+
     // Saved responses
     public const string SaveResponseRequest = "user.saved.save.request";
     public const string SaveResponseAck = "user.saved.save.ack";

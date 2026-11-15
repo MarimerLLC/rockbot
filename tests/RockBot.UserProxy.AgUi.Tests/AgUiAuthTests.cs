@@ -344,6 +344,7 @@ public sealed class AgUiAuthTests
         ("POST", "/threads/{id}/clear", "/threads/agui-session/clear"),
         ("GET", "/threads/{id}/questions", "/threads/agui-session/questions"),
         ("GET", "/agent", "/agent"),
+        ("GET", "/agent/introspection", "/agent/introspection"),
     ];
 
     internal static readonly string[] OpenEndpoints = ["/healthz", "/mcp-oauth/callback"];
