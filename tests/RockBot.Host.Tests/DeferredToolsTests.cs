@@ -21,7 +21,7 @@ public class DeferredToolsTests
     {
         Tools =
         [
-            Tool("save_memory"), Tool("edit_memory"), Tool("delete_memory"), Tool("update_memory_importance"),
+            Tool("save_memory"), Tool("edit_memory"), Tool("edit_memory_tags"), Tool("delete_memory"), Tool("update_memory_importance"),
             Tool("get_tool_guide"), Tool("file_read"), Tool("spawn_subagent"),
             Tool("spawn_wisps"), Tool("spawn_workers"), Tool("schedule_task"), Tool("invoke_agent"),
         ],
@@ -39,7 +39,7 @@ public class DeferredToolsTests
 
         var deferred = DeferredToolContext.Partition(options);
 
-        Assert.AreEqual(7, deferred);
+        Assert.AreEqual(8, deferred);
         CollectionAssert.AreEqual(
             new[] { "save_memory", "get_tool_guide", "file_read", "spawn_subagent" }, Names(options));
     }
@@ -55,7 +55,7 @@ public class DeferredToolsTests
 
         StringAssert.StartsWith(text, DeferredToolContext.OrientationHeading);
         StringAssert.Contains(text, "- wisp: spawn_wisps");
-        StringAssert.Contains(text, "- memory: edit_memory, delete_memory, update_memory_importance");
+        StringAssert.Contains(text, "- memory: edit_memory, edit_memory_tags, delete_memory, update_memory_importance");
         StringAssert.Contains(text, "- a2a: invoke_agent");
         Assert.IsFalse(text.Contains("register_agent"), "only tools the run actually holds are named");
     }
@@ -98,7 +98,7 @@ public class DeferredToolsTests
         var tool = DeferredToolContext.TryActivate(options, "delete_memory");
 
         Assert.AreEqual("delete_memory", tool?.Name);
-        CollectionAssert.IsSubsetOf(new[] { "edit_memory", "delete_memory", "update_memory_importance" }, Names(options));
+        CollectionAssert.IsSubsetOf(new[] { "edit_memory", "edit_memory_tags", "delete_memory", "update_memory_importance" }, Names(options));
         Assert.IsNull(DeferredToolContext.TryActivate(options, "no_such_tool"));
     }
 
@@ -109,7 +109,7 @@ public class DeferredToolsTests
         using var _ = DeferredToolContext.Set(null, NewSession());
 
         Assert.AreEqual(0, DeferredToolContext.Partition(options));
-        Assert.AreEqual(11, options.Tools!.Count);
+        Assert.AreEqual(12, options.Tools!.Count);
         Assert.IsNull(DeferredToolContext.Orientation());
     }
 
