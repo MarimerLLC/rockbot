@@ -97,10 +97,14 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
                 var evicted = new List<ConversationTurn>();
                 foreach (var turn in turns)
                     evicted.AddRange(_inner.AddTurn(sessionId, turn).Evicted);
-                if (evicted.Count > 0)
+                // Turns written before turns had ids (#809) were given one just now; rewrite the
+                // file so those ids hold across the next restart too.
+                var idsAssigned = turns.Any(t => string.IsNullOrEmpty(t.Id));
+                if (evicted.Count > 0 || idsAssigned)
                     await WithSessionLockAsync(sessionId, async () =>
                     {
-                        await ArchiveAsync(sessionId, evicted, cancellationToken);
+                        if (evicted.Count > 0)
+                            await ArchiveAsync(sessionId, evicted, cancellationToken);
                         await WriteSessionFileAsync(sessionId, cancellationToken);
                     }, cancellationToken);
 

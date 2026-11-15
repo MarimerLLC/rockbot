@@ -478,13 +478,13 @@ internal sealed class UserMessageHandler(
                             LatencyMs = routingSw.ElapsedMilliseconds,
                         });
 
+                        var replyId = ConversationTurn.NewId();
                         await conversationMemory.AddTurnAsync(
                             message.SessionId,
-                            new ConversationTurn("assistant", text, DateTimeOffset.UtcNow)
-                            { AgentName = agent.Name },
+                            PrimaryTurn(text, replyId),
                             ct);
 
-                        await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, turnId, isFinal: true, ct);
+                        await PublishReplyAsync(text, replyTo, correlationId, message.SessionId, turnId, isFinal: true, ct, replyId);
                         await turn.FinishAsync(RunOutcome.Success);
                         sessionTracker.EndSession(message.SessionId, sessionHandle.Generation);
                         turnActivity?.SetTag("rockbot.turn.status", "ok");
@@ -513,14 +513,15 @@ internal sealed class UserMessageHandler(
 
             var errorText = $"Sorry, I encountered an error: {ex.Message}";
 
+            string? errorReplyId = null;
             if (hostOptions.Value.PersistErrorTurns)
             {
                 try
                 {
+                    errorReplyId = ConversationTurn.NewId();
                     await conversationMemory.AddTurnAsync(
                         message.SessionId,
-                        new ConversationTurn("assistant", errorText, DateTimeOffset.UtcNow)
-                        { AgentName = agent.Name },
+                        PrimaryTurn(errorText, errorReplyId),
                         CancellationToken.None);
                 }
                 catch (Exception memEx)
@@ -532,7 +533,7 @@ internal sealed class UserMessageHandler(
 
             // The run's outcome goes first, so the proxy reads the error reply that follows as a failure.
             await turn.FinishAsync(RunOutcome.Error, ex.Message);
-            await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, turnId, isFinal: true, ct);
+            await PublishReplyAsync(errorText, replyTo, correlationId, message.SessionId, turnId, isFinal: true, ct, errorReplyId);
             sessionTracker.EndSession(message.SessionId, sessionHandle.Generation);
             turnActivity?.SetTag("rockbot.turn.status", "error");
             turnActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
@@ -680,17 +681,14 @@ internal sealed class UserMessageHandler(
 
             text = await _offerStripper.StripAsync(text, ct);
 
-            await conversationMemory.AddTurnAsync(
-                sessionId,
-                new ConversationTurn("assistant", text, DateTimeOffset.UtcNow)
-                { AgentName = agent.Name },
-                ct);
+            var replyId = ConversationTurn.NewId();
+            await conversationMemory.AddTurnAsync(sessionId, PrimaryTurn(text, replyId), ct);
 
             // The parent reply is the user's "I'm starting work" / direct answer bubble
             // and resolves the user-proxy SendAsync TCS. If the loop spawned consolidating
             // subagents, their Phase 2 synthesis will arrive later as a separate
             // unsolicited final bubble — that's the consolidated answer.
-            await PublishReplyAsync(text, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
+            await PublishReplyAsync(text, replyTo, correlationId, sessionId, turnId, isFinal: true, ct, replyId);
             await turn.FinishAsync(RunOutcome.Success);
             await ArchiveReplyAsync(userPrompt, text, nativeDiag.ToolCalls, sessionId, ct);
             loopSw.Stop();
@@ -859,13 +857,10 @@ internal sealed class UserMessageHandler(
                 ToolCallCount = bgDiag.ToolCalls > 0 ? bgDiag.ToolCalls : null,
             });
 
-            await conversationMemory.AddTurnAsync(
-                sessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
-                { AgentName = agent.Name },
-                ct);
+            var replyId = ConversationTurn.NewId();
+            await conversationMemory.AddTurnAsync(sessionId, PrimaryTurn(finalContent, replyId), ct);
 
-            await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, turnId, isFinal: true, ct);
+            await PublishReplyAsync(finalContent, replyTo, correlationId, sessionId, turnId, isFinal: true, ct, replyId);
             await turn.FinishAsync(RunOutcome.Success);
             await ArchiveReplyAsync(userPrompt, finalContent, bgDiag.ToolCalls, sessionId, ct);
             loopSw.Stop();
@@ -928,9 +923,19 @@ internal sealed class UserMessageHandler(
             : resultArchive.ArchiveReplyAsync(
                 SummarizePrompt(userPrompt), content, toolCalls, agentNameHolder.DisplayName ?? agent.Name, sessionId, ct);
 
+    /// <summary>The agent's own reply as a stored turn, with the id its published reply carries (#809).</summary>
+    private ConversationTurn PrimaryTurn(string content, string id) =>
+        new("assistant", content, DateTimeOffset.UtcNow)
+        {
+            AgentName = agent.Name,
+            Id = id,
+            Source = new ConversationTurnSource(ReplySourceKind.Primary),
+        };
+
+    /// <param name="messageId">The id of the reply's stored turn, when it has one.</param>
     private async Task PublishReplyAsync(
         string content, string replyTo, string? correlationId,
-        string sessionId, string turnId, bool isFinal, CancellationToken ct)
+        string sessionId, string turnId, bool isFinal, CancellationToken ct, string? messageId = null)
     {
         // Only final replies carry attachments — drain this turn's stage so files staged by
         // attach_image ride out with the answer and aren't replayed on a later turn. The shared
@@ -945,6 +950,7 @@ internal sealed class UserMessageHandler(
             IsFinal = isFinal,
             Attachments = attachments,
             Source = ReplySource.Primary,
+            MessageId = messageId,
         };
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name, correlationId: correlationId);
         await publisher.PublishAsync(replyTo, envelope, ct);

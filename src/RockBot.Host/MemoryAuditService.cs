@@ -51,6 +51,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
     private readonly ILlmClient? _llmClient;
     private readonly IMessagePublisher? _publisher;
     private readonly AgentIdentity? _agent;
+    private readonly IConversationMemory? _conversationMemory;
 
     private readonly CancellationTokenSource _stopping = new();
     private readonly object _runLock = new();
@@ -73,7 +74,8 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
         ILogger<MemoryAuditService> logger,
         ILlmClient? llmClient = null,
         IMessagePublisher? publisher = null,
-        AgentIdentity? agent = null)
+        AgentIdentity? agent = null,
+        IConversationMemory? conversationMemory = null)
     {
         _memory = memory;
         _workSerializer = workSerializer;
@@ -86,6 +88,7 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
         _llmClient = llmClient;
         _publisher = publisher;
         _agent = agent;
+        _conversationMemory = conversationMemory;
     }
 
     /// <summary>Directory holding the audit's own files.</summary>
@@ -661,6 +664,9 @@ internal sealed class MemoryAuditService : IHostedService, IDisposable, IPrunabl
                     StartedAt: now,
                     SessionId: WellKnownSessions.ScheduledSystem)
             };
+
+            // #809: stored in its broadcast session so a client's reloaded history still has it.
+            reply = await _conversationMemory.RecordBroadcastReplyAsync(reply, _logger, ct);
 
             await _publisher.PublishAsync(
                 $"{UserProxyTopics.UserResponse}.{_agent.Name}",

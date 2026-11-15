@@ -187,6 +187,21 @@ public class UserFeedbackHandlerTests
     }
 
     [TestMethod]
+    public async Task NegativeFeedback_StoredTurnHasTheReplysId()
+    {
+        // #809: a client that reloads history can match the fresh reply with its stored copy.
+        await SeedConversationHistory();
+
+        await _handler.HandleAsync(MakeFeedback(isPositive: false), MakeContext());
+
+        var reply = _publisher.Published.Single().Envelope.GetPayload<AgentReply>()!;
+        var stored = (await _conversationMemory.GetTurnsAsync(SessionId)).Last();
+        Assert.IsFalse(string.IsNullOrEmpty(reply.MessageId));
+        Assert.AreEqual(reply.MessageId, stored.Id);
+        Assert.AreEqual(ReplySourceKind.Primary, stored.Source?.Kind);
+    }
+
+    [TestMethod]
     public async Task NegativeFeedback_NoUserTurns_DoesNotPublish()
     {
         // No conversation history seeded — no user turns exist

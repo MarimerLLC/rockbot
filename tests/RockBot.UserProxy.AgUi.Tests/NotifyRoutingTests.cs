@@ -225,6 +225,19 @@ public sealed class NotifyRoutingTests
     }
 
     [TestMethod]
+    public async Task AReplyTheAgentStored_KeepsItsHistoryIdAsTheMessageId()
+    {
+        // #809: the same id the reply's turn has in MESSAGES_SNAPSHOT, so a client that reloads
+        // history doesn't show it twice.
+        await _frontend.DisplayReplyAsync(Reply(Phone, "Vendor A is cheaper.") with { MessageId = "turn-42" });
+
+        var events = Drain(_phone);
+        Assert.AreEqual("turn-42", Sse.Str(events[0], "messageId"));
+        Assert.AreEqual("turn-42", Sse.Str(events[1], "messageId"));
+        Assert.AreEqual("turn-42", events[^1].GetProperty("value").GetProperty("messageId").GetString());
+    }
+
+    [TestMethod]
     public async Task AQuestionForm_IsAnMcpQuestionEvent_NotAMessage()
     {
         var form = new McpQuestionForm

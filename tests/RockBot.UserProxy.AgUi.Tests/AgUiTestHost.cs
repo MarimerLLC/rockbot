@@ -86,6 +86,9 @@ internal sealed class FakeAgent : IAsyncDisposable
     /// <summary>The history the agent returns, or null to leave history requests unanswered.</summary>
     public ConversationHistoryResponse? History { get; set; }
 
+    /// <summary>The last history request the agent was sent.</summary>
+    public ConversationHistoryRequest? LastHistoryRequest { get; private set; }
+
     // ── The REST extras (phase 4). Each answer is null by default: the agent stays silent. ──
 
     /// <summary>What the agent answers an upload with. The bytes it was sent are in <see cref="Uploads"/>.</summary>
@@ -270,6 +273,7 @@ internal sealed class FakeAgent : IAsyncDisposable
             $"{UserProxyTopics.ConversationHistoryRequest}.{AgUiTestHost.AgentName}", "fake-agent.history",
             async (envelope, ct) =>
             {
+                agent.LastHistoryRequest = envelope.GetPayload<ConversationHistoryRequest>();
                 if (agent.History is { } history && envelope.ReplyTo is { } replyTo)
                 {
                     await agent._publisher.PublishAsync(replyTo,

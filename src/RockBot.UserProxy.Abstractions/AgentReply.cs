@@ -59,4 +59,12 @@ public sealed record AgentReply
     /// <see cref="AgentName"/> and <see cref="SessionId"/>.
     /// </summary>
     public ReplySource? Source { get; init; }
+
+    /// <summary>
+    /// Id of the reply's copy in conversation history (<see cref="ConversationHistoryTurn.Id"/>), set
+    /// on a final reply the agent also stored as a turn. A frontend that reloads history uses it to
+    /// match the two and not show the message twice. Null from older agents and on replies that
+    /// aren't stored (progress, tool calls).
+    /// </summary>
+    public string? MessageId { get; init; }
 }

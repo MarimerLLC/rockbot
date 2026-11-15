@@ -3691,22 +3691,26 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                             tags: [entry.Call.Server, entry.QuestionId]);
                     }
 
+                    var noticeReply = new UserProxy.AgentReply
+                    {
+                        Source = UserProxy.ReplySource.Bridge,
+                        Content = notice,
+                        SessionId = conversationId,
+                        AgentName = RestartNoticeAgentName,
+                        IsFinal = true,
+                        MessageId = ConversationTurn.NewId(),
+                    };
+
                     if (_conversationMemory is not null)
                     {
                         await _conversationMemory.AddTurnAsync(conversationId,
-                            new ConversationTurn("user", notice, DateTimeOffset.UtcNow) { AgentName = RestartNoticeAgentName },
+                            new ConversationTurn("user", notice, DateTimeOffset.UtcNow) { AgentName = RestartNoticeAgentName }
+                                .Matching(noticeReply),
                             ct);
                     }
 
                     await _publisher.PublishAsync($"{UserProxy.UserProxyTopics.UserResponse}.{_agentName}",
-                        new UserProxy.AgentReply
-                        {
-                            Source = UserProxy.ReplySource.Bridge,
-                            Content = notice,
-                            SessionId = conversationId,
-                            AgentName = RestartNoticeAgentName,
-                            IsFinal = true,
-                        }.ToEnvelope<UserProxy.AgentReply>(source: _agentName), ct);
+                        noticeReply.ToEnvelope<UserProxy.AgentReply>(source: _agentName), ct);
 
                     // A form for it may still be on screen; which sessions were shown one didn't
                     // survive the restart, so tell any chat that can show forms. It ignores ids it

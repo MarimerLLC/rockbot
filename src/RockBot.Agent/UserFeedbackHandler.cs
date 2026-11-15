@@ -174,11 +174,6 @@ internal sealed class UserFeedbackHandler(
         }
 
         // Record the re-evaluation in conversation history.
-        await conversationMemory.AddTurnAsync(
-            message.SessionId,
-            new ConversationTurn("assistant", freshResponse, DateTimeOffset.UtcNow),
-            ct);
-
         // Publish the fresh reply as an unsolicited message — the proxy forwards
         // unsolicited replies directly to the frontend.
         var reply = new AgentReply
@@ -187,8 +182,14 @@ internal sealed class UserFeedbackHandler(
             Content = freshResponse,
             SessionId = message.SessionId,
             AgentName = agent.Name,
-            IsFinal = true
+            IsFinal = true,
+            MessageId = ConversationTurn.NewId(),
         };
+
+        await conversationMemory.AddTurnAsync(
+            message.SessionId,
+            new ConversationTurn("assistant", freshResponse, DateTimeOffset.UtcNow).Matching(reply),
+            ct);
 
         var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);

@@ -19,7 +19,7 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
 
     /// <summary>Session ID used for A2A inbound notifications in the UI.</summary>
-    internal const string A2AInboundSessionId = "a2a-inbound";
+    internal const string A2AInboundSessionId = WellKnownSessions.A2AInbound;
 
     /// <summary>Agent name used for A2A inbound notifications in the UI.</summary>
     internal const string A2AInboundAgentName = "A2A-Inbox";
@@ -30,6 +30,7 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
     private readonly IMessagePublisher _publisher;
     private readonly AgentIdentity _agent;
     private readonly ILogger<InboundNotificationService> _logger;
+    private readonly IConversationMemory? _conversationMemory;
     private readonly CancellationTokenSource _cts = new();
     private Timer? _timer;
 
@@ -39,7 +40,8 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
         ISessionTracker sessionTracker,
         IMessagePublisher publisher,
         AgentIdentity agent,
-        ILogger<InboundNotificationService> logger)
+        ILogger<InboundNotificationService> logger,
+        IConversationMemory? conversationMemory = null)
     {
         _queue = queue;
         _userActivityMonitor = userActivityMonitor;
@@ -47,6 +49,7 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
         _publisher = publisher;
         _agent = agent;
         _logger = logger;
+        _conversationMemory = conversationMemory;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -114,6 +117,9 @@ internal sealed class InboundNotificationService : IHostedService, IDisposable
                     StartedAt: startedAt,
                     SessionId: A2AInboundSessionId)
             };
+
+            // #809: stored in its broadcast session so a client's reloaded history still has it.
+            reply = await _conversationMemory.RecordBroadcastReplyAsync(reply, _logger, ct);
 
             var envelope = reply.ToEnvelope<AgentReply>(source: _agent.Name);
             await _publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{_agent.Name}", envelope, ct);

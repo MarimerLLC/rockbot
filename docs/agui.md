@@ -602,28 +602,47 @@ Returns the thread's history as one AG-UI `MESSAGES_SNAPSHOT` event:
   "type": "MESSAGES_SNAPSHOT",
   "timestamp": 1794547308650,
   "messages": [
-    { "id": "agui-session-0", "role": "user", "content": "Chart last week's sales",
-      "metadata": { "rockbot": { "timestamp": "2026-11-14T09:30:00+00:00" } } },
-    { "id": "agui-session-1", "role": "assistant", "name": "RockBot", "content": "Here it is.",
+    { "id": "5f0c…", "role": "user", "content": "Chart last week's sales",
+      "metadata": { "rockbot": { "timestamp": "2026-11-14T09:30:00+00:00", "sessionId": "agui-session" } } },
+    { "id": "9a41…", "role": "assistant", "name": "RockBot", "content": "Here it is.",
       "metadata": { "rockbot": { "timestamp": "2026-11-14T09:30:05+00:00", "agentName": "RockBot",
-        "attachments": [ { "mime": "image/png", "path": "chart.png" } ] } } }
+        "sessionId": "agui-session", "source": { "kind": "primary" },
+        "attachments": [ { "mime": "image/png", "path": "chart.png" } ] } } },
+    { "id": "c27e…", "role": "assistant", "name": "RockBot", "content": "**Daily summary.** …",
+      "metadata": { "rockbot": { "timestamp": "2026-11-14T10:00:02+00:00", "agentName": "RockBot",
+        "sessionId": "scheduled", "source": { "kind": "scheduled" },
+        "origin": { "channel": "scheduled", "promptSummary": "daily-summary",
+          "startedAt": "2026-11-14T10:00:00+00:00", "sessionId": "scheduled" } } } }
   ]
 }
 ```
 
-A message's `id` is its position in the thread (`{threadId}-{index}`), which changes when the
-context is cleared. It is not the `messageId` the run's stream used for the same reply. RockBot's
-own detail is under `metadata.rockbot`. Each attachment also has the `url` of its bytes
-(`"url": "/attachments/chart.png"`), as in `rockbot.attachments`.
+A message's `id` is the stored turn's own id, and a reply the agent stored has the same id as the
+`messageId` it had on a stream. A client that loads history while replies are still arriving can
+use it to show each message once. Turns from an agent too old to store ids have
+`{threadId}-{index}` instead, their position in the thread, which changes when the context is
+cleared.
+
+RockBot's own detail is under `metadata.rockbot`:
+
+- `timestamp` and `agentName`.
+- `attachments`. Each attachment also has the `url` of its bytes (`"url": "/attachments/chart.png"`),
+  as in `rockbot.attachments`.
+- `sessionId`: the thread, or the broadcast session the message went out in (`scheduled`,
+  `scheduled-system`, `a2a-inbound`). The thread's notify stream carries those sessions, so its
+  history includes them too, merged in by time.
+- `origin` and `source`, as the reply's `rockbot.origin` event had them live. Render the same
+  anchor from `origin`. Both are absent for the user's own turns and from older agents.
 
 Two kinds of message are not what the user typed or the agent answered:
 
 - **`"role": "system"`** is a prompt the agent wrote to itself, such as the note it works from
   after a subagent finishes. Leave these out of what you show.
-- **A `user` message whose `metadata.rockbot.agentName` names someone other than the agent** is a
-  result the agent stored as input to itself: `subagent-<task id>` or `worker-<task id>` for a
-  subagent's or worker's output, another agent's name for an A2A result. Show it as that
-  source's output, not as the user's words.
+- **A `user` message with a `metadata.rockbot.source`** (`subagent`, `worker`, `a2a`, `bridge`) is
+  a result the agent stored as input to itself. Show it as that source's output, not as the user's
+  words. From an older agent, which records no source, tell them by `agentName`: `subagent-<task
+  id>` or `worker-<task id>` for a subagent's or worker's output, another agent's name for an A2A
+  result.
 
 `403` for a thread that isn't allowed, and `504` when the agent doesn't answer in time.
 
@@ -890,8 +909,9 @@ is kept. The answer is `202`, and two things follow on the thread's notify strea
 
 What else changes:
 
-- **History starts over.** `GET /threads/{id}/messages` returns the new conversation, and its
-  message ids (`{threadId}-{index}`) start again at 0.
+- **History starts over.** `GET /threads/{id}/messages` returns the new conversation. The clear
+  also drops the broadcast sessions' stored output, so earlier scheduled reports don't come back
+  on the next reload; the saved-response archive (`/saved`) still has them.
 - **In-flight work is stopped**, as after a cancel: the agent ends the thread's turn, so an open
   run finishes with `outcome.type: "cancelled"`.
 - **Open MCP questions stay** on the proxy's list until the agent says they are closed

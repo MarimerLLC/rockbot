@@ -376,7 +376,9 @@ public sealed class TurnEventMapper(string threadId, string runId, TimeProvider?
 
     private (string MessageId, List<BaseEvent> Events) TextMessage(AgentReply reply)
     {
-        var messageId = NewId();
+        // The id of the reply's copy in history when the agent stored one (#809), so a client that
+        // reloads history can match the two.
+        var messageId = string.IsNullOrEmpty(reply.MessageId) ? NewId() : reply.MessageId;
         var subagentRunId = SubagentRunId(reply.Source);
         var events = new List<BaseEvent>
         {

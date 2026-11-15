@@ -33,6 +33,12 @@ internal sealed class ClearContextHandler(
         // Clear conversation memory (ephemeral turns only — logs are preserved)
         await conversationMemory.ClearAsync(message.SessionId, ct);
 
+        // And the broadcast sessions' stored replies (#809): a thread's history includes them, so
+        // leaving them would bring the old scheduled reports back on the next reload of a context
+        // the user just cleared. They stay in the saved-response archive.
+        foreach (var broadcast in WellKnownSessions.Broadcast)
+            await conversationMemory.ClearAsync(broadcast, ct);
+
         // Forget which memories have been injected. Recalled memories live in context for a
         // single turn and are never persisted into history, so leaving this set behind would
         // start the fresh session with no history AND every previously-recalled memory

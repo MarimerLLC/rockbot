@@ -20,4 +20,30 @@ public sealed record ConversationHistoryTurn
     /// image the user sent three turns ago instead of silently dropping it.
     /// </summary>
     public IReadOnlyList<AgentAttachment>? Attachments { get; init; }
+
+    /// <summary>
+    /// Stable id of the turn. Equal to <see cref="AgentReply.MessageId"/> on the live reply it was
+    /// stored from, so a frontend can match the two. Null from older agents.
+    /// </summary>
+    public string? Id { get; init; }
+
+    /// <summary>
+    /// The session the turn belongs to: the requested one, or a broadcast session
+    /// (<c>scheduled</c>, <c>scheduled-system</c>, <c>a2a-inbound</c>) when the request set
+    /// <see cref="ConversationHistoryRequest.IncludeBroadcast"/>. Null from older agents.
+    /// </summary>
+    public string? SessionId { get; init; }
+
+    /// <summary>
+    /// Provenance of an unsolicited turn, as <see cref="AgentReply.Origin"/> had it live. Frontends
+    /// render the same anchor from it on reload.
+    /// </summary>
+    public ReplyOrigin? Origin { get; init; }
+
+    /// <summary>
+    /// Which part of the agent produced the turn, as <see cref="AgentReply.Source"/> had it live.
+    /// Null for the user's own turns and from older agents; frontends then fall back to
+    /// <see cref="AgentName"/>.
+    /// </summary>
+    public ReplySource? Source { get; init; }
 }

@@ -99,6 +99,34 @@ public class InboundNotificationServiceTests
     }
 
     [TestMethod]
+    public async Task Flush_StoresTheBatchInTheA2AInboundSession_WithTheIdItWasSentWith()
+    {
+        // #809: the digest goes to every client; a thread's reloaded history includes it.
+        using var conversations = new InMemoryConversationMemory(
+            Microsoft.Extensions.Options.Options.Create(new ConversationMemoryOptions()),
+            NullLogger<InMemoryConversationMemory>.Instance);
+        _service.Dispose();
+        _service = new InboundNotificationService(
+            _queue, _activityMonitor, _sessionTracker, _publisher, new AgentIdentity("RockBot"),
+            NullLogger<InboundNotificationService>.Instance, conversations);
+        _sessionTracker.ActiveLoop = false;
+        _activityMonitor.IsActive = false;
+        await _queue.EnqueueAsync(CreateNotification("t1", "Agent1"), CancellationToken.None);
+
+        InvokeCheckAndFlush();
+        await _publisher.WaitForPublish();
+
+        var reply = _publisher.Published[0].Envelope.GetPayload<AgentReply>()!;
+        var stored = (await conversations.GetTurnsAsync(WellKnownSessions.A2AInbound)).Single();
+        Assert.IsFalse(string.IsNullOrEmpty(reply.MessageId));
+        Assert.AreEqual(reply.MessageId, stored.Id);
+        Assert.AreEqual(reply.Content, stored.Content);
+        Assert.AreEqual(InboundNotificationService.A2AInboundAgentName, stored.AgentName);
+        Assert.AreEqual(ReplySourceKind.A2A, stored.Source?.Kind);
+        Assert.AreEqual("a2a-inbound", stored.Origin?.Channel);
+    }
+
+    [TestMethod]
     public async Task Flush_DrainsQueue()
     {
         _sessionTracker.ActiveLoop = false;

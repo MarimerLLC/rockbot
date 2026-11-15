@@ -175,7 +175,12 @@ internal sealed class SubagentResultHandler(
         await conversationMemory.AddTurnAsync(
             rawSessionId,
             new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
-            { AgentName = $"subagent-{message.TaskId}" },
+            {
+                AgentName = $"subagent-{message.TaskId}",
+                // #809: so a reloaded history shows it as the subagent's, anchored to its request.
+                Source = new ConversationTurnSource(UserProxy.ReplySourceKind.Subagent, message.TaskId),
+                Origin = originStore.Get(rawSessionId).ToTurnOrigin(),
+            },
             ct);
 
         // ── Gate: accumulate and decide who synthesizes ─────────────────────────
@@ -291,11 +296,6 @@ internal sealed class SubagentResultHandler(
                 deferRareTools: true,
                 laterUserMessages: laterUserMessages);
 
-            await conversationMemory.AddTurnAsync(
-                rawSessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow)
-                { AgentName = agent.Name },
-                ct);
 
             // The synthesis is the consolidated answer bubble. The parent loop already
             // emitted its own final reply (with the original user correlationId) before
@@ -310,8 +310,11 @@ internal sealed class SubagentResultHandler(
                 SessionId = rawSessionId,
                 AgentName = agent.Name,
                 IsFinal = true,
-                Origin = originStore.Get(rawSessionId)
+                Origin = originStore.Get(rawSessionId),
+                MessageId = ConversationTurn.NewId(),
             };
+            await conversationMemory.AddTurnAsync(rawSessionId, AssistantTurn(reply), ct);
+
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
 
@@ -348,12 +351,6 @@ internal sealed class SubagentResultHandler(
         {
             var content = BuildDegradedReplyContent(batchedResults, synthesisError);
 
-            await conversationMemory.AddTurnAsync(
-                rawSessionId,
-                new ConversationTurn("assistant", content, DateTimeOffset.UtcNow)
-                { AgentName = agent.Name },
-                ct);
-
             var reply = new AgentReply
             {
                 Source = UserProxy.ReplySource.Primary,
@@ -361,8 +358,11 @@ internal sealed class SubagentResultHandler(
                 SessionId = rawSessionId,
                 AgentName = agent.Name,
                 IsFinal = true,
-                Origin = originStore.Get(rawSessionId)
+                Origin = originStore.Get(rawSessionId),
+                MessageId = ConversationTurn.NewId(),
             };
+            await conversationMemory.AddTurnAsync(rawSessionId, AssistantTurn(reply), ct);
+
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
 
@@ -376,6 +376,10 @@ internal sealed class SubagentResultHandler(
                 rawSessionId);
         }
     }
+
+    /// <summary>The stored copy of a reply, sharing its id, origin and source (#809).</summary>
+    private static ConversationTurn AssistantTurn(AgentReply reply) =>
+        new ConversationTurn("assistant", reply.Content, DateTimeOffset.UtcNow) { AgentName = reply.AgentName }.Matching(reply);
 
     /// <summary>
     /// #418: keeps the consolidated result after conversation history expires. A scheduled task

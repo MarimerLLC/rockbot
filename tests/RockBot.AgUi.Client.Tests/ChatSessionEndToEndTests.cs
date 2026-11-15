@@ -125,6 +125,30 @@ public sealed class ChatSessionEndToEndTests
     }
 
     [TestMethod]
+    public async Task AScheduledReport_SurvivesAReload_WithItsAnchorAndTheIdItHadLive()
+    {
+        // #809: the report went out in the scheduled session; a client that loads history later
+        // still gets it, as the live one showed it.
+        await ConnectAsync();
+        await _session.SendAsync("Hello, and notify me");
+        await UntilAsync(() => _chat.State.Messages.Any(m => m.Category == MessageCategory.ScheduledUser), "the scheduled task's report");
+        var live = _chat.State.Messages.Single(m => m.Category == MessageCategory.ScheduledUser);
+
+        using var http = _proxy.CreateClient();
+        var (later, chat) = Open(http);
+        await using var disposing = later;
+        later.Start();
+        await UntilAsync(() => chat.State.Messages.Any(m => m.Category == MessageCategory.ScheduledUser), "the report, from history");
+
+        var reloaded = chat.State.Messages.Single(m => m.Category == MessageCategory.ScheduledUser);
+        Assert.AreEqual(live.MessageId, reloaded.MessageId);
+        Assert.AreEqual("scheduled", reloaded.SessionId);
+        StringAssert.Contains(reloaded.Content, "Re: \"Daily summary\"");
+        StringAssert.Contains(reloaded.Content, "Nothing needs your attention today.");
+        Assert.AreEqual("Hello, and notify me", chat.State.Messages[0].Content, "the thread's own turns are there too");
+    }
+
+    [TestMethod]
     public async Task AQuestion_IsShownAsAForm_AnsweredOverRest_AndClosedByTheNotifyStream()
     {
         await ConnectAsync();

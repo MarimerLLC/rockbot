@@ -167,9 +167,9 @@ The proxy has endpoints for these; the sample does not use them.
 - **Token refresh** in app mode, and opening the notify stream with `EventSource` and a ticket.
 - **Tables and task-list checkboxes** in Markdown, a multi-line input box, drag-and-drop upload.
 - **Several threads.** One page, one thread.
-- **What history can't give back** after a reload or a resync: the origin of earlier unsolicited
-  replies, scheduled-task and inbound A2A output, and progress
-  ([`docs/agui.md`](../../docs/agui.md#reconnecting)).
+- **What history can't give back** after a reload or a resync: progress and activity logs
+  ([`docs/agui.md`](../../docs/agui.md#reconnecting)). Earlier unsolicited replies keep their origin,
+  and scheduled-task and inbound A2A output is in history (#809).
 
 ## Tests
 

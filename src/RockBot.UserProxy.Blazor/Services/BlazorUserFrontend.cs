@@ -9,6 +9,20 @@ namespace RockBot.UserProxy.Blazor.Services;
 /// </summary>
 public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStateService? signIns = null) : IUserFrontend
 {
+    /// <summary>This front end's channel, as a <see cref="ReplyOrigin.Channel"/> names it.</summary>
+    internal const string Channel = "blazor";
+
+    /// <summary>
+    /// The conversation as loaded from history, with the origin anchor a live copy of each
+    /// unsolicited reply had (#809), so a reloaded transcript reads as the live one did.
+    /// </summary>
+    public static HistoryLoaded HistoryEvent(ConversationHistoryResponse history, string sessionId, DateTimeOffset now) =>
+        new([.. history.Turns.Select(t => t.Origin is null ? t : t with
+            {
+                Content = ReplyOriginFormatter.WithQuotedAnchor(t.Content, t.Origin, Channel, t.SessionId ?? sessionId, now),
+            })],
+            sessionId);
+
     /// <summary>
     /// Learned from the first IsFinal=true reply. Used to distinguish primary agent
     /// progress from external A2A agent progress (both arrive as unsolicited non-final
@@ -36,14 +50,11 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
         // work started elsewhere, so the user can re-ground a message that arrived in this
         // client after the originating session is gone. Suppressed for replies delivered on
         // their own blazor session (origin channel + session match).
-        var displayReply = reply;
-        var anchor = ReplyOriginFormatter.RenderAnchor(
-            reply.Origin, currentChannel: "blazor", currentSessionId: reply.SessionId, DateTimeOffset.UtcNow);
-        if (anchor is not null)
+        var displayReply = reply with
         {
-            var quoted = string.Join("\n", anchor.Split('\n').Select(l => "> " + l.TrimStart()));
-            displayReply = reply with { Content = quoted + "\n\n" + reply.Content };
-        }
+            Content = ReplyOriginFormatter.WithQuotedAnchor(
+                reply.Content, reply.Origin, Channel, reply.SessionId, DateTimeOffset.UtcNow),
+        };
 
         // Final result — a permanent chat bubble; clears the progress indicator
         chatState.Apply(new ReplyReceived(displayReply, category));

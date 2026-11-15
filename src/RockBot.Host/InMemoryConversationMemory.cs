@@ -50,6 +50,10 @@ internal sealed class InMemoryConversationMemory : IConversationMemory, IDisposa
         });
         List<ConversationTurn>? evicted = null;
 
+        // Every stored turn has an id (#809), so history can be matched with what a client saw.
+        if (string.IsNullOrEmpty(turn.Id))
+            turn = turn with { Id = ConversationTurn.NewId() };
+
         lock (session.Lock)
         {
             session.Turns.AddLast(turn);

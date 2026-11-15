@@ -474,7 +474,9 @@ internal static class AgUiEndpoints
         if (!options.IsThreadAllowed(id))
             return Refusal(StatusCodes.Status403Forbidden, $"Thread '{id}' is not allowed.");
 
-        var history = await proxy.GetHistoryAsync(id, cancellationToken: ct);
+        // With the broadcast sessions' output (#809): a thread's notify stream carries it, so the
+        // history a client refetches after rockbot.resync has to as well.
+        var history = await proxy.GetHistoryAsync(id, cancellationToken: ct, includeBroadcast: true);
         if (history is null)
             return Refusal(StatusCodes.Status504GatewayTimeout, "The agent did not answer the history request in time.");
 

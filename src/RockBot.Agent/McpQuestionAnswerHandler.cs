@@ -50,6 +50,9 @@ internal sealed class McpQuestionAnswerHandler(
     /// <summary>Who the bookkeeping turns this handler writes are attributed to.</summary>
     internal const string BridgeTurnAgentName = "mcp-bridge";
 
+    /// <summary>The source of the bridge's synthetic turns, for a reloaded history (#809).</summary>
+    private static readonly ConversationTurnSource BridgeSource = new(UserProxy.ReplySourceKind.Bridge);
+
     /// <summary>Longest resumed result put in the conversation inline; longer goes to working memory.</summary>
     internal const int InlineResultMaxChars = 4000;
 
@@ -142,7 +145,7 @@ internal sealed class McpQuestionAnswerHandler(
             await conversationMemory.AddTurnAsync(sessionId,
                 new ConversationTurn("user",
                     $"[rockbot] That form answer wasn't accepted, so the MCP call didn't continue: {error}",
-                    DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName },
+                    DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName, Source = BridgeSource },
                 ct);
             await PublishStatusAsync(message,
                 response.QuestionClosed ? McpQuestionState.Unavailable : McpQuestionState.Rejected, error, ct);
@@ -155,7 +158,7 @@ internal sealed class McpQuestionAnswerHandler(
         {
             await conversationMemory.AddTurnAsync(sessionId,
                 new ConversationTurn("user", response.Result?.Content ?? "[rockbot] The answer was sent to the background task.",
-                    DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName },
+                    DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName, Source = BridgeSource },
                 ct);
             logger.LogInformation("Form answer to MCP question {QuestionId} went to a background task or a waiting subagent; no reply until it finishes",
                 message.QuestionId);
@@ -206,7 +209,7 @@ internal sealed class McpQuestionAnswerHandler(
                 // Recorded only now: the turn that showed the form may have still been writing its
                 // "fill in the form" reply, which must come before the result, not after it.
                 await conversationMemory.AddTurnAsync(sessionId,
-                    new ConversationTurn("user", syntheticTurn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName },
+                    new ConversationTurn("user", syntheticTurn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName, Source = BridgeSource },
                     ct);
 
                 var chatMessages = await agentContextBuilder.BuildAsync(
@@ -249,19 +252,21 @@ internal sealed class McpQuestionAnswerHandler(
         if (string.IsNullOrWhiteSpace(finalContent))
             finalContent = $"Your answer was sent to {server}.";
 
+        var reply = new AgentReply
+        {
+            Source = UserProxy.ReplySource.Primary,
+            Content = finalContent,
+            SessionId = sessionId,
+            AgentName = agent.Name,
+            IsFinal = true,
+            FollowsQuestionId = message.QuestionId,
+            MessageId = ConversationTurn.NewId(),
+        };
         await conversationMemory.AddTurnAsync(sessionId,
-            new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow), ct);
+            new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow).Matching(reply), ct);
 
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}",
-            new AgentReply
-            {
-                Source = UserProxy.ReplySource.Primary,
-                Content = finalContent,
-                SessionId = sessionId,
-                AgentName = agent.Name,
-                IsFinal = true,
-                FollowsQuestionId = message.QuestionId,
-            }.ToEnvelope<AgentReply>(source: agent.Name), ct);
+            reply.ToEnvelope<AgentReply>(source: agent.Name), ct);
 
         logger.LogInformation("Replied after the form answer to MCP question {QuestionId} ({Length} chars)",
             message.QuestionId, finalContent.Length);

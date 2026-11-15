@@ -83,7 +83,10 @@ internal sealed class InputRequiredHandler(
         await conversationMemory.AddTurnAsync(
             rawSessionId,
             new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
-            { AgentName = context.TargetAgent },
+            {
+                AgentName = context.TargetAgent,
+                Source = new ConversationTurnSource(UserProxy.ReplySourceKind.A2A),
+            },
             ct);
 
         var chatMessages = await agentContextBuilder.BuildAsync(

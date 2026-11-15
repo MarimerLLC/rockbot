@@ -17,6 +17,11 @@ public readonly record struct ChatReduction(ChatViewState State, bool Accepted);
 /// </summary>
 public static class ChatReducer
 {
+    // The agent's broadcast sessions (RockBot.Host.WellKnownSessions, which this library doesn't reference).
+    private const string ScheduledSession = "scheduled";
+    private const string ScheduledSystemSession = "scheduled-system";
+    private const string A2AInboundSession = "a2a-inbound";
+
     public static ChatViewState Reduce(ChatViewState state, ChatEvent e) => Apply(state, e).State;
 
     /// <summary>Applies <paramref name="events"/> in order, starting from <paramref name="initial"/> or an empty chat.</summary>
@@ -119,13 +124,16 @@ public static class ChatReducer
                 ? state.AgentName ?? turn.AgentName
                 : turn.AgentName;
 
+            // The turn's own id when the agent sent one (#809): a live copy of the same reply then
+            // has the same id. Positions stand in for older agents.
+            var position = index++;
             messages.Add(new ChatMessage
             {
-                MessageId = $"{e.IdPrefix}-{index++}",
+                MessageId = string.IsNullOrEmpty(turn.Id) ? $"{e.IdPrefix}-{position}" : turn.Id,
                 Content = turn.Content,
                 IsFromUser = isFromUser,
                 Timestamp = turn.Timestamp.UtcDateTime,
-                SessionId = e.SessionId,
+                SessionId = turn.SessionId ?? e.SessionId,
                 AgentName = effectiveName,
                 Category = category,
                 Attachments = turn.Attachments,
@@ -151,12 +159,43 @@ public static class ChatReducer
     }
 
     /// <summary>
-    /// The display category for a restored history turn, from its AgentName and role.
+    /// The display category for a restored history turn. From its source and session when the
+    /// agent recorded them (#809), as a live reply is categorized; otherwise from its AgentName
+    /// and role.
     /// </summary>
     private static (MessageCategory Category, bool IsFromUser) CategorizeHistoryTurn(
         ConversationHistoryTurn turn, string? primaryAgentName)
     {
-        if (turn.Role == "user")
+        var isUserRole = turn.Role == "user";
+
+        // A broadcast session's turns are all the agent's: a scheduled report, a background
+        // system job's output, the inbound A2A digest.
+        switch (turn.SessionId)
+        {
+            case ScheduledSystemSession:
+                return (MessageCategory.ScheduledSystem, false);
+            case ScheduledSession:
+                return (MessageCategory.ScheduledUser, false);
+            case A2AInboundSession:
+                return (MessageCategory.A2AActivity, false);
+        }
+
+        switch (turn.Source?.Kind)
+        {
+            // The synthetic turns a subagent's or remote agent's result is stored as.
+            case ReplySourceKind.Subagent or ReplySourceKind.Worker when isUserRole:
+                return (MessageCategory.SubagentActivity, false);
+            case ReplySourceKind.A2A when isUserRole:
+                return (MessageCategory.A2AActivity, false);
+            case ReplySourceKind.Scheduled:
+                return (MessageCategory.ScheduledUser, false);
+            // The agent's own answer, including its synthesis of a subagent or A2A result.
+            case ReplySourceKind.Primary or ReplySourceKind.A2A or ReplySourceKind.Subagent or ReplySourceKind.Worker:
+                return (MessageCategory.PrimaryFinal, false);
+            // Bridge turns are what they were before sources: shown by AgentName below.
+        }
+
+        if (isUserRole)
         {
             // Subagent and worker synthetic turns are stored as "user" role with a subagent- or
             // worker- prefixed AgentName. Both represent spawned activity.
@@ -314,12 +353,19 @@ public static class ChatReducer
         else if (closesSource)
             logs = logs.Remove(ActivityLogKey(category, reply.AgentName));
 
+        // A reply the agent also stored carries its history id (#809). The message takes that id,
+        // so a reply that history already brought in (it was stored before it was sent, and the
+        // history request read it) isn't shown twice.
+        if (!string.IsNullOrEmpty(reply.MessageId))
+            messageId = reply.MessageId;
+        var alreadyShown = state.Messages.Any(m => m.MessageId == messageId);
+
         return state with
         {
             FormWaits = formWaits,
             OpenActivityLogs = logs,
             CurrentTurn = turn,
-            Messages = state.Messages.Add(new ChatMessage
+            Messages = alreadyShown ? state.Messages : state.Messages.Add(new ChatMessage
             {
                 MessageId = messageId,
                 Content = reply.Content,

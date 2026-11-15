@@ -537,6 +537,30 @@ public sealed class AgUiEventMapperTests
         Assert.IsFalse(state.Messages.Any(m => m.Content.Contains("Consolidate")), "a prompt the agent wrote to itself is not shown");
     }
 
+    [TestMethod]
+    public void History_RestoresIdsSessionsAndAnchors()
+    {
+        // #809: what a reply's rockbot.origin carried live is in its history metadata.
+        using var snapshot = JsonDocument.Parse("""
+            {"type":"MESSAGES_SNAPSHOT","messages":[
+              {"id":"turn-a","role":"user","content":"hello","metadata":{"rockbot":{"timestamp":"2026-11-14T09:00:00+00:00","sessionId":"agui-session"}}},
+              {"id":"turn-b","role":"assistant","name":"RockBot","content":"Nothing needs your attention today.","metadata":{"rockbot":{"timestamp":"2026-11-14T09:05:00+00:00","agentName":"RockBot","sessionId":"scheduled","origin":{"channel":"scheduler","promptSummary":"Daily summary","startedAt":"2026-11-14T09:00:00+00:00","sessionId":"scheduled"},"source":{"kind":"scheduled"}}}}]}
+            """);
+        var clock = new FixedClock(DateTimeOffset.Parse("2026-11-14T09:10:00Z"));
+
+        var loaded = AgUiEventMapper.History(snapshot.RootElement, Thread, clock: clock);
+        var state = ChatReducer.Replay([new AgentInfoReceived("RockBot", "1.4.0"), loaded]);
+
+        CollectionAssert.AreEqual(new[] { "turn-a", "turn-b" }, state.Messages.Select(m => m.MessageId).ToArray());
+        var report = state.Messages[1];
+        Assert.AreEqual(MessageCategory.ScheduledUser, report.Category);
+        Assert.AreEqual("scheduled", report.SessionId);
+        StringAssert.StartsWith(report.Content, "> ↳ Re: \"Daily summary\"");
+        StringAssert.Contains(report.Content, "from scheduler · 10m ago");
+        StringAssert.EndsWith(report.Content, "\n\nNothing needs your attention today.");
+        Assert.AreEqual("hello", state.Messages[0].Content, "a turn without an origin has no anchor");
+    }
+
     // ── The proxy's vocabulary ───────────────────────────────────────────────
 
     /// <summary>
@@ -590,5 +614,10 @@ public sealed class AgUiEventMapperTests
         yield return new TextMessageEndEvent { MessageId = id };
         if (origin is not null)
             yield return Custom(RockBotEvents.Origin, origin);
+    }
+
+    private sealed class FixedClock(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 }

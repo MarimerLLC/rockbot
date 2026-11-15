@@ -664,7 +664,8 @@ Open after phase 4:
   them (upload, then reference) would let a generic AG-UI client send files without knowing
   RockBot.
 - **Synthetic history turns.** `AgUiHistoryMapper` still shows a subagent's stored result as a
-  user message (open question 3).
+  user message. Since #809 it carries `metadata.rockbot.source`, so a client that reads it can tell;
+  a generic one still can't.
 - **Replicas.** The sign-ins under way are per replica, like the notify buffer and the question
   list.
 
@@ -914,10 +915,11 @@ mode, inline HTML previews, and token refresh. Its README lists them.
 Open after phase 6:
 
 - **History still can't rebuild what a resync loses** (open question 3). The sample shows it:
-  after a reload, earlier scheduled-task output and origins are gone.
+  after a reload, earlier scheduled-task output and origins are gone. *Closed by #809*: history
+  now carries both, and the sample restores them.
 - **A stored subagent result is a `user` message in history.** A client that knows RockBot can
-  tell by `metadata.rockbot.agentName` (the sample does, through the reducer); a generic one
-  can't.
+  tell by `metadata.rockbot.source` (since #809) or `agentName` (the sample does, through the
+  reducer); a generic one can't.
 - **Reloading the page during a turn cancels it.** The reload closes the run's connection, and
   the proxy takes a closed run as a cancel. That is the phase 1 open item about cancelling on
   disconnect, seen from a browser.
@@ -1022,6 +1024,19 @@ host, as built and as published.
    `Origin` and `Source` on `ConversationTurn` (additive under `design/schema-migrations.md`), and
    either history for the broadcast sessions or a client that reads the saved-response archive
    after a resync.
+
+   *Closed by #809.* Each stored turn now has an `Id`, and the turns the agent writes record their
+   `Origin` and `Source`; all three are additive, and the store assigns an id to a turn written
+   without one, including turns restored from an older file. A reply the agent stores carries the
+   same id as `AgentReply.MessageId`, which `TurnEventMapper` uses as the stream's `messageId`, so a
+   reloaded message matches its live copy and `ChatReducer` shows it once. Broadcast replies
+   (scheduled tasks, the memory audit, the inbound A2A digest) are stored in their own session,
+   where no agent loop reads them, so the agent's context is unchanged. A history request with
+   `IncludeBroadcast` gets them merged with the thread's turns by time, each with its `SessionId`.
+   The AG-UI proxy and the Blazor UI both ask for them. Clearing a thread's context clears the
+   broadcast sessions too. `AgUiHistoryMapper` puts the id, session, origin and source in
+   `metadata.rockbot`; front ends categorize reloaded turns by source and render the anchors from
+   the origin.
 4. **One thread or many.** Should the proxy allow more than one thread id (say, one per device)?
    That's cheap for the proxy, but every extra session splits history and working memory on the
    agent side.
