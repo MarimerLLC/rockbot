@@ -211,4 +211,65 @@ public class LlmConfigSnapshotTests
             if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         }
     }
+
+    // ── Decision model ────────────────────────────────────────────────────────
+
+    private const string DecisionKey = "DecSECRETfoundrykey";
+
+    /// <summary>Today's live decision-model shape, plus one switched-off use and one override.</summary>
+    private static DecisionModelOptions LiveDecisionModel() => new()
+    {
+        Endpoint = "https://rocky-ml1nznjr-eastus2.services.ai.azure.com",
+        ApiKey = DecisionKey,
+        Deployment = "decision-1",
+        Uses =
+        {
+            ["TierRouting"] = new() { Enabled = false },
+            ["Correction"] = new() { Threshold = 0.8 },
+            ["ActionGate"] = new() { Enabled = true }
+        }
+    };
+
+    [TestMethod]
+    public void ConfiguredDecisionModelIsReportedWithItsServiceAndDeployment()
+    {
+        var decision = LiveDecisionModel().ToSnapshot()!;
+
+        Assert.AreEqual("Foundry decision API", decision.Provider);
+        Assert.AreEqual("Azure AI Foundry", decision.Service);
+        Assert.AreEqual("rocky-ml1nznjr-eastus2.services.ai.azure.com", decision.EndpointHost);
+        Assert.AreEqual("decision-1", decision.Deployment);
+        Assert.AreEqual(5, decision.TimeoutSeconds);
+        CollectionAssert.AreEqual(new[] { "TierRouting" }, decision.DisabledUses.ToArray());
+        Assert.AreEqual(0.8, decision.ThresholdOverrides["Correction"]);
+        Assert.AreEqual(1, decision.ThresholdOverrides.Count);
+    }
+
+    [TestMethod]
+    public void DecisionModelIsDescribedAndItsKeyNeverReachesTheFile()
+    {
+        var snapshot = Create(LiveShape()) with { DecisionModel = LiveDecisionModel().ToSnapshot() };
+
+        var json = JsonSerializer.Serialize(snapshot);
+        Assert.IsFalse(json.Contains(DecisionKey, StringComparison.Ordinal), json);
+
+        var roundTripped = JsonSerializer.Deserialize<LlmConfigSnapshot>(
+            json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+        Assert.AreEqual("decision-1", roundTripped.DecisionModel!.Deployment);
+        Assert.AreEqual(0.8, roundTripped.DecisionModel.ThresholdOverrides["Correction"]);
+
+        StringAssert.Contains(snapshot.Describe(),
+            "Decision model: decision-1 (Azure AI Foundry, Foundry decision API); switched off for: TierRouting; threshold overrides: Correction=0.8");
+    }
+
+    [TestMethod]
+    public void AnIncompleteDecisionModelConfigIsReportedAsNone()
+    {
+        // Endpoint and deployment without a key: FoundryDecisionService never calls it.
+        var options = LiveDecisionModel();
+        options.ApiKey = "";
+
+        Assert.IsNull(options.ToSnapshot());
+        StringAssert.Contains(Create(LiveShape()).Describe(), "Decision model: none configured");
+    }
 }
