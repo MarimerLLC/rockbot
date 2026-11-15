@@ -31,7 +31,7 @@ reference mock; `components/chat.css` is the reference CSS.
 Three rows filling the viewport: header (fixed), messages (scrolls), composer (fixed). The plan
 panel, when the agent has a task list, sits between messages and composer. The activity panel,
 when open, sits between the header and the messages. Nothing floats over the chat area except
-the saved-responses modal and the version popover.
+the saved-responses modal, the agent info dialog and the version popover.
 
 ## Simple and Detailed views (#828)
 
@@ -73,6 +73,26 @@ again, the close button or Escape closes it, and focus returns to the slot.
 - **Cards**: the category tint, a solid `--rb-border` hairline, `0.375rem` radius, hairline
   shadow. Dashed borders stay the transcript's signal; no glow.
 
+## Agent info dialog (#834)
+
+What the agent reports about itself, read over the bus without its LLM
+(`Components/AgentInfoDialog.razor`). Opened by the header's info button and by the link at the
+foot of the version popover; closed by its close button, Escape or a click on the overlay, after
+which focus returns to the info button.
+
+- **Modal**, like the saved-responses dialog: everything behind it is inert. Up to 720px wide and
+  80vh tall; below 576px it is a full-width sheet from the bottom (90vh).
+- **Tabs** (`tablist`, arrow keys): Agent, Models, Pricing, in the activity panel's tab style.
+- **Agent**: a definition list (versions, bus state, uptime, when the models were loaded).
+- **Models**: one section per tier. A fallback chain is a numbered list. Each model is a card
+  with its id in monospace, its facts as small pills (service, host, reasoning effort, image
+  support), and its price. A model no pricing row matches shows its price line in
+  `--rb-danger-700` (`--rb-danger-fg-dark` in dark mode): it is costed at $0.
+- **Pricing**: a table with numeric columns right-aligned in tabular figures, a sticky header,
+  scrolling sideways on narrow screens. A cache rate the row leaves out shows its default
+  (input, 1.25×, 2×).
+- **Unavailable** (an older agent, or no bus): a bordered note in the panel, never an error colour.
+
 ### Header (`.chat-header`)
 
 - **Left**: the app mark (`wwwroot/images/rockbot-mark-*.png`, 30px, 7px radius; the real
@@ -89,8 +109,10 @@ again, the close button or Escape closes it, and focus returns to the slot.
   saved-responses button.
 - **Connection pill** (`Components/ConnectionPill.razor`): dot plus the word Connected or
   Disconnected (never colour alone). Clicking opens the version popover (bus state, UI version,
-  agent version), using the browser's own `popover`, so Escape and clicking away close it.
-- **Buttons**: saved responses (bookmark), detail toggle, theme toggle, Sign out (when signed in).
+  agent version), using the browser's own `popover`, so Escape and clicking away close it. Its
+  last row is a link that opens the agent info dialog.
+- **Buttons**: agent info (Lucide `info`), saved responses (bookmark), detail toggle, theme
+  toggle, Sign out (when signed in).
 
 ### Messages
 

@@ -2138,3 +2138,269 @@ body.dark-mode .login-badge {
         gap: 8px;
     }
 }
+
+/* ── Agent info dialog (#834) ──────────────────────────────────────────
+   What the agent reports about itself without its LLM: Agent, Models, Pricing tabs. A modal like
+   the saved-responses one; tabs and section titles reuse the activity panel's look. */
+
+.info-modal {
+    display: flex;
+    flex-direction: column;
+    width: 92%;
+    max-width: 720px;
+    max-height: 80vh;
+    border-radius: var(--rb-radius-lg);
+    background: var(--rb-bg);
+    color: var(--rb-fg);
+    box-shadow: var(--rb-shadow-modal);
+}
+
+.info-modal:focus-visible {
+    outline: 2px solid var(--rb-primary);
+    outline-offset: 2px;
+}
+
+.info-modal-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: var(--rb-space-4) var(--rb-space-5) 0;
+}
+
+.info-modal-title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: var(--rb-text-lg);
+    font-weight: var(--rb-weight-semi);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.info-tabs {
+    display: flex;
+    gap: 0.25rem;
+    padding: 0 var(--rb-space-4);
+    border-bottom: 1px solid var(--rb-border);
+}
+
+.info-panel {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--rb-space-4) var(--rb-space-5) var(--rb-space-5);
+    font-size: var(--rb-text-sm);
+}
+
+.info-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.35rem 1rem;
+    margin: 0.4rem 0 0;
+}
+
+.info-facts dt {
+    font-weight: var(--rb-weight-medium);
+    color: var(--rb-fg-muted-on-tint);
+}
+
+.info-facts dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.info-muted { color: var(--rb-fg-muted-on-tint); }
+
+.info-note {
+    margin: 0.75rem 0 0;
+    color: var(--rb-fg-muted-on-tint);
+}
+
+/* Inline code takes the text colour (UI-DESIGN), not Bootstrap's pink. */
+.info-note code {
+    color: inherit;
+    font-size: 0.8rem;
+}
+
+.info-unavailable {
+    margin: 0.5rem 0 0;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--rb-border);
+    border-radius: 0.375rem;
+    background: var(--rb-bg-subtle);
+}
+
+.info-tier + .info-tier,
+.info-tier + .activity-section-title { margin-top: 0.75rem; }
+
+.info-tier-uses { margin: 0.35rem 0 0; }
+
+.info-models {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0.4rem 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+/* A fallback chain is an ordered list, and shows its order. */
+.info-models.chain {
+    padding-left: 1.4rem;
+    list-style: decimal;
+}
+
+.info-models.chain .info-model::marker {
+    color: var(--rb-fg-muted-on-tint);
+    font-weight: var(--rb-weight-semi);
+}
+
+.info-model {
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--rb-border);
+    border-radius: 0.375rem;
+    box-shadow: var(--rb-shadow-hairline, none);
+}
+
+.info-model-id code {
+    padding: 0;
+    background: none;
+    color: inherit;
+    font-size: 0.85rem;
+    font-weight: var(--rb-weight-semi);
+    overflow-wrap: anywhere;
+}
+
+.info-model-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+}
+
+.info-tag {
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--rb-border-muted);
+    border-radius: 999px;
+    background: var(--rb-bg-subtle);
+    color: var(--rb-fg-muted-on-tint);
+    font-size: 0.72rem;
+}
+
+.info-model-price {
+    margin-top: 0.3rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* A model no pricing row matches is costed at $0: worth noticing, so it isn't muted. */
+.info-model-price.unpriced { color: var(--rb-danger-700); font-weight: var(--rb-weight-medium); }
+
+.info-table-wrap {
+    margin-top: 0.6rem;
+    overflow-x: auto;
+    border: 1px solid var(--rb-border);
+    border-radius: 0.375rem;
+}
+
+.info-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+}
+
+.info-table th,
+.info-table td {
+    padding: 0.3rem 0.6rem;
+    border-bottom: 1px solid var(--rb-border-muted);
+    text-align: left;
+    white-space: nowrap;
+}
+
+.info-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--rb-bg-subtle);
+    color: var(--rb-fg-muted-on-tint);
+    font-size: 0.72rem;
+    font-weight: var(--rb-weight-semi);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.info-table tbody tr:last-child th,
+.info-table tbody tr:last-child td { border-bottom: none; }
+
+.info-table tbody th { font-weight: var(--rb-weight-medium); }
+
+.info-table code {
+    padding: 0;
+    background: none;
+    color: inherit;
+    font-size: 0.8rem;
+}
+
+.info-table .num { text-align: right; }
+
+.info-spin { animation: info-spin 0.9s linear infinite; }
+
+@keyframes info-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+    .info-spin { animation: none; }
+}
+
+/* The version popover's way into the dialog. */
+.conn-popover-link {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
+    padding: 6px 0 2px;
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    background: none;
+    color: var(--rb-popover-fg);
+    font: inherit;
+    text-align: left;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+
+.conn-popover-link:focus-visible {
+    outline: 2px solid var(--rb-popover-fg);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+body.dark-mode .info-modal { background: var(--rb-bg-dark-subtle); color: var(--rb-fg-dark-strong); }
+body.dark-mode .info-modal:focus-visible { outline-color: var(--rb-link-dark); }
+body.dark-mode .info-tabs { border-bottom-color: var(--rb-border-dark); }
+body.dark-mode .info-facts dt,
+body.dark-mode .info-muted,
+body.dark-mode .info-note,
+body.dark-mode .info-models.chain .info-model::marker { color: var(--rb-fg-dark-subtle); }
+body.dark-mode .info-unavailable { background: var(--rb-bg-dark-muted); border-color: var(--rb-border-dark); }
+body.dark-mode .info-model { background: var(--rb-panel-dark); border-color: var(--rb-border-dark-muted); box-shadow: none; }
+body.dark-mode .info-tag { background: var(--rb-bg-dark-muted); border-color: var(--rb-border-dark-muted); color: var(--rb-fg-dark-muted); }
+body.dark-mode .info-model-price.unpriced { color: var(--rb-danger-fg-dark); }
+body.dark-mode .info-table-wrap { border-color: var(--rb-border-dark); }
+body.dark-mode .info-table th,
+body.dark-mode .info-table td { border-bottom-color: var(--rb-border-dark-muted); }
+body.dark-mode .info-table thead th { background: var(--rb-bg-dark-muted); color: var(--rb-fg-dark-subtle); }
+
+@media (max-width: 576px) {
+    .info-modal {
+        width: 100%;
+        max-height: 90vh;
+        border-radius: var(--rb-radius-lg) var(--rb-radius-lg) 0 0;
+        align-self: flex-end;
+    }
+
+    .info-modal-head,
+    .info-panel { padding-left: var(--rb-space-4); padding-right: var(--rb-space-4); }
+
+    .info-facts { grid-template-columns: 1fr; gap: 0.1rem; }
+    .info-facts dd + dt { margin-top: 0.4rem; }
+}
