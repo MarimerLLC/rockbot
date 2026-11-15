@@ -516,6 +516,6 @@ public static class TierRoutingAnalyzer
     private static LlmPricingRow? MatchRow(string? modelId, IReadOnlyList<LlmPricingRow> pricing)
     {
         if (string.IsNullOrEmpty(modelId)) return null;
-        return pricing.FirstOrDefault(p => modelId.Contains(p.Prefix, StringComparison.OrdinalIgnoreCase));
+        return pricing.FirstOrDefault(p => LlmPricingMatch.Matches(modelId, p.Prefix));
     }
 }

@@ -46,7 +46,7 @@ RockBot 0.18.4 (started 2026-11-15 08:00:00Z)
 Models (loaded 2026-11-15 08:00:01Z; a change needs a restart)
   Low       gpt-5.6-luna (Azure AI Foundry, rocky.cognitiveservices.azure.com)  $0.20 in / $1.20 out per M
   Balanced  1. claude-haiku-5-5 (Anthropic API, api.anthropic.com, images)  $0.10 in / $0.50 out per M
-            2. anthropic/claude-haiku-5.5 (OpenRouter, openrouter.ai, text only)  (no pricing row; costed at $0)
+            2. anthropic/claude-haiku-5.5 (OpenRouter, openrouter.ai, text only)  $0.10 in / $0.50 out per M
   High      (no model of its own; uses the Balanced model)
   A numbered list is a fallback chain: each later model is used only when the ones before it fail.
   Embeddings: text-embedding-3-small (Azure AI Foundry)

@@ -96,12 +96,15 @@ public sealed class LlmCostEstimator : IDisposable
     /// </summary>
     public string? LoadedFrom => _table.FromFile ? _options.ConfigPath : null;
 
-    /// <summary>The entry that prices <paramref name="modelId"/>: the longest prefix it contains, or null.</summary>
+    /// <summary>
+    /// The entry that prices <paramref name="modelId"/>: the longest prefix it contains, by
+    /// <see cref="LlmPricingMatch"/> (<c>.</c> and <c>-</c> alike), or null.
+    /// </summary>
     public LlmPricingEntry? FindEntry(string modelId)
     {
         foreach (var entry in _table.Entries)
         {
-            if (modelId.Contains(entry.Prefix, StringComparison.OrdinalIgnoreCase))
+            if (LlmPricingMatch.Matches(modelId, entry.Prefix))
                 return entry;
         }
         return null;
