@@ -132,6 +132,7 @@ public static class ChatReducer
                 Timestamp = turn.Timestamp.UtcDateTime,
                 SessionId = turn.SessionId ?? e.SessionId,
                 AgentName = effectiveName,
+                RunAgentName = RunAgentName(turn.Source),
                 Category = category,
                 Attachments = turn.Attachments,
                 IsExpanded = IsExpandedByDefault(category),
@@ -355,6 +356,7 @@ public static class ChatReducer
                 IsFromUser = false,
                 Timestamp = at,
                 AgentName = reply.AgentName,
+                RunAgentName = RunAgentName(reply.Source),
                 SessionId = reply.SessionId,
                 ContentType = reply.ContentType,
                 Attachments = reply.Attachments,
@@ -505,6 +507,19 @@ public static class ChatReducer
         string.Equals(kind, ReplySourceKind.Worker, StringComparison.OrdinalIgnoreCase)
             ? $"worker-{taskId}"
             : $"subagent-{taskId}";
+
+    /// <summary>
+    /// The agent name a source's activity log is kept under: a subagent's or worker's comes from
+    /// its task id (<see cref="SubagentAgentName"/>), anything else is <paramref name="agentName"/>.
+    /// </summary>
+    public static string? LogAgentName(ReplySource? source, string? agentName) =>
+        RunAgentName(source) ?? agentName;
+
+    /// <summary>The <c>subagent-</c> / <c>worker-</c> name of the run <paramref name="source"/> names, or null.</summary>
+    private static string? RunAgentName(ReplySource? source) =>
+        source is { Kind: ReplySourceKind.Subagent or ReplySourceKind.Worker, TaskId: { Length: > 0 } taskId }
+            ? SubagentAgentName(source.Kind, taskId)
+            : null;
 
     // ── Structured agent events (#795) ──────────────────────────────────────
 
