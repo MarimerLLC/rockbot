@@ -91,9 +91,10 @@ public sealed record LlmConfigSnapshot
             };
         }
 
+        var chainImages = tiers.BalancedChainImageSupport();
         var balanced = tiers.BalancedModels.Count > 0
-            ? tiers.BalancedModels.Select(m => Model(m, globalProvider)).ToList()
-            : [Model(tiers.Balanced, globalProvider)];
+            ? tiers.BalancedModels.Select((m, i) => Model(m, globalProvider, chainImages[i])).ToList()
+            : [Model(tiers.Balanced, globalProvider, tiers.Balanced.SupportsImageInput)];
 
         return new LlmConfigSnapshot
         {
@@ -107,9 +108,8 @@ public sealed record LlmConfigSnapshot
                 {
                     Tier = nameof(ModelTier.Balanced),
                     Models = balanced,
-                    // Read from Resolve, as the agent does, even with a chain: the chain entries'
-                    // own flags are never consulted when deciding whether to send images.
-                    AcceptsImages = tiers.Resolve(ModelTier.Balanced).SupportsImageInput
+                    // The same rule the agent uses to decide whether to send images to Balanced.
+                    AcceptsImages = tiers.TierSupportsImageInput(ModelTier.Balanced)
                 },
                 Tier(ModelTier.High, tiers.High, tiers, globalProvider)
             ],
@@ -130,7 +130,11 @@ public sealed record LlmConfigSnapshot
         foreach (var tier in Tiers)
         {
             sb.Append(tier.Tier).Append(": ");
-            sb.Append(string.Join(", then ", tier.Models.Select(m => $"{m.ModelId} ({m.Service})")));
+            sb.Append(string.Join(", then ", tier.Models.Select(m =>
+                // In a chain that takes images, name the models image requests skip.
+                tier.AcceptsImages && tier.Models.Count > 1 && !m.SupportsImageInput
+                    ? $"{m.ModelId} ({m.Service}, text only)"
+                    : $"{m.ModelId} ({m.Service})")));
             if (tier.AcceptsImages)
                 sb.Append(" [accepts images]");
             if (tier.UsesTier is not null)
@@ -159,12 +163,12 @@ public sealed record LlmConfigSnapshot
         {
             Tier = tier.ToString(),
             UsesTier = ReferenceEquals(resolved, own) ? null : nameof(ModelTier.Balanced),
-            Models = [Model(resolved, globalProvider)],
-            AcceptsImages = resolved.SupportsImageInput
+            Models = [Model(resolved, globalProvider, resolved.SupportsImageInput)],
+            AcceptsImages = tiers.TierSupportsImageInput(tier)
         };
     }
 
-    private static LlmModelSnapshot Model(LlmTierConfig config, string? globalProvider)
+    private static LlmModelSnapshot Model(LlmTierConfig config, string? globalProvider, bool supportsImageInput)
     {
         var provider = config.IsCopilot(globalProvider) ? "Copilot"
             : config.IsAnthropic(globalProvider) ? "Anthropic"
@@ -178,6 +182,7 @@ public sealed record LlmConfigSnapshot
             EndpointHost = provider == "Copilot" ? null
                 : EndpointHost(config.Endpoint) ?? (provider == "Anthropic" ? "api.anthropic.com" : null),
             ModelId = string.IsNullOrEmpty(config.ModelId) ? "(not set)" : config.ModelId,
+            SupportsImageInput = supportsImageInput,
             ReasoningEffort = string.IsNullOrWhiteSpace(config.ReasoningEffort) ? null : config.ReasoningEffort
         };
     }
@@ -246,8 +251,9 @@ public sealed record LlmTierSnapshot
     public IReadOnlyList<LlmModelSnapshot> Models { get; init; } = [];
 
     /// <summary>
-    /// Whether the agent will send images to this tier (<c>SupportsImageInput</c> on the tier's
-    /// resolved config). Tier-level, not per model: the agent makes this decision per tier.
+    /// Whether the agent will send images to this tier (<see cref="LlmTierOptions.TierSupportsImageInput"/>).
+    /// For a fallback chain this is true when any model can read images; image requests then go
+    /// only to the models whose <see cref="LlmModelSnapshot.SupportsImageInput"/> is true.
     /// </summary>
     public bool AcceptsImages { get; init; }
 }
@@ -264,6 +270,12 @@ public sealed record LlmModelSnapshot
     public string? EndpointHost { get; init; }
 
     public string ModelId { get; init; } = "";
+
+    /// <summary>
+    /// Whether this model is given requests that carry images. In a fallback chain, image
+    /// requests skip the models where this is false.
+    /// </summary>
+    public bool SupportsImageInput { get; init; }
 
     public string? ReasoningEffort { get; init; }
 }

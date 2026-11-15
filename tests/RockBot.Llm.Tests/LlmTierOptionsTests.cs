@@ -115,4 +115,96 @@ public class LlmTierOptionsTests
         Assert.AreSame(opts.Balanced, resolved,
             "Resolve(Balanced) should always return Balanced regardless of other configs");
     }
+
+    // ── Image support (#818) ─────────────────────────────────────────────────
+
+    private static LlmTierConfig Entry(string model, bool sees = false) =>
+        new() { Endpoint = "https://api.example.com", ApiKey = "k", ModelId = model, SupportsImageInput = sees };
+
+    [TestMethod]
+    public void ChainEntriesKeepTheirOwnImageFlags()
+    {
+        var opts = new LlmTierOptions
+        {
+            Balanced = Entry("single", sees: true),
+            BalancedModels = [Entry("a", sees: true), Entry("b"), Entry("c", sees: true)]
+        };
+
+        CollectionAssert.AreEqual(new[] { true, false, true }, opts.BalancedChainImageSupport().ToArray());
+        Assert.IsFalse(opts.UsesLegacyBalancedImageFlag);
+    }
+
+    [TestMethod]
+    public void BalancedSeesWhenAnyChainEntrySeesEvenIfTheSingleEntryDoesNot()
+    {
+        var opts = new LlmTierOptions
+        {
+            Balanced = Entry("single"),
+            BalancedModels = [Entry("a"), Entry("b", sees: true)]
+        };
+
+        Assert.IsTrue(opts.TierSupportsImageInput(ModelTier.Balanced));
+    }
+
+    [TestMethod]
+    public void BalancedIsBlindWhenNoChainEntrySeesAndTheSingleFlagIsOff()
+    {
+        var opts = new LlmTierOptions
+        {
+            Balanced = Entry("single"),
+            BalancedModels = [Entry("a"), Entry("b")]
+        };
+
+        Assert.IsFalse(opts.TierSupportsImageInput(ModelTier.Balanced));
+    }
+
+    [TestMethod]
+    public void ALegacyConfigWithOnlyTheSingleFlagKeepsItsOldBehaviour()
+    {
+        // The live shape before #818: flag on the single Balanced entry, none on the chain.
+        var opts = new LlmTierOptions
+        {
+            Balanced = Entry("single", sees: true),
+            BalancedModels = [Entry("a"), Entry("b")]
+        };
+
+        Assert.IsTrue(opts.UsesLegacyBalancedImageFlag);
+        CollectionAssert.AreEqual(new[] { true, true }, opts.BalancedChainImageSupport().ToArray());
+        Assert.IsTrue(opts.TierSupportsImageInput(ModelTier.Balanced));
+    }
+
+    [TestMethod]
+    public void ASeededSingleEntryIsNotMistakenForALegacyConfig()
+    {
+        // Program.cs seeds Balanced from BalancedModels[0] when no single entry is configured.
+        var first = Entry("a", sees: true);
+        var opts = new LlmTierOptions { Balanced = first, BalancedModels = [first, Entry("b")] };
+
+        Assert.IsFalse(opts.UsesLegacyBalancedImageFlag);
+        CollectionAssert.AreEqual(new[] { true, false }, opts.BalancedChainImageSupport().ToArray());
+    }
+
+    [TestMethod]
+    public void LowAndHighStillUseTheirResolvedConfig()
+    {
+        var opts = new LlmTierOptions
+        {
+            Balanced = Entry("single", sees: true),
+            BalancedModels = [Entry("a"), Entry("b")],
+            High = Entry("high")
+        };
+
+        Assert.IsFalse(opts.TierSupportsImageInput(ModelTier.High));
+        // Unconfigured Low resolves to the single Balanced entry, which is what its client is built from.
+        Assert.IsTrue(opts.TierSupportsImageInput(ModelTier.Low));
+    }
+
+    [TestMethod]
+    public void WithNoChainTheSingleFlagDecides()
+    {
+        var opts = new LlmTierOptions { Balanced = Entry("single", sees: true) };
+
+        Assert.IsTrue(opts.TierSupportsImageInput(ModelTier.Balanced));
+        Assert.AreEqual(0, opts.BalancedChainImageSupport().Count);
+    }
 }

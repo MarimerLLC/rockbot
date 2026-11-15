@@ -126,6 +126,24 @@ It defaults to `false`. A tool that silently sends bytes to a blind model produc
 provider error deep in the stack; making the operator say "this model can see" is one config
 line and removes an entire class of confusing failure.
 
+### In a fallback chain the flag is per entry, and routing honours it
+
+A Balanced `BalancedModels` chain is several models behind one tier, and they need not share a
+modality. Each entry carries its own `SupportsImageInput`, and `FallbackChatClient` sends a
+request carrying image or PDF content only to entries that declare it, skipping the rest in
+chain order (#818). The skip matters beyond the one model: a blind model answers an image with a
+400, which the fallback client classifies as unknown and rethrows, so a single blind fallback
+would otherwise also stop every later model that could have answered.
+
+The tier-level question ("may I send this tier an image?") is answered by
+`LlmTierOptions.TierSupportsImageInput`, never by `Resolve(tier).SupportsImageInput`: for a chain,
+Balanced can see when any entry can, because routing gets the image there. The inbound injector,
+`VisionTiers` and the `get_llm_config` snapshot all ask that one method, so they cannot disagree.
+
+Configs written before entries had their own flag set it only on the single `Balanced` entry.
+When no chain entry sets it but `Balanced` does, every entry inherits it. That is the old
+behaviour, unchecked, so the agent warns at startup until each entry is labelled.
+
 ### `analyze_file` is not registered unless a tier declares vision
 
 Registering a tool the deployment cannot execute teaches the model a capability it will then
@@ -207,7 +225,7 @@ is how it stays true even so.
 ### Only the current turn's images are materialised
 
 `InboundAttachmentInjector` appends content parts to the last user message: a `DataContent` when
-the attachment is an image *and* the turn's tier declares `SupportsImageInput`, and otherwise a
+the attachment is an image *and* the turn's tier can see (`TierSupportsImageInput`), and otherwise a
 line naming the path and pointing at `analyze_file`. A file a person deliberately attached is
 never silently dropped — not when the model cannot see, not when it is a PDF, not when the file
 has gone missing.
