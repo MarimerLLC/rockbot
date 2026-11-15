@@ -29,8 +29,49 @@ reference mock; `components/chat.css` is the reference CSS.
 ## Layout
 
 Three rows filling the viewport: header (fixed), messages (scrolls), composer (fixed). The plan
-panel, when the agent has a task list, sits between messages and composer. Nothing floats over
-the chat area except the saved-responses modal and the version popover.
+panel, when the agent has a task list, sits between messages and composer. The activity panel,
+when open, sits between the header and the messages. Nothing floats over the chat area except
+the saved-responses modal and the version popover.
+
+## Simple and Detailed views (#828)
+
+One transcript, two views, switched by the header's detail toggle and remembered per browser in
+`localStorage` (Simple when storage is unavailable). The view is a filter on rendering in the chat
+page, not chat state: `ChatStateService` is a singleton shared by every browser.
+
+| Simple (the default) shows | Only Detailed shows |
+| --- | --- |
+| User messages, RockBot's final replies, the user's scheduled-task results | Subagent / worker, inbound A2A and system background-task bubbles |
+| Errors, saved references, MCP questions, the MCP sign-in banner | Activity logs, including the primary progress log and its tool-call cards |
+| One Thinking line while busy, with the agent's live status text | Interim lines |
+| The primary agent's plan | Subagent plans |
+
+In Simple view the Thinking line shows whenever the agent is busy. A subagent result that no
+primary reply follows before the next user turn shows as a compact bubble. Auto-scroll counts
+only the messages the view draws.
+
+## Activity panel
+
+Clicking a header activity slot opens the activity panel on that slot's tab. It is the RockBot
+Design System's `ActivityPanel`, and it works the same in both views. Clicking the same slot
+again, the close button or Escape closes it, and focus returns to the slot.
+
+- **Placement**: in the page flow directly under the header (with the MCP sign-in banner). It
+  pushes the messages down, is capped at `min(40vh, 28rem)` (50vh below 576px) and scrolls
+  inside itself.
+- **Tabs** (`tablist`, arrow keys move between them): RockBot, Subagents, Inbound A2A,
+  Background tasks; below 576px the short labels RockBot, Subagents, A2A, Tasks.
+  - The selected tab is bold with a `--rb-primary` underline.
+  - Each tab has a dot in its kind's ring colour, which pulses while that kind has running work.
+  - A running count follows the label.
+- **Running**: a card per item, with:
+  - the category badge (RockBot's is orange on `--rb-night`, like its avatar), the name, a
+    spinner and elapsed time;
+  - the status line, and plan progress ("Step 2 of 4 · …");
+  - its activity log, expandable, using the same entries and tool-call cards as the transcript.
+- **Recently finished**: the last few results this session, each expandable to its log and result.
+- **Cards**: the category tint, a solid `--rb-border` hairline, `0.375rem` radius, hairline
+  shadow. Dashed borders stay the transcript's signal; no glow.
 
 ### Header (`.chat-header`)
 
@@ -39,11 +80,15 @@ the chat area except the saved-responses modal and the version popover.
 - **Activity row** (`Components/ActivityIcon.razor`): one circular slot per actor, always in this
   order — RockBot, subagents, inbound A2A, background tasks. Idle slots dim; live ones get their
   ring colour, a pulse and, for more than one instance, a count badge. Tooltips list what is
-  running. The RockBot slot is the busy indicator.
+  running. The RockBot slot is the busy indicator. Each slot is a button (`aria-expanded`,
+  `aria-controls`) that opens the activity panel on its tab, idle or not; idle slots brighten on
+  hover and focus, and the open slot has a 2px white tick under it.
+- **Detail toggle**: Lucide `list-tree` icon button, `aria-pressed` when Detailed, after the
+  saved-responses button.
 - **Connection pill** (`Components/ConnectionPill.razor`): dot plus the word Connected or
   Disconnected (never colour alone). Clicking opens the version popover (bus state, UI version,
   agent version), using the browser's own `popover`, so Escape and clicking away close it.
-- **Buttons**: saved responses (bookmark), theme toggle, Sign out (when signed in).
+- **Buttons**: saved responses (bookmark), detail toggle, theme toggle, Sign out (when signed in).
 
 ### Messages
 
@@ -81,7 +126,7 @@ attachments show as removable chips above the row.
 | --- | --- | --- |
 | > 768px | 70% | |
 | 576–768px | 85% | Smaller title |
-| < 576px | 90% | Avatars hidden; tighter padding; header shows the mark, only the live activity slots, the connection word and icon buttons |
+| < 576px | 90% | Avatars hidden; tighter padding; header shows the mark, the RockBot slot plus the live activity slots (the RockBot slot stays, so the activity panel is always reachable), the connection word and icon buttons |
 
 ## Dark mode
 
@@ -98,7 +143,9 @@ edge, and provider buttons that turn blue on hover.
 ## Accessibility
 
 - Icon-only buttons have `aria-label`s; decorative SVGs are `aria-hidden`.
-- Activity slots carry visually hidden text ("Subagents: 2 active").
+- Activity slots carry their state in words ("Subagents: 2 active"); as buttons they also say
+  they show details. Tool-call cards in the activity panel give finished / failed / running in
+  words beside the icon.
 - Focus: 2px `--rb-primary` outline with a 2px offset on every control (white on the header).
 - Animations stop under `prefers-reduced-motion`.
 
