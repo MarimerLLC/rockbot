@@ -240,7 +240,7 @@ h1:focus {
 .activity-row {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 10px; /* room for a count badge on the corner */
     margin-right: 2px;
 }
 
@@ -252,15 +252,14 @@ h1:focus {
     width: 26px;
     height: 26px;
     border-radius: 50%;
-    border: 1.5px solid rgba(255, 255, 255, 0.18);
+    /* Idle: a plain translucent circle, set apart from a live slot by fill, ring colour and glow,
+       not by fading. The slots are buttons, so the idle glyph keeps 3:1: white at 85% is 3.3:1
+       on the blue header and 9.4:1 on the dark one (the old 38% opacity gave 1.3:1). */
+    border: 1.5px solid rgba(255, 255, 255, 0.4);
     background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.45);
+    color: rgba(255, 255, 255, 0.85);
     cursor: default;
     transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease, box-shadow 0.25s ease;
-}
-
-.activity-icon:not(.active) {
-    opacity: 0.38;
 }
 
 .activity-icon-inner {
@@ -288,26 +287,27 @@ h1:focus {
     50%      { box-shadow: 0 0 14px var(--glow), inset 0 0 4px rgba(0, 0, 0, 0.2); }
 }
 
+/* Sits on the slot's corner, clear of the glyph (it used to cover the top of the robot). */
 .activity-icon-count {
     position: absolute;
-    top: -4px;
-    right: -5px;
-    min-width: 15px;
-    height: 15px;
+    top: -7px;
+    right: -9px;
+    min-width: 14px;
+    height: 14px;
     padding: 0 3px;
     border-radius: 999px;
     background: var(--ring);
     color: var(--rb-night);
     font-size: 9px;
     font-weight: var(--rb-weight-bold);
-    line-height: 15px;
+    line-height: 14px;
     text-align: center;
     box-shadow: 0 0 0 1.5px var(--rb-primary);
 }
 
-/* A slot is a button that opens the activity panel (#828). Idle slots brighten on hover and focus
-   so they still read as buttons; the slot whose tab is open gets a white tick under it (no glow:
-   the ring glow stays reserved for live activity). */
+/* A slot is a button that opens the activity panel (#828). Idle slots brighten on hover and focus;
+   the slot whose tab is open gets a white tick under it (no glow: the ring glow stays reserved
+   for live activity). */
 button.activity-icon {
     padding: 0;
     font: inherit;
@@ -317,7 +317,9 @@ button.activity-icon {
 button.activity-icon:not(.active):hover,
 button.activity-icon:not(.active):focus-visible,
 .activity-icon[aria-expanded="true"]:not(.active) {
-    opacity: 0.8;
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.7);
+    color: var(--rb-fg-on-primary);
 }
 
 .activity-icon[aria-expanded="true"]::after {
@@ -2133,6 +2135,6 @@ body.dark-mode .login-badge {
     }
 
     .activity-row {
-        gap: 4px;
+        gap: 8px;
     }
 }

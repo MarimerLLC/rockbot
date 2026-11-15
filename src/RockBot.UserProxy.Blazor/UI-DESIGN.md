@@ -78,9 +78,11 @@ again, the close button or Escape closes it, and focus returns to the slot.
 - **Left**: the app mark (`wwwroot/images/rockbot-mark-*.png`, 30px, 7px radius; the real
   artwork, never redrawn) and "<agent name> Chat".
 - **Activity row** (`Components/ActivityIcon.razor`): one circular slot per actor, always in this
-  order — RockBot, subagents, inbound A2A, background tasks. Idle slots dim; live ones get their
-  ring colour, a pulse and, for more than one instance, a count badge. Tooltips list what is
-  running. The RockBot slot is the busy indicator. Each slot is a button (`aria-expanded`,
+  order — RockBot, subagents, inbound A2A, background tasks. An idle slot is a plain translucent
+  circle with an 85% white glyph (3.3:1 on the blue header, 9.4:1 on the dark one: it is a button,
+  so never fade it below 3:1); live ones get their ring colour on a night disc, a pulse and, for
+  more than one instance, a count badge on the slot's corner, clear of the glyph. Tooltips list
+  what is running. The RockBot slot is the busy indicator. Each slot is a button (`aria-expanded`,
   `aria-controls`) that opens the activity panel on its tab, idle or not; idle slots brighten on
   hover and focus, and the open slot has a 2px white tick under it.
 - **Detail toggle**: Lucide `list-tree` icon button, `aria-pressed` when Detailed, after the
