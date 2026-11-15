@@ -53,6 +53,13 @@ public sealed record LlmConfigSnapshot
     public LlmEmbeddingSnapshot? Embedding { get; init; }
 
     /// <summary>
+    /// The shared decision model (<c>DecisionModel</c> section), or null when none is configured,
+    /// in which case every check that could ask it keeps its deterministic answer. Set by the
+    /// agent after <see cref="Create"/>, because its options live in RockBot.Host.
+    /// </summary>
+    public LlmDecisionModelSnapshot? DecisionModel { get; init; }
+
+    /// <summary>
     /// Builds the snapshot from the resolved tier options, mirroring how the agent builds its
     /// chat clients: Balanced uses <see cref="LlmTierOptions.BalancedModels"/> when that list is
     /// populated, and Low and High use the single Balanced entry when they have no model of their own.
@@ -149,6 +156,10 @@ public sealed record LlmConfigSnapshot
 
         if (Embedding is not null)
             sb.Append(CultureInfo.InvariantCulture, $"Embeddings: {Embedding.ModelId} ({Embedding.Service})\n");
+
+        sb.Append(DecisionModel is null
+            ? "Decision model: none configured; checks that could ask it use their deterministic rules only\n"
+            : DecisionModel.Describe() + "\n");
 
         return sb.ToString().TrimEnd('\n');
     }
@@ -278,6 +289,71 @@ public sealed record LlmModelSnapshot
     public bool SupportsImageInput { get; init; }
 
     public string? ReasoningEffort { get; init; }
+}
+
+/// <summary>
+/// The shared decision model: a "systemone" classifier (e.g. Microsoft-Decision-1 on Foundry)
+/// that answers bounded yes/no, choice and score questions for the action gate, tier routing,
+/// memory dedupe and similar checks. Carries no credential.
+/// </summary>
+public sealed record LlmDecisionModelSnapshot
+{
+    /// <summary>The client the agent uses: always the Foundry systemone decision API today.</summary>
+    public string Provider { get; init; } = "Foundry decision API";
+
+    /// <summary>Who serves the model, e.g. <c>Azure AI Foundry</c>.</summary>
+    public string Service { get; init; } = "";
+
+    public string? EndpointHost { get; init; }
+
+    /// <summary>
+    /// The deployment name the agent calls. This is the configured name, which need not match
+    /// the underlying model's name (Microsoft-Decision-1 is typically deployed as <c>decision-1</c>).
+    /// </summary>
+    public string Deployment { get; init; } = "";
+
+    public double TimeoutSeconds { get; init; }
+
+    /// <summary>Uses (<c>DecisionPurposes</c> values) switched off with <c>Uses:&lt;Purpose&gt;:Enabled=false</c>.</summary>
+    public IReadOnlyList<string> DisabledUses { get; init; } = [];
+
+    /// <summary>Uses whose threshold is overridden from the caller's default, by purpose.</summary>
+    public IReadOnlyDictionary<string, double> ThresholdOverrides { get; init; } = new Dictionary<string, double>();
+
+    /// <summary>Builds the snapshot from the decision-model options. The path and any key are dropped.</summary>
+    public static LlmDecisionModelSnapshot Create(
+        string? endpoint,
+        string deployment,
+        double timeoutSeconds,
+        IEnumerable<string> disabledUses,
+        IReadOnlyDictionary<string, double> thresholdOverrides)
+    {
+        ArgumentNullException.ThrowIfNull(disabledUses);
+        ArgumentNullException.ThrowIfNull(thresholdOverrides);
+
+        return new LlmDecisionModelSnapshot
+        {
+            Service = LlmConfigSnapshot.DescribeService(provider: null, endpoint),
+            EndpointHost = LlmConfigSnapshot.EndpointHost(endpoint),
+            Deployment = deployment,
+            TimeoutSeconds = timeoutSeconds,
+            DisabledUses = [.. disabledUses.Order(StringComparer.OrdinalIgnoreCase)],
+            ThresholdOverrides = new SortedDictionary<string, double>(
+                thresholdOverrides.ToDictionary(t => t.Key, t => t.Value), StringComparer.OrdinalIgnoreCase)
+        };
+    }
+
+    /// <summary>One line, e.g. <c>Decision model: decision-1 (Azure AI Foundry, Foundry decision API)</c>.</summary>
+    public string Describe()
+    {
+        var sb = new StringBuilder().Append(CultureInfo.InvariantCulture, $"Decision model: {Deployment} ({Service}, {Provider})");
+        if (DisabledUses.Count > 0)
+            sb.Append(CultureInfo.InvariantCulture, $"; switched off for: {string.Join(", ", DisabledUses)}");
+        if (ThresholdOverrides.Count > 0)
+            sb.Append(CultureInfo.InvariantCulture,
+                $"; threshold overrides: {string.Join(", ", ThresholdOverrides.Select(t => string.Create(CultureInfo.InvariantCulture, $"{t.Key}={t.Value}")))}");
+        return sb.ToString();
+    }
 }
 
 /// <summary>The text-embedding model used for hybrid search.</summary>

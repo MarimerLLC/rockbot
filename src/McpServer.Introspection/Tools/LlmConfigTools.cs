@@ -35,7 +35,9 @@ public sealed class LlmConfigTools(IConfiguration configuration)
         "Returns the LLM models this agent is configured to use, per tier (Low, Balanced, High): " +
         "the provider, the service that hosts the model (e.g. Anthropic API, OpenRouter, Azure AI " +
         "Foundry), the endpoint host and the model id, with the Balanced fallback chain in priority " +
-        "order, plus the embedding model. Never includes API keys. It reflects the configuration " +
+        "order, plus the embedding model and the decision model (the small classifier behind the " +
+        "action gate, tier routing and memory dedupe checks: its service, endpoint host, deployment " +
+        "and any uses switched off). Never includes API keys. It reflects the configuration " +
         "loaded at the agent's last startup; model changes need a restart, so this is what is " +
         "running now. Use it for questions like 'what model are you?' or 'which provider do you " +
         "use?'. It shows configuration, not which model answered a given request: a later " +
@@ -65,7 +67,8 @@ public sealed class LlmConfigTools(IConfiguration configuration)
                 snapshot.FixedTier,
                 snapshot.Note,
                 snapshot.Tiers,
-                snapshot.Embedding
+                snapshot.Embedding,
+                snapshot.DecisionModel
             }, WriteOptions);
         }
         catch (Exception ex) when (ex is JsonException or IOException)
