@@ -765,11 +765,13 @@ secrets:
     # Ordered fallback chain for balanced tier. First entry is preferred; subsequent
     # entries are tried in order on failure. Takes precedence over single 'balanced'
     # when populated. Each entry has: provider, endpoint, apiKey, modelId, and optionally
-    # verbosity (applies to that entry only — set it on the GPT entries, not on Claude).
+    # verbosity (applies to that entry only — set it on the GPT entries, not on Claude) and
+    # supportsImageInput.
     #
-    # Entries take no supportsImageInput of their own — the flag is read per tier, not per
-    # fallback model. So if balanced.supportsImageInput is true, every model in this chain
-    # must read images: a fallback that cannot would be handed one and fail.
+    # Set supportsImageInput: true on each entry whose model reads images. Requests carrying
+    # an image or PDF go only to those entries, in chain order, and the Balanced tier accepts
+    # images when any entry does. Legacy: if no entry sets it but balanced.supportsImageInput
+    # is true, every entry is assumed to read images (the agent logs a warning at startup).
     balancedModels: []
     low:                    # Optional — fast/cheap model for simple factual questions
       provider: ""

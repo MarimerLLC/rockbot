@@ -251,7 +251,7 @@ internal sealed class UserMessageHandler(
                 await InboundAttachmentInjector.InjectAsync(
                     chatMessages,
                     turnAttachments,
-                    tierCanSee: llmTierOptions?.Resolve(tier).SupportsImageInput ?? false,
+                    tierCanSee: llmTierOptions?.TierSupportsImageInput(tier) ?? false,
                     readBytesAsync: attachmentStorage.ReadAsync,
                     logger,
                     ct);

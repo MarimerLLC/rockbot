@@ -10,15 +10,16 @@ namespace RockBot.Tools.FileSystem;
 internal static class VisionTiers
 {
     /// <summary>
-    /// Returns the tiers whose resolved config sets <see cref="LlmTierConfig.SupportsImageInput"/>,
+    /// Returns the tiers that can read images (<see cref="LlmTierOptions.TierSupportsImageInput"/>),
     /// or an empty array when no LLM tiers are configured at all.
     /// </summary>
     /// <remarks>
-    /// <see cref="LlmTierOptions.Resolve"/> falls back to Balanced for an unconfigured tier, so a
-    /// tier listed here genuinely reaches a seeing model when asked for.
+    /// <see cref="LlmTierOptions.Resolve"/> falls back to Balanced for an unconfigured tier, and a
+    /// Balanced chain routes image requests to the entries that can see, so a tier listed here
+    /// genuinely reaches a seeing model when asked for.
     /// </remarks>
     public static ModelTier[] From(LlmTierOptions? options) =>
         options is null
             ? []
-            : [.. Enum.GetValues<ModelTier>().Where(t => options.Resolve(t).SupportsImageInput)];
+            : [.. Enum.GetValues<ModelTier>().Where(options.TierSupportsImageInput)];
 }

@@ -125,4 +125,40 @@ public sealed class LlmTierOptions
         ModelTier.High => (High.IsConfigured || High.HasModelId) ? High : Balanced,
         _              => Balanced
     };
+
+    /// <summary>
+    /// Whether the agent may send images to <paramref name="tier"/>. Use this rather than
+    /// <c>Resolve(tier).SupportsImageInput</c>: for Balanced with a <see cref="BalancedModels"/>
+    /// chain, the client is the chain, and it can read an image when any entry can, because the
+    /// fallback client routes image requests only to entries that declare it.
+    /// </summary>
+    public bool TierSupportsImageInput(ModelTier tier) =>
+        tier == ModelTier.Balanced && BalancedModels.Count > 0
+            ? BalancedChainImageSupport().Any(sees => sees)
+            : Resolve(tier).SupportsImageInput;
+
+    /// <summary>
+    /// Per-entry image support for the <see cref="BalancedModels"/> chain, in chain order. Empty
+    /// when there is no chain.
+    /// </summary>
+    /// <remarks>
+    /// Each entry's own <see cref="LlmTierConfig.SupportsImageInput"/> counts, except under
+    /// <see cref="UsesLegacyBalancedImageFlag"/>, where every entry inherits the single Balanced
+    /// flag. That keeps configs written before entries had their own flag working as they did.
+    /// </remarks>
+    public IReadOnlyList<bool> BalancedChainImageSupport() =>
+        UsesLegacyBalancedImageFlag
+            ? [.. BalancedModels.Select(_ => true)]
+            : [.. BalancedModels.Select(m => m.SupportsImageInput)];
+
+    /// <summary>
+    /// True for a config written before chain entries took their own image flag: the single
+    /// Balanced entry sets <see cref="LlmTierConfig.SupportsImageInput"/> and no chain entry does.
+    /// The flag then applies to the whole chain, as it used to. Hosts should warn, because that
+    /// claims every fallback can see, which nothing has checked.
+    /// </summary>
+    public bool UsesLegacyBalancedImageFlag =>
+        BalancedModels.Count > 0
+        && Balanced.SupportsImageInput
+        && !BalancedModels.Any(m => m.SupportsImageInput);
 }

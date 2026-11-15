@@ -25,10 +25,17 @@ internal enum FallbackErrorCategory { Transient, RateLimited, QuotaExhausted, Co
 /// reached the fallback. The pause is shared across callers so concurrent sessions stop
 /// piling onto the throttled deployment. Entries that should fail over on 429 must be
 /// built with SDK-level retries disabled, or the 429 never reaches this client.
+/// <para>
+/// When per-entry image support is supplied, a request carrying image or PDF content only goes
+/// to entries that declare it. A model that cannot see rejects such a request with a 400, which
+/// classifies as <see cref="FallbackErrorCategory.Unknown"/> and ends the chain, so without this
+/// check one blind fallback would also stop every later model that could have answered.
+/// </para>
 /// </remarks>
 public sealed class FallbackChatClient : IChatClient
 {
     private readonly IReadOnlyList<(string ModelId, IChatClient Client)> _entries;
+    private readonly bool[]? _supportsImageInput;
     private readonly ILogger _logger;
     private readonly bool[] _degraded;
     private readonly DateTimeOffset[] _degradedAt;
@@ -49,6 +56,10 @@ public sealed class FallbackChatClient : IChatClient
     /// </summary>
     public event Action<string, string, string>? OnFallback;
 
+    /// <param name="supportsImageInput">
+    /// Whether each entry accepts image input, in the same order as <paramref name="entries"/>.
+    /// Null (the default) means unknown: every entry is tried for every request, as before.
+    /// </param>
     public FallbackChatClient(
         IReadOnlyList<(string ModelId, IChatClient Client)> entries,
         ILogger logger,
@@ -58,11 +69,17 @@ public sealed class FallbackChatClient : IChatClient
         TimeSpan? perAttemptTimeout = null,
         TimeSpan? defaultRateLimitPause = null,
         TimeSpan? maxRateLimitPause = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IReadOnlyList<bool>? supportsImageInput = null)
     {
         if (entries.Count == 0)
             throw new ArgumentException("At least one entry is required.", nameof(entries));
+        if (supportsImageInput is not null && supportsImageInput.Count != entries.Count)
+            throw new ArgumentException(
+                $"supportsImageInput has {supportsImageInput.Count} values for {entries.Count} entries.",
+                nameof(supportsImageInput));
         _entries = entries;
+        _supportsImageInput = supportsImageInput?.ToArray();
         _logger = logger;
         _degraded = new bool[entries.Count];
         _degradedAt = new DateTimeOffset[entries.Count];
@@ -84,6 +101,12 @@ public sealed class FallbackChatClient : IChatClient
         // Materialize once to avoid re-enumeration across retries/fallbacks.
         var messages = chatMessages as IReadOnlyList<ChatMessage> ?? chatMessages.ToList();
 
+        var needsImages = _supportsImageInput is not null && RequiresImageInput(messages);
+        if (needsImages && !_supportsImageInput!.Any(sees => sees))
+            throw new InvalidOperationException(
+                "FallbackChatClient: the request carries image content, but no model in the chain " +
+                "declares SupportsImageInput, so none of them can read it.");
+
         // Cooldown recovery: if a degraded model's cooldown has elapsed, restore it
         // so the next iteration can retry the primary before falling back.
         RecoverCooledDownModels();
@@ -92,10 +115,18 @@ public sealed class FallbackChatClient : IChatClient
         {
             if (_degraded[i]) continue;
 
+            if (!CanTake(i, needsImages))
+            {
+                _logger.LogInformation(
+                    "FallbackChatClient: skipping {ModelId} for this request: it carries image content and the model does not declare SupportsImageInput",
+                    _entries[i].ModelId);
+                continue;
+            }
+
             // A throttled model is skipped while its retry-after window is open, but only
             // when something else can take the request — otherwise try it anyway rather
             // than fail a call the provider may well accept.
-            if (IsRateLimited(i) && HasAvailableAfter(i)) continue;
+            if (IsRateLimited(i) && HasAvailableAfter(i, needsImages)) continue;
 
             var (modelId, client) = _entries[i];
 
@@ -135,7 +166,7 @@ public sealed class FallbackChatClient : IChatClient
                     if (attempt < _maxRetries)
                         continue; // Retry same model
 
-                    NotifyFallback(i, modelId, "timeout");
+                    NotifyFallback(i, modelId, "timeout", needsImages);
                     break; // Fall through to next model
                 }
                 catch (Exception ex)
@@ -158,12 +189,12 @@ public sealed class FallbackChatClient : IChatClient
                         Volatile.Write(ref _rateLimitedUntilTicks[i],
                             (_timeProvider.GetUtcNow() + pause).UtcTicks);
 
-                        if (HasAvailableAfter(i))
+                        if (HasAvailableAfter(i, needsImages))
                         {
                             _logger.LogWarning(
                                 "FallbackChatClient: model {ModelId} rate-limited (429); pausing it for {Pause} and trying the next model. Error ({ErrorType}): {Error}",
                                 modelId, pause, errorType, error);
-                            NotifyFallback(i, modelId, "rate limited");
+                            NotifyFallback(i, modelId, "rate limited", needsImages);
                             break; // Fall through to next model
                         }
 
@@ -190,7 +221,7 @@ public sealed class FallbackChatClient : IChatClient
                         _logger.LogWarning(
                             "FallbackChatClient: content filter triggered on {ModelId}; trying next model without degrading. Status {Status}, error ({ErrorType}): {Error}",
                             modelId, status, errorType, error);
-                        NotifyFallback(i, modelId, "content filter");
+                        NotifyFallback(i, modelId, "content filter", needsImages);
                         break;
                     }
 
@@ -215,7 +246,7 @@ public sealed class FallbackChatClient : IChatClient
                             modelId, category, rule, attempt + 1, status, errorType, error);
                     }
 
-                    NotifyFallback(i, modelId, category.ToString());
+                    NotifyFallback(i, modelId, category.ToString(), needsImages);
                     break; // Fall through to next model
                 }
                 finally
@@ -228,7 +259,7 @@ public sealed class FallbackChatClient : IChatClient
             int nextIdx = -1;
             for (int j = i + 1; j < _entries.Count; j++)
             {
-                if (!_degraded[j]) { nextIdx = j; break; }
+                if (!_degraded[j] && CanTake(j, needsImages)) { nextIdx = j; break; }
             }
 
             if (nextIdx >= 0)
@@ -237,6 +268,16 @@ public sealed class FallbackChatClient : IChatClient
                     "FallbackChatClient: falling back from {FromModelId} to {ToModelId}",
                     modelId, _entries[nextIdx].ModelId);
             }
+        }
+
+        if (needsImages)
+        {
+            _logger.LogWarning(
+                "FallbackChatClient: every model that declares SupportsImageInput is degraded or failed; no fallback available for an image request");
+
+            throw new InvalidOperationException(
+                "FallbackChatClient: every model in the chain that can read images is degraded or failed; " +
+                "the models that remain cannot read the image this request carries.");
         }
 
         _logger.LogWarning(
@@ -252,12 +293,22 @@ public sealed class FallbackChatClient : IChatClient
         ChatOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        var messages = chatMessages as IReadOnlyList<ChatMessage> ?? chatMessages.ToList();
+        var needsImages = _supportsImageInput is not null && RequiresImageInput(messages);
+
+        // Streaming does not fail over mid-stream, but it can at least start on a model that
+        // is able to read the request.
         int idx = _activeIndex;
-        if (idx >= _entries.Count || _degraded[idx])
-            throw new InvalidOperationException("FallbackChatClient: no active client available for streaming.");
+        while (idx < _entries.Count && (_degraded[idx] || !CanTake(idx, needsImages)))
+            idx++;
+
+        if (idx >= _entries.Count)
+            throw new InvalidOperationException(needsImages
+                ? "FallbackChatClient: no active client that can read images is available for streaming."
+                : "FallbackChatClient: no active client available for streaming.");
 
         await foreach (var update in _entries[idx].Client
-            .GetStreamingResponseAsync(chatMessages, options, cancellationToken))
+            .GetStreamingResponseAsync(messages, options, cancellationToken))
         {
             yield return update;
         }
@@ -305,14 +356,57 @@ public sealed class FallbackChatClient : IChatClient
     private bool IsRateLimited(int index) =>
         Volatile.Read(ref _rateLimitedUntilTicks[index]) > _timeProvider.GetUtcNow().UtcTicks;
 
-    /// <summary>True when a later entry is neither degraded nor inside a rate-limit pause.</summary>
-    private bool HasAvailableAfter(int index)
+    /// <summary>
+    /// True when a later entry is neither degraded nor inside a rate-limit pause, and can read
+    /// the request.
+    /// </summary>
+    private bool HasAvailableAfter(int index, bool needsImages = false)
     {
         for (int j = index + 1; j < _entries.Count; j++)
         {
-            if (!_degraded[j] && !IsRateLimited(j)) return true;
+            if (!_degraded[j] && !IsRateLimited(j) && CanTake(j, needsImages)) return true;
         }
         return false;
+    }
+
+    /// <summary>False only for an image request and an entry known not to read images.</summary>
+    private bool CanTake(int index, bool needsImages) =>
+        !needsImages || _supportsImageInput is null || _supportsImageInput[index];
+
+    /// <summary>
+    /// True when any message carries content that needs a model able to see: an image, or a
+    /// PDF (which <c>analyze_file</c> sends the same way and which only vision models accept).
+    /// Tool results count too, since an MCP tool can return image blocks.
+    /// </summary>
+    internal static bool RequiresImageInput(IEnumerable<ChatMessage> messages)
+    {
+        foreach (var message in messages)
+        {
+            foreach (var content in message.Contents)
+            {
+                if (IsVisual(content)) return true;
+
+                if (content is FunctionResultContent { Result: { } result })
+                {
+                    if (result is AIContent single && IsVisual(single)) return true;
+                    if (result is IEnumerable<AIContent> many && many.Any(IsVisual)) return true;
+                }
+            }
+        }
+
+        return false;
+
+        static bool IsVisual(AIContent content) => content switch
+        {
+            DataContent dc => IsVisualMediaType(dc.MediaType),
+            UriContent uc => IsVisualMediaType(uc.MediaType),
+            _ => false
+        };
+
+        static bool IsVisualMediaType(string? mediaType) =>
+            mediaType is not null
+            && (mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+                || mediaType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -347,11 +441,11 @@ public sealed class FallbackChatClient : IChatClient
         return null;
     }
 
-    private void NotifyFallback(int currentIndex, string fromModelId, string reason)
+    private void NotifyFallback(int currentIndex, string fromModelId, string reason, bool needsImages)
     {
         for (int j = currentIndex + 1; j < _entries.Count; j++)
         {
-            if (!_degraded[j])
+            if (!_degraded[j] && CanTake(j, needsImages))
             {
                 OnFallback?.Invoke(fromModelId, _entries[j].ModelId, reason);
                 return;

@@ -320,8 +320,20 @@ if (anyConfigured)
         var agentHostOpts = new AgentHostOptions();
         builder.Configuration.GetSection("AgentHost").Bind(agentHostOpts);
 
+        // Image requests go only to entries that can read them (#818).
+        var chainImageSupport = tierOptions.BalancedChainImageSupport();
+        Console.WriteLine("  Balanced chain image input: " + string.Join(", ",
+            chainImageSupport.Select((sees, i) => $"[{i}] {(sees ? "yes" : "no")}")));
+        if (tierOptions.UsesLegacyBalancedImageFlag)
+        {
+            Console.WriteLine("    WARNING: LLM:Balanced:SupportsImageInput is set but no BalancedModels entry " +
+                              "sets its own, so every fallback is assumed to read images. Set " +
+                              "LLM:BalancedModels:<n>:SupportsImageInput on each entry that can.");
+        }
+
         balancedInner = new FallbackChatClient(entries, fallbackLogger,
-            perAttemptTimeout: agentHostOpts.LlmCallTimeout);
+            perAttemptTimeout: agentHostOpts.LlmCallTimeout,
+            supportsImageInput: chainImageSupport);
     }
     else if (tierOptions.BalancedModels.Count == 1)
     {

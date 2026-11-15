@@ -73,16 +73,30 @@ public class LlmConfigSnapshotTests
     }
 
     [TestMethod]
-    public void BalancedImageSupportComesFromTheFlagTheAgentReadsNotTheChainEntries()
+    public void ALegacyConfigReportsEveryChainModelAsSeeing()
     {
-        // Live: the flag is set on the single Balanced entry only; no chain entry sets it.
+        // Live before #818: the flag is set on the single Balanced entry only.
         var balanced = Create(LiveShape()).Tiers.Single(t => t.Tier == "Balanced");
-        Assert.IsTrue(balanced.AcceptsImages);
 
+        Assert.IsTrue(balanced.AcceptsImages);
+        Assert.IsTrue(balanced.Models.All(m => m.SupportsImageInput));
+    }
+
+    [TestMethod]
+    public void PerEntryFlagsAreReportedAndTextOnlyModelsAreNamed()
+    {
         var tiers = LiveShape();
         tiers.Balanced.SupportsImageInput = false;
         tiers.BalancedModels[0].SupportsImageInput = true;
-        Assert.IsFalse(Create(tiers).Tiers.Single(t => t.Tier == "Balanced").AcceptsImages);
+        tiers.BalancedModels[1].SupportsImageInput = true;
+
+        var snapshot = Create(tiers);
+        var balanced = snapshot.Tiers.Single(t => t.Tier == "Balanced");
+
+        Assert.IsTrue(balanced.AcceptsImages, "the chain can see because two entries can");
+        CollectionAssert.AreEqual(new[] { true, true, false },
+            balanced.Models.Select(m => m.SupportsImageInput).ToArray());
+        StringAssert.Contains(snapshot.Describe(), "gpt-5.6-terra (Azure AI Foundry, text only)");
     }
 
     [TestMethod]
