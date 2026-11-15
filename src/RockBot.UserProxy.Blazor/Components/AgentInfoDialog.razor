@@ -1,0 +1,312 @@
+@* The agent info dialog (#834): what the agent is and what it is configured with, read straight
+   from the agent over the bus without invoking its LLM. Tabs: Agent, Models, Pricing. A modal like
+   the saved-responses dialog: the chat page makes everything behind it inert while it is open. *@
+@using RockBot.UserProxy.Blazor.Services
+@inject UserProxyService ProxyService
+
+<div class="modal-overlay" @onclick="OnClose">
+    <div class="info-modal" role="dialog" aria-modal="true" aria-labelledby="rb-info-title" tabindex="-1"
+         @ref="_dialog" @onkeydown="OnKeyDown" @onclick:stopPropagation="true">
+        <div class="info-modal-head">
+            <h2 id="rb-info-title" class="info-modal-title">@(_info?.AgentName ?? AgentName ?? "RockBot")</h2>
+            <button type="button" class="row-icon-btn" title="Refresh" aria-label="Refresh agent info"
+                    disabled="@_loading" @onclick="LoadAsync">
+                <RbIcon Name="refresh-cw" Size="14" Class="@(_loading ? "info-spin" : null)" />
+            </button>
+            <button type="button" class="row-icon-btn" title="Close" aria-label="Close agent info" @onclick="OnClose">
+                <RbIcon Name="x" Size="15" />
+            </button>
+        </div>
+
+        <div class="info-tabs" role="tablist" aria-label="Agent info">
+            @foreach (var tab in Tabs)
+            {
+                <button type="button" role="tab" id="@TabId(tab)" class="activity-tab info-tab"
+                        aria-selected="@(tab == _tab ? "true" : "false")" aria-controls="rb-info-panel"
+                        tabindex="@(tab == _tab ? 0 : -1)"
+                        @ref="_tabRefs[(int)tab]" @onclick="() => _tab = tab">
+                    @TabLabel(tab)
+                </button>
+            }
+        </div>
+
+        <div class="info-panel" role="tabpanel" id="rb-info-panel" aria-labelledby="@TabId(_tab)" aria-busy="@(_loading ? "true" : "false")">
+            @if (_loading && _info is null)
+            {
+                <p class="activity-empty">Asking the agent…</p>
+            }
+            else if (_info is null && _tab != Tab.Agent)
+            {
+                <p class="info-unavailable">@UnavailableText</p>
+            }
+            else if (_tab == Tab.Agent)
+            {
+                @AgentTab
+            }
+            else if (_tab == Tab.Models)
+            {
+                @ModelsTab(_info!.Models)
+            }
+            else
+            {
+                @PricingTab(_info!.Pricing)
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private enum Tab { Agent, Models, Pricing }
+
+    private static readonly Tab[] Tabs = [Tab.Agent, Tab.Models, Tab.Pricing];
+
+    [Parameter] public string? AgentName { get; set; }
+
+    /// <summary>The agent version from the page's info request, shown while the dialog's own request is out.</summary>
+    [Parameter] public string? AgentVersion { get; set; }
+
+    [Parameter, EditorRequired] public string AppVersion { get; set; } = "";
+
+    [Parameter] public TimeZoneInfo DisplayZone { get; set; } = TimeZoneInfo.Utc;
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly ElementReference[] _tabRefs = new ElementReference[3];
+    private ElementReference _dialog;
+    private Tab _tab = Tab.Agent;
+    private Tab? _focusTab;
+    private bool _focusDialog = true;
+    private bool _loading;
+    private bool _asked;
+    private AgentIntrospectionResponse? _info;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusDialog)
+        {
+            _focusDialog = false;
+            await _dialog.FocusAsync();
+        }
+        else if (_focusTab is { } tab)
+        {
+            _focusTab = null;
+            await _tabRefs[(int)tab].FocusAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _info = ProxyService.IsConnected
+                ? await ProxyService.GetIntrospectionAsync(timeout: TimeSpan.FromSeconds(10)) ?? _info
+                : null;
+        }
+        catch
+        {
+            // Shown as unavailable; the chat itself is unaffected.
+        }
+        finally
+        {
+            _asked = true;
+            _loading = false;
+        }
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+        {
+            await OnClose.InvokeAsync();
+            return;
+        }
+
+        // Arrow keys move between tabs (the tablist pattern), as in the activity panel.
+        var step = e.Key switch { "ArrowRight" => 1, "ArrowLeft" => Tabs.Length - 1, _ => 0 };
+        if (step == 0)
+            return;
+        _tab = Tabs[(Array.IndexOf(Tabs, _tab) + step) % Tabs.Length];
+        _focusTab = _tab;
+    }
+
+    private string UnavailableText =>
+        !ProxyService.IsConnected ? "Not connected to the message bus."
+        : _asked ? "The agent didn't answer. An agent older than this UI doesn't report its configuration; upgrading it adds this."
+        : "";
+
+    private static string TabId(Tab tab) => $"rb-info-tab-{tab.ToString().ToLowerInvariant()}";
+
+    private static string TabLabel(Tab tab) => tab switch
+    {
+        Tab.Agent => "Agent",
+        Tab.Models => "Models",
+        _ => "Pricing",
+    };
+
+    private RenderFragment AgentTab => __builder =>
+    {
+        var version = _info?.AgentVersion ?? AgentVersion;
+        <dl class="info-facts">
+            <dt>Agent</dt>
+            <dd>@(_info?.AgentName ?? AgentName ?? "unknown")</dd>
+            <dt>Agent version</dt>
+            <dd>@(version is null ? "unknown" : $"v{version}")</dd>
+            <dt>UI version</dt>
+            <dd>v@(AppVersion)</dd>
+            <dt>Message bus</dt>
+            <dd>@(ProxyService.IsConnected ? "Connected" : "Disconnected")</dd>
+            @if (_info?.StartedAt is { } started)
+            {
+                <dt>Running since</dt>
+                <dd>@AgentInfoFormat.When(started, DisplayZone) <span class="info-muted">(up @AgentInfoFormat.Uptime(DateTimeOffset.UtcNow - started))</span></dd>
+            }
+            @if (_info?.Models is { } models)
+            {
+                <dt>Models loaded</dt>
+                <dd>@AgentInfoFormat.When(models.LoadedAt, DisplayZone) <span class="info-muted">(a model change needs a restart)</span></dd>
+            }
+        </dl>
+        if (_info is null)
+        {
+            if (_asked)
+            {
+                <p class="info-unavailable">@UnavailableText</p>
+            }
+        }
+        else
+        {
+            <p class="info-note">Read from the agent directly: no LLM call, no tokens.</p>
+        }
+    };
+
+    private static RenderFragment ModelsTab(ModelsIntrospection? models) => __builder =>
+    {
+        if (models is null)
+        {
+            <p class="info-unavailable">The agent didn't report its models.</p>
+            return;
+        }
+
+        if (models.Tiers.Count == 0)
+        {
+            <p class="info-unavailable">@(models.Note ?? "No LLM tiers are configured.")</p>
+        }
+
+        if (models.FixedTier is not null)
+        {
+            <p class="info-note">Every request is pinned to the <strong>@models.FixedTier</strong> tier (LLM:FixedTier).</p>
+        }
+
+        foreach (var tier in models.Tiers)
+        {
+            <section class="info-tier">
+                <h3 class="activity-section-title">
+                    @tier.Tier
+                    @if (tier.UsesTier is null && tier.Models.Count > 1)
+                    {
+                        <span class="info-muted"> · fallback chain</span>
+                    }
+                </h3>
+                @if (tier.UsesTier is not null)
+                {
+                    <p class="info-muted info-tier-uses">No model of its own: uses the @tier.UsesTier model.</p>
+                }
+                else
+                {
+                    <ol class="info-models @(tier.Models.Count > 1 ? "chain" : null)">
+                        @foreach (var model in tier.Models)
+                        {
+                            <li class="info-model">
+                                <div class="info-model-id"><code>@model.ModelId</code></div>
+                                <div class="info-model-tags">
+                                    @foreach (var tag in AgentInfoFormat.Tags(model, tier))
+                                    {
+                                        <span class="info-tag">@tag</span>
+                                    }
+                                </div>
+                                <div class="info-model-price @(model.Price is null ? "unpriced" : null)">@AgentInfoFormat.Price(model.Price)</div>
+                            </li>
+                        }
+                    </ol>
+                }
+            </section>
+        }
+
+        if (models.Tiers.Any(t => t.UsesTier is null && t.Models.Count > 1))
+        {
+            <p class="info-note">In a fallback chain the first model is used, and each later model only when the ones before it fail.</p>
+        }
+
+        <h3 class="activity-section-title">Other models</h3>
+        <dl class="info-facts">
+            <dt>Embeddings</dt>
+            <dd>@(models.Embedding is { } e ? $"{e.ModelId} ({e.Service})" : "None: memory search is keyword-only")</dd>
+            <dt>Decision model</dt>
+            <dd>
+                @if (models.DecisionModel is { } d)
+                {
+                    <text>@d.Deployment (@d.Service)</text>
+                    if (d.DisabledUses.Count > 0)
+                    {
+                        <span class="info-muted"> · off for @string.Join(", ", d.DisabledUses)</span>
+                    }
+                }
+                else
+                {
+                    <text>None: checks use their deterministic rules</text>
+                }
+            </dd>
+        </dl>
+    };
+
+    private static RenderFragment PricingTab(PricingIntrospection? pricing) => __builder =>
+    {
+        if (pricing is null)
+        {
+            <p class="info-unavailable">The agent didn't report its pricing table.</p>
+            return;
+        }
+
+        <p class="info-note">
+            @if (pricing.LoadedFrom is { } path)
+            {
+                <text>From <code>@path</code>. </text>
+            }
+            else
+            {
+                <text>The agent's built-in table (no pricing file loaded). </text>
+            }
+            USD per million tokens. A model is priced by the first row, longest prefix first, whose prefix its id contains.
+        </p>
+        <div class="info-table-wrap">
+            <table class="info-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Prefix</th>
+                        <th scope="col" class="num">Input</th>
+                        <th scope="col" class="num">Output</th>
+                        <th scope="col" class="num">Cached</th>
+                        <th scope="col" class="num">Write 5m</th>
+                        <th scope="col" class="num">Write 1h</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in pricing.Rows)
+                    {
+                        <tr>
+                            <th scope="row"><code>@row.Prefix</code></th>
+                            <td class="num">@AgentInfoFormat.Money(row.InputPerM)</td>
+                            <td class="num">@AgentInfoFormat.Money(row.OutputPerM)</td>
+                            <td class="num">@AgentInfoFormat.CacheRate(row.CachedInputPerM, "input")</td>
+                            <td class="num">@AgentInfoFormat.CacheRate(row.CacheWrite5mPerM, "1.25×")</td>
+                            <td class="num">@AgentInfoFormat.CacheRate(row.CacheWrite1hPerM, "2×")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    };
+}

@@ -143,6 +143,25 @@ On first render (after SignalR circuit establishment — not during static prere
 means a page reload or new browser tab restores the conversation from the agent's in-memory
 store rather than starting blank.
 
+### Agent info
+
+The header's info button (and the link at the foot of the version popover) opens the agent info
+dialog. It asks the agent with `GetIntrospectionAsync`, which the agent answers from its own state
+without calling its LLM, so it works while the LLM is failing and costs no tokens. Three tabs:
+
+- **Agent**: name, agent and UI versions, message-bus state, when the agent started and how long
+  it has been up, when its models were loaded.
+- **Models**: each tier (Low, Balanced, High) with its models in fallback order, each with its
+  service, endpoint host, reasoning effort, whether it reads images, and the price it is costed
+  at. A model no pricing row matches is flagged, because its calls are costed at $0. Then the
+  embedding model and the decision model.
+- **Pricing**: the pricing table, in USD per million tokens, and whether it came from
+  `llm-pricing.json` or the agent's built-in table.
+
+The refresh button asks again. An agent older than this UI doesn't answer; the Agent tab still
+shows what the page already knows, and the other tabs say the agent doesn't report it. The same
+information is available from the CLI (`rockbot info --all`) and AG-UI (`GET /agent/introspection`).
+
 ### Dark mode
 
 Detects the browser's `prefers-color-scheme` on load and allows manual toggle. Dark mode state

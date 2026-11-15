@@ -28,9 +28,9 @@
 <PageTitle>@(state.AgentName ?? "RockBot") Chat</PageTitle>
 
 <div class="chat-container d-flex flex-column">
-    @* While the saved-responses dialog is open everything behind it is inert, so focus and the
-       reading order stay inside the dialog (what its aria-modal promises). *@
-    <header class="chat-header" inert="@_showSavedModal">
+    @* While a dialog (saved responses, agent info) is open everything behind it is inert, so focus
+       and the reading order stay inside the dialog (what its aria-modal promises). *@
+    <header class="chat-header" inert="@ModalOpen">
         <h1 class="chat-title">
             <img class="brand-mark" src="@Assets["images/rockbot-mark-64.png"]"
                  srcset="@Assets["images/rockbot-mark-64.png"] 1x, @Assets["images/rockbot-mark-128.png"] 2x"
@@ -63,7 +63,12 @@
                               OnClick="() => ToggleActivityPanel(ActivityKind.Scheduled)"
                               Expanded="_openActivity == ActivityKind.Scheduled" Controls="@ActivityPanelId" />
             </div>
-            <ConnectionPill Connected="ProxyService.IsConnected" AppVersion="@UiVersion" AgentVersion="@state.AgentVersion" />
+            <ConnectionPill Connected="ProxyService.IsConnected" AppVersion="@UiVersion" AgentVersion="@state.AgentVersion"
+                            OnShowDetails="OpenInfoDialog" />
+            <button type="button" class="icon-btn info-btn" @onclick="OpenInfoDialog"
+                    title="Agent info: models and pricing" aria-label="Agent info" aria-haspopup="dialog">
+                <RbIcon Name="info" Size="15" />
+            </button>
             <button type="button" class="icon-btn" @onclick="ToggleSavedModal"
                     title="Saved responses" aria-label="Saved responses">
                 <RbIcon Name="bookmark" Size="14" />
@@ -102,18 +107,18 @@
         </div>
     </header>
 
-    <div inert="@_showSavedModal"><McpSignInBanner /></div>
+    <div inert="@ModalOpen"><McpSignInBanner /></div>
 
     @if (_openActivity is { } openActivity)
     {
         @* In the page flow under the header: it pushes the messages down, never floats over them. *@
-        <div inert="@_showSavedModal">
+        <div inert="@ModalOpen">
             <ActivityPanel Id="@ActivityPanelId" Kind="openActivity" Digest="digest" DisplayZone="_displayZone"
                            OnKindChanged="kind => _openActivity = kind" OnClose="CloseActivityPanel" />
         </div>
     }
 
-    <div class="chat-messages flex-grow-1" inert="@_showSavedModal" @ref="messagesContainer">
+    <div class="chat-messages flex-grow-1" inert="@ModalOpen" @ref="messagesContainer">
         @foreach (var message in visibleMessages)
         {
             @if (message.IsActivityLog)
@@ -320,7 +325,7 @@
     @if (plans.Count > 0)
     {
         <!-- The agent's plans: the primary turn's task list, and (Detailed) any running subagent's -->
-        <div class="plan-panel" inert="@_showSavedModal">
+        <div class="plan-panel" inert="@ModalOpen">
             @foreach (var list in plans)
             {
                 <div class="plan-list">
@@ -398,7 +403,13 @@
         </div>
     }
 
-    <div class="composer" inert="@_showSavedModal">
+    @if (_showInfoDialog)
+    {
+        <AgentInfoDialog AgentName="@state.AgentName" AgentVersion="@state.AgentVersion" AppVersion="@UiVersion"
+                         DisplayZone="_displayZone" OnClose="CloseInfoDialog" />
+    }
+
+    <div class="composer" inert="@ModalOpen">
         @if (_stagedAttachments.Count > 0 || _attachmentError is not null || _isUploading)
         {
             <div class="staged-attachments">
@@ -527,6 +538,13 @@
     // drop focus to the inert page behind it; the next render moves focus onto the dialog.
     private bool _focusSavedModal;
 
+    // The agent info dialog (#834). It asks the agent itself when it opens.
+    private bool _showInfoDialog;
+    private bool _focusInfoButton;
+
+    /// <summary>A dialog is open: everything behind it is inert.</summary>
+    private bool ModalOpen => _showSavedModal || _showInfoDialog;
+
     /// <summary>
     /// Marks entries the user didn't save themselves (#418): results saved automatically when
     /// background work finished, and the agent's own saves.
@@ -637,6 +655,19 @@
         {
             _focusSavedModal = false;
             await _savedModal.FocusAsync();
+        }
+
+        if (_focusInfoButton && !ModalOpen)
+        {
+            _focusInfoButton = false;
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("chatHelpers.focusSelector", ".chat-header .info-btn");
+            }
+            catch (JSException)
+            {
+                // Focus stays where the browser puts it.
+            }
         }
 
         // Only scroll when a new message has been drawn — not on every re-render (theme toggles,
@@ -1103,6 +1134,19 @@
     {
         if (e.Key == "Escape")
             await ToggleSavedModal();
+    }
+
+    private void OpenInfoDialog()
+    {
+        _showSavedModal = false;
+        _showInfoDialog = true;
+    }
+
+    private void CloseInfoDialog()
+    {
+        _showInfoDialog = false;
+        // Focus goes back to the info button once the render that lifts inert has landed.
+        _focusInfoButton = true;
     }
 
     private async Task ToggleSavedModal()

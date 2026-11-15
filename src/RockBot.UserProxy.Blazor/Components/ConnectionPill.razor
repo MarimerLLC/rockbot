@@ -22,6 +22,14 @@
         <span class="conn-popover-label">Agent</span>
         <span class="conn-popover-val">@(AgentVersion is null ? "unknown" : $"v{AgentVersion}")</span>
     </div>
+    @if (OnShowDetails.HasDelegate)
+    {
+        @* popovertargetaction="hide" closes the popover natively; the click opens the dialog. *@
+        <button type="button" class="conn-popover-link" popovertarget="rb-version-popover" popovertargetaction="hide"
+                @onclick="OnShowDetails">
+            Agent info: models and pricing
+        </button>
+    }
 </div>
 
 @code {
@@ -31,6 +39,9 @@
 
     /// <summary>Null until the agent has answered the info request.</summary>
     [Parameter] public string? AgentVersion { get; set; }
+
+    /// <summary>Opens the agent info dialog (#834); without it the popover has no link.</summary>
+    [Parameter] public EventCallback OnShowDetails { get; set; }
 
     private string StateText => Connected ? "Connected" : "Disconnected";
 }
