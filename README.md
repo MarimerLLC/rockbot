@@ -37,7 +37,7 @@ RockBot is one part of a family of projects that work together. Each runs as its
 
 | Project | What it is |
 |---|---|
-| [`McpServer.Introspection`](src/McpServer.Introspection) | Agent self-inspection: its name, LLM pricing, Copilot quota, memory audit and tier-routing stats |
+| [`McpServer.Introspection`](src/McpServer.Introspection) | Agent self-inspection: its name, configured LLM models, LLM pricing, Copilot quota, memory audit and tier-routing stats |
 | [`McpServer.TodoApp`](src/McpServer.TodoApp) | Persistent to-do list with due dates and recurrence |
 | [`McpServer.OpenRouter`](src/McpServer.OpenRouter) | Read-only OpenRouter account, credit, model and usage data |
 
@@ -309,7 +309,7 @@ The Helm chart at `deploy/helm/rockbot` deploys the full stack into two namespac
 | `rockbot` | Agent, Blazor UI, AG-UI proxy *(optional)*, Scripts Manager, Introspection MCP, TodoApp MCP, OpenRouter MCP *(optional)*, ConfigMap, Secret |
 | `rockbot-scripts` | Ephemeral Python execution pods (created on demand) |
 
-The Introspection MCP server is enabled by default and ships as part of the standard agent install — it provides the tools the agent uses to rename itself, look up LLM pricing, and read Copilot quota. To disable it, set `introspectionMcp.enabled: false` in your values file.
+The Introspection MCP server is enabled by default and ships as part of the standard agent install — it provides the tools the agent uses to rename itself, report which LLM models it is configured with, look up LLM pricing, and read Copilot quota. To disable it, set `introspectionMcp.enabled: false` in your values file.
 
 #### 1. Create your values file
 

@@ -187,7 +187,7 @@ The agent's MCP bridge and A2A client make standard HTTP calls — they work the
 
 ### Built-in introspection MCP
 
-The compose stack ships an `introspection-mcp` service alongside the agent, and the agent's default `mcp.json` already points at it (`http://introspection-mcp:8080/`). It exposes the tools the agent uses to rename itself (`get_agent_name` / `set_agent_name`), look up LLM pricing, and read GitHub Copilot quota. You don't have to register anything — it's running by the time the agent starts.
+The compose stack ships an `introspection-mcp` service alongside the agent, and the agent's default `mcp.json` already points at it (`http://introspection-mcp:8080/`). It exposes the tools the agent uses to rename itself (`get_agent_name` / `set_agent_name`), report which LLM models it is configured with (`get_llm_config`, provider and model names only, never keys), look up LLM pricing, and read GitHub Copilot quota. You don't have to register anything — it's running by the time the agent starts.
 
 ### MCP servers
 
