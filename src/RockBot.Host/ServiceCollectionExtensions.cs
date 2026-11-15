@@ -68,6 +68,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SessionClientCapabilityStore>();
         services.AddSingleton<ReplyAttachmentBuffer>();
         services.AddSingleton<SessionOriginStore>();
+        services.AddSingleton<SessionClearTimes>();
         services.AddSingleton<SessionTierHistory>();
         // #665: per-conversation record of subagent results and artifacts.
         services.Configure<SessionWorkRegistryOptions>(_ => { });

@@ -541,6 +541,37 @@ public class ChatReducerTests
     }
 
     [TestMethod]
+    public void HistoryLoaded_ABridgeNoticeAndAnInboundSubSession_MatchTheirLiveCategories()
+    {
+        // Live, a bridge notice is the agent's reply (PrimaryFinal) and an a2a-inbound/… reply is
+        // A2A activity; the reloaded copies must agree.
+        var loaded = ChatReducer.Reduce(ChatViewState.Empty with { AgentName = "RockBot" }, new HistoryLoaded(
+        [
+            new ConversationHistoryTurn
+            {
+                Role = "user", Content = "The agent restarted before you answered.", Timestamp = At(1),
+                AgentName = "mcp-bridge", SessionId = Session, Source = ReplySource.Bridge,
+            },
+            new ConversationHistoryTurn
+            {
+                Role = "assistant", Content = "peer digest", Timestamp = At(2), AgentName = "A2A-Inbox",
+                SessionId = "a2a-inbound/peer",
+            },
+            new ConversationHistoryTurn
+            {
+                // A bridge tool result stored as the agent's input, with no source: as before.
+                Role = "user", Content = "[MCP task t1 result]", Timestamp = At(3), AgentName = "mcp-bridge", SessionId = Session,
+            },
+        ], Session) { Timestamp = At(30) });
+
+        CollectionAssert.AreEqual(
+            new[] { MessageCategory.PrimaryFinal, MessageCategory.A2AActivity, MessageCategory.A2AActivity },
+            loaded.Messages.Select(m => m.Category).ToArray());
+        Assert.IsFalse(loaded.Messages[0].IsFromUser);
+        Assert.AreEqual("mcp-bridge", loaded.Messages[0].AgentName, "the notice keeps the bridge's name, as live");
+    }
+
+    [TestMethod]
     public void HistoryLoaded_UsesEachTurnsId_OrItsPositionFromAnOlderAgent()
     {
         var loaded = ChatReducer.Reduce(ChatViewState.Empty, new HistoryLoaded(

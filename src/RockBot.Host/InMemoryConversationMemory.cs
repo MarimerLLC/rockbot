@@ -101,7 +101,10 @@ internal sealed class InMemoryConversationMemory : IConversationMemory, IDisposa
 
         foreach (var kvp in _sessions)
         {
-            if (kvp.Value.LastAccessed < cutoff)
+            // Broadcast sessions don't idle out (#809): they're merged into every thread's history,
+            // so they must last as long as the threads do, not expire an hour after the last
+            // report while the user is still chatting. MaxTurnsPerSession bounds them.
+            if (kvp.Value.LastAccessed < cutoff && !WellKnownSessions.IsBroadcast(kvp.Key))
             {
                 if (_sessions.TryRemove(kvp.Key, out _))
                     removed++;

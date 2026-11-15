@@ -14,7 +14,8 @@ namespace RockBot.Agent;
 internal sealed class ConversationHistoryRequestHandler(
     IConversationMemory conversationMemory,
     IMessagePublisher publisher,
-    ILogger<ConversationHistoryRequestHandler> logger) : IMessageHandler<ConversationHistoryRequest>
+    ILogger<ConversationHistoryRequestHandler> logger,
+    SessionClearTimes? clearTimes = null) : IMessageHandler<ConversationHistoryRequest>
 {
     public async Task HandleAsync(ConversationHistoryRequest message, MessageHandlerContext context)
     {
@@ -32,7 +33,7 @@ internal sealed class ConversationHistoryRequestHandler(
 
         var response = new ConversationHistoryResponse
         {
-            Turns = await ReadTurnsAsync(conversationMemory, message, ct),
+            Turns = await ReadTurnsAsync(conversationMemory, message, ct, clearTimes?.Get(message.SessionId)),
         };
 
         var envelope = response.ToEnvelope<ConversationHistoryResponse>(
@@ -50,10 +51,13 @@ internal sealed class ConversationHistoryRequestHandler(
     /// <summary>
     /// The requested session's turns, and, when asked, the broadcast sessions' turns, in timestamp
     /// order. The sort is stable and the requested session's turns come first, so its own order is
-    /// kept and it wins ties. A broadcast session asking for itself gets only its own turns.
+    /// kept and it wins ties. A broadcast session asking for itself gets only its own turns. Broadcast
+    /// turns from before <paramref name="clearedAt"/>, when the session's context was last cleared,
+    /// are left out: the clear can't delete them, since every thread shares them.
     /// </summary>
     internal static async Task<IReadOnlyList<ConversationHistoryTurn>> ReadTurnsAsync(
-        IConversationMemory conversationMemory, ConversationHistoryRequest request, CancellationToken ct)
+        IConversationMemory conversationMemory, ConversationHistoryRequest request, CancellationToken ct,
+        DateTimeOffset? clearedAt = null)
     {
         var turns = (await conversationMemory.GetTurnsAsync(request.SessionId, ct))
             .Select(t => ToHistoryTurn(t, request.SessionId))
@@ -62,9 +66,16 @@ internal sealed class ConversationHistoryRequestHandler(
         if (!request.IncludeBroadcast || WellKnownSessions.IsBroadcast(request.SessionId))
             return turns;
 
+        // The fixed broadcast sessions, and any a2a-inbound/… ones, which are broadcast too.
+        var sessions = WellKnownSessions.Broadcast.Concat(
+            (await conversationMemory.ListSessionsAsync(ct)).Where(s => WellKnownSessions.IsBroadcast(s)))
+            .Distinct(StringComparer.Ordinal);
+
         var merged = new List<ConversationHistoryTurn>(turns);
-        foreach (var session in WellKnownSessions.Broadcast)
-            merged.AddRange((await conversationMemory.GetTurnsAsync(session, ct)).Select(t => ToHistoryTurn(t, session)));
+        foreach (var session in sessions)
+            merged.AddRange((await conversationMemory.GetTurnsAsync(session, ct))
+                .Where(t => clearedAt is null || t.Timestamp > clearedAt)
+                .Select(t => ToHistoryTurn(t, session)));
 
         // A sort on the timestamp alone, but stable: OrderBy is, and the requested session's turns
         // were added first.

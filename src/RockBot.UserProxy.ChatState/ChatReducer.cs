@@ -17,10 +17,6 @@ public readonly record struct ChatReduction(ChatViewState State, bool Accepted);
 /// </summary>
 public static class ChatReducer
 {
-    // The agent's broadcast sessions (RockBot.Host.WellKnownSessions, which this library doesn't reference).
-    private const string ScheduledSession = "scheduled";
-    private const string ScheduledSystemSession = "scheduled-system";
-    private const string A2AInboundSession = "a2a-inbound";
 
     public static ChatViewState Reduce(ChatViewState state, ChatEvent e) => Apply(state, e).State;
 
@@ -121,6 +117,7 @@ public static class ChatReducer
             // Use the current display name for primary agent turns so history reflects a name
             // change (e.g. "RockBot" → "DockerBot").
             var effectiveName = category is MessageCategory.PrimaryFinal or MessageCategory.PrimaryProgress
+                && turn.Source?.Kind != ReplySourceKind.Bridge
                 ? state.AgentName ?? turn.AgentName
                 : turn.AgentName;
 
@@ -168,32 +165,18 @@ public static class ChatReducer
     {
         var isUserRole = turn.Role == "user";
 
-        // A broadcast session's turns are all the agent's: a scheduled report, a background
-        // system job's output, the inbound A2A digest.
-        switch (turn.SessionId)
-        {
-            case ScheduledSystemSession:
-                return (MessageCategory.ScheduledSystem, false);
-            case ScheduledSession:
-                return (MessageCategory.ScheduledUser, false);
-            case A2AInboundSession:
-                return (MessageCategory.A2AActivity, false);
-        }
+        // A remote agent's result, stored as the agent's input: that agent's output. (The agent's
+        // answer from it is an assistant turn with the same source, and the agent's reply.)
+        if (isUserRole && turn.Source?.Kind == ReplySourceKind.A2A && !ReplyCategories.IsA2AInbound(turn.SessionId))
+            return (MessageCategory.A2AActivity, false);
 
-        switch (turn.Source?.Kind)
-        {
-            // The synthetic turns a subagent's or remote agent's result is stored as.
-            case ReplySourceKind.Subagent or ReplySourceKind.Worker when isUserRole:
-                return (MessageCategory.SubagentActivity, false);
-            case ReplySourceKind.A2A when isUserRole:
-                return (MessageCategory.A2AActivity, false);
-            case ReplySourceKind.Scheduled:
-                return (MessageCategory.ScheduledUser, false);
-            // The agent's own answer, including its synthesis of a subagent or A2A result.
-            case ReplySourceKind.Primary or ReplySourceKind.A2A or ReplySourceKind.Subagent or ReplySourceKind.Worker:
-                return (MessageCategory.PrimaryFinal, false);
-            // Bridge turns are what they were before sources: shown by AgentName below.
-        }
+        // Otherwise the rules a live reply goes by; every stored reply is a final one.
+        if (ReplyCategories.FromSource(turn.Source, turn.SessionId, isFinal: true) is { } category)
+            return (category, false);
+
+        // The inbound A2A digest, from an agent that recorded no source.
+        if (ReplyCategories.IsA2AInbound(turn.SessionId))
+            return (MessageCategory.A2AActivity, false);
 
         if (isUserRole)
         {

@@ -168,35 +168,10 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
 
     internal MessageCategory CategorizeReply(AgentReply reply)
     {
-        // Newer agents say where a reply came from; older ones leave it to the heuristics below.
-        switch (reply.Source?.Kind)
-        {
-            case ReplySourceKind.Subagent or ReplySourceKind.Worker:
-                return MessageCategory.SubagentActivity;
-            case ReplySourceKind.A2A:
-                // Inbound notifications are A2A activity. The A2A result handlers, though, post the
-                // agent's own answer in the user's session: that is the agent's reply, and their
-                // progress is told apart (the agent's own vs a remote agent's) by the checks below.
-                if (reply.SessionId?.StartsWith("a2a-inbound", StringComparison.OrdinalIgnoreCase) == true)
-                    return MessageCategory.A2AActivity;
-                if (reply.IsFinal)
-                    return MessageCategory.PrimaryFinal;
-                break;
-            case ReplySourceKind.Scheduled:
-                // Background system jobs and the user's own scheduled tasks share the kind; the
-                // session tells them apart.
-                return reply.SessionId == WellKnownSessions.ScheduledSystem
-                    ? MessageCategory.ScheduledSystem
-                    : MessageCategory.ScheduledUser;
-            case ReplySourceKind.Primary or ReplySourceKind.Bridge:
-                return reply.IsFinal ? MessageCategory.PrimaryFinal : MessageCategory.PrimaryProgress;
-        }
-
-        if (reply.SessionId == WellKnownSessions.ScheduledSystem)
-            return MessageCategory.ScheduledSystem;
-
-        if (reply.SessionId == "scheduled")
-            return MessageCategory.ScheduledUser;
+        // Newer agents say where a reply came from (rules shared with reloaded history); older
+        // ones leave it to the heuristics below.
+        if (ReplyCategories.FromSource(reply.Source, reply.SessionId, reply.IsFinal) is { } category)
+            return category;
 
         // Both "subagent-" and "worker-" prefixed AgentNames represent spawned activity
         // the primary agent is supervising — workers are a lean rung of the same family.
@@ -207,7 +182,7 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
             return MessageCategory.SubagentActivity;
 
         // Inbound A2A notifications use a dedicated session ID regardless of IsFinal
-        if (reply.SessionId?.StartsWith("a2a-inbound", StringComparison.OrdinalIgnoreCase) == true)
+        if (ReplyCategories.IsA2AInbound(reply.SessionId))
             return MessageCategory.A2AActivity;
 
         if (reply.IsFinal)

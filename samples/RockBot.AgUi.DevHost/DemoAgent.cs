@@ -220,7 +220,9 @@ public sealed class DemoAgent : IAsyncDisposable
         lock (_lock)
         {
             _history.Remove(request.SessionId);
-            _history.Remove(ScheduledSession);
+            // The scheduled reports are every thread's; this thread's history leaves out the ones
+            // from before its clear, as the agent's does.
+            _clearedAt[request.SessionId] = DateTimeOffset.UtcNow;
         }
         await OnCancelAsync(envelope, new CancelSessionRequest { SessionId = request.SessionId });
         await BroadcastAsync(new AgentReply
@@ -368,6 +370,9 @@ public sealed class DemoAgent : IAsyncDisposable
     /// <summary>The session a scheduled task's report goes out in, which every thread hears.</summary>
     private const string ScheduledSession = "scheduled";
 
+    /// <summary>When each thread's context was last cleared.</summary>
+    private readonly Dictionary<string, DateTimeOffset> _clearedAt = new(StringComparer.Ordinal);
+
     /// <param name="reply">The reply this turn is the stored copy of, whose id, origin and source it takes.</param>
     private void Remember(string session, string role, string content, IReadOnlyList<AgentAttachment>? attachments,
         AgentReply? reply = null)
@@ -395,8 +400,13 @@ public sealed class DemoAgent : IAsyncDisposable
         {
             List<ConversationHistoryTurn> turns = _history.TryGetValue(request.SessionId, out var own) ? [.. own] : [];
             if (request.IncludeBroadcast && request.SessionId != ScheduledSession
-                && _history.TryGetValue(ScheduledSession, out var reports))
+                && _history.TryGetValue(ScheduledSession, out var all))
+            {
+                var reports = _clearedAt.TryGetValue(request.SessionId, out var cleared)
+                    ? all.Where(t => t.Timestamp > cleared)
+                    : all;
                 turns = [.. turns.Concat(reports).OrderBy(t => t.Timestamp)];
+            }
             return turns;
         }
     }

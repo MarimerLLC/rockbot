@@ -909,9 +909,11 @@ is kept. The answer is `202`, and two things follow on the thread's notify strea
 
 What else changes:
 
-- **History starts over.** `GET /threads/{id}/messages` returns the new conversation. The clear
-  also drops the broadcast sessions' stored output, so earlier scheduled reports don't come back
-  on the next reload; the saved-response archive (`/saved`) still has them.
+- **History starts over.** `GET /threads/{id}/messages` returns the new conversation. The
+  broadcast sessions' output from before the clear is left out of this thread's history, so earlier
+  scheduled reports don't come back on the next reload. Other threads still have it, and so does the
+  saved-response archive (`/saved`). The agent keeps the clear time in memory, so after an agent
+  restart the earlier output is back.
 - **In-flight work is stopped**, as after a cancel: the agent ends the thread's turn, so an open
   run finishes with `outcome.type: "cancelled"`.
 - **Open MCP questions stay** on the proxy's list until the agent says they are closed

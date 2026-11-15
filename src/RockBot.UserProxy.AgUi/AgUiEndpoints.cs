@@ -476,7 +476,7 @@ internal static class AgUiEndpoints
 
         // With the broadcast sessions' output (#809): a thread's notify stream carries it, so the
         // history a client refetches after rockbot.resync has to as well.
-        var history = await proxy.GetHistoryAsync(id, cancellationToken: ct, includeBroadcast: true);
+        var history = await proxy.GetHistoryAsync(id, includeBroadcast: true, cancellationToken: ct);
         if (history is null)
             return Refusal(StatusCodes.Status504GatewayTimeout, "The agent did not answer the history request in time.");
 

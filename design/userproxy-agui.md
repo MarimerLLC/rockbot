@@ -1033,8 +1033,10 @@ host, as built and as published.
    (scheduled tasks, the memory audit, the inbound A2A digest) are stored in their own session,
    where no agent loop reads them, so the agent's context is unchanged. A history request with
    `IncludeBroadcast` gets them merged with the thread's turns by time, each with its `SessionId`.
-   The AG-UI proxy and the Blazor UI both ask for them. Clearing a thread's context clears the
-   broadcast sessions too. `AgUiHistoryMapper` puts the id, session, origin and source in
+   The AG-UI proxy and the Blazor UI both ask for them. Broadcast sessions don't idle out (their
+   turn window bounds them) and stay out of the conversation log the dream pass reads. Clearing a
+   thread's context leaves them for the other threads; that thread's history then skips the ones
+   from before its clear. `AgUiHistoryMapper` puts the id, session, origin and source in
    `metadata.rockbot`; front ends categorize reloaded turns by source and render the anchors from
    the origin.
 4. **One thread or many.** Should the proxy allow more than one thread id (say, one per device)?

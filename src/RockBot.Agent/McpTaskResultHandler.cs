@@ -61,9 +61,6 @@ internal sealed class McpTaskResultHandler(
     /// <summary>Who the turns this handler writes are attributed to.</summary>
     internal const string BridgeTurnAgentName = "mcp-bridge";
 
-    /// <summary>The source of the bridge's synthetic turns, for a reloaded history (#809).</summary>
-    private static readonly ConversationTurnSource BridgeSource = new(UserProxy.ReplySourceKind.Bridge);
-
     /// <summary>Longest result put in the conversation inline; longer stays in working memory only.</summary>
     internal const int InlineResultMaxChars = 4000;
 
@@ -174,7 +171,7 @@ internal sealed class McpTaskResultHandler(
         if (!message.NeedsReply)
         {
             await conversationMemory.AddTurnAsync(conversationId,
-                new ConversationTurn("user", turn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName, Source = BridgeSource }, ct);
+                new ConversationTurn("user", turn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName }, ct);
             logger.LogInformation("Recorded background task {TaskId}'s {Kind} in {Session} without a reply",
                 message.TaskId, message.Kind, conversationId);
             return;
@@ -236,7 +233,7 @@ internal sealed class McpTaskResultHandler(
             await using (await workSerializer.AcquireForUserAsync("MCP task result", ct))
             {
                 await conversationMemory.AddTurnAsync(conversationId,
-                    new ConversationTurn("user", turn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName, Source = BridgeSource }, ct);
+                    new ConversationTurn("user", turn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName }, ct);
 
                 var chatMessages = await agentContextBuilder.BuildAsync(
                     conversationId, turn, ct, clientCapabilities: clientCapabilityStore.Get(conversationId));

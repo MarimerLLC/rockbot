@@ -1070,8 +1070,8 @@ public sealed class UserProxyService(
     public async Task<ConversationHistoryResponse?> GetHistoryAsync(
         string sessionId,
         TimeSpan? timeout = null,
-        CancellationToken cancellationToken = default,
-        bool includeBroadcast = false)
+        bool includeBroadcast = false,
+        CancellationToken cancellationToken = default)
     {
         var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
         var correlationId = Guid.NewGuid().ToString("N");

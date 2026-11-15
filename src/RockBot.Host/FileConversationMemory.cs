@@ -83,8 +83,9 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
 
                 // Skip sessions that have been idle longer than the configured timeout —
                 // they would be discarded in memory anyway and may hold stale context.
+                // Broadcast sessions are kept regardless (#809): see InMemoryConversationMemory.
                 var lastActivity = turns.Max(t => t.Timestamp);
-                if (lastActivity < cutoff)
+                if (lastActivity < cutoff && !WellKnownSessions.IsBroadcast(sessionId))
                 {
                     _logger.LogDebug(
                         "Skipping stale session {SessionId} (last activity: {LastActivity:u})",
@@ -139,7 +140,9 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
                 await ArchiveAsync(sessionId, evicted, cancellationToken);
             await WriteSessionFileAsync(sessionId, cancellationToken);
         }, cancellationToken);
-        if (_conversationLog is not null)
+        // Broadcast sessions only hold copies of replies kept for history (#809). The conversation
+        // log is what the dream and observation passes learn from, and those replies never were.
+        if (_conversationLog is not null && !WellKnownSessions.IsBroadcast(sessionId))
             _ = _conversationLog.AppendAsync(new ConversationLogEntry(sessionId, turn.Role, turn.Content, turn.Timestamp));
     }
 

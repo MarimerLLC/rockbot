@@ -63,6 +63,12 @@ internal sealed class UserFeedbackHandler(
             Detail: $"MessageId={message.MessageId}, Agent={message.AgentName ?? "(unknown)"}",
             Timestamp: DateTimeOffset.UtcNow), ct);
 
+        // A broadcast session (a scheduled report, the inbound A2A digest) holds no conversation to
+        // reinforce or re-run, and its stored turns are merged into every thread's history (#809):
+        // a note written there would show up in all of them. The signal above is all it gets.
+        if (WellKnownSessions.IsBroadcast(message.SessionId))
+            return;
+
         if (message.IsPositive)
         {
             await HandlePositiveFeedbackAsync(message, ct);

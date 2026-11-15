@@ -113,13 +113,19 @@ public class ConversationHistoryRequestHandlerTests
     }
 
     [TestMethod]
-    public async Task ClearContext_AlsoClearsTheBroadcastSessions()
+    public async Task ClearContext_HidesEarlierBroadcastOutputFromThatThreadOnly()
     {
-        // A cleared thread's next reload must not bring back the old reports.
-        var memory = await WithThreadAndReportsAsync();
+        // A cleared thread's next reload must not bring back the old reports, but they are every
+        // thread's: another thread keeps them, and a report after the clear shows in both.
+        var now = DateTimeOffset.UtcNow;
+        var memory = new DictionaryConversationMemory();
+        await memory.AddTurnAsync(Thread, new ConversationTurn("user", "hello", now.AddHours(-1)));
+        await memory.AddTurnAsync("other-thread", new ConversationTurn("user", "hi there", now.AddHours(-1)));
+        await memory.AddTurnAsync(WellKnownSessions.Scheduled, new ConversationTurn("assistant", "old report", now.AddMinutes(-30)));
+        var clearTimes = new SessionClearTimes();
         var handler = new ClearContextHandler(memory, new StubSessionTracker(), new SessionClientCapabilityStore(),
             new ReplyAttachmentBuffer(), new SessionOriginStore(), new InjectedMemoryTracker(), new TrackingPublisher(),
-            new AgentIdentity("TestBot"), NullLogger<ClearContextHandler>.Instance);
+            new AgentIdentity("TestBot"), NullLogger<ClearContextHandler>.Instance, clearTimes: clearTimes);
         var request = new ClearContextRequest { SessionId = Thread };
 
         await handler.HandleAsync(request, new MessageHandlerContext
@@ -129,8 +135,31 @@ public class ConversationHistoryRequestHandlerTests
             Services = null!,
             CancellationToken = CancellationToken.None,
         });
+        await memory.AddTurnAsync(WellKnownSessions.Scheduled, new ConversationTurn("assistant", "new report", now.AddMinutes(1)));
 
-        Assert.AreEqual(0, (await Read(memory, includeBroadcast: true)).Count);
+        var cleared = await ConversationHistoryRequestHandler.ReadTurnsAsync(memory,
+            new ConversationHistoryRequest { SessionId = Thread, IncludeBroadcast = true }, CancellationToken.None,
+            clearTimes.Get(Thread));
+        var other = await ConversationHistoryRequestHandler.ReadTurnsAsync(memory,
+            new ConversationHistoryRequest { SessionId = "other-thread", IncludeBroadcast = true }, CancellationToken.None,
+            clearTimes.Get("other-thread"));
+
+        CollectionAssert.AreEqual(new[] { "new report" }, cleared.Select(t => t.Content).ToArray());
+        CollectionAssert.AreEqual(new[] { "hi there", "old report", "new report" }, other.Select(t => t.Content).ToArray());
+    }
+
+    [TestMethod]
+    public async Task ReadTurns_IncludesA2AInboundSubSessions()
+    {
+        var memory = new DictionaryConversationMemory();
+        await memory.AddTurnAsync(Thread, new ConversationTurn("user", "hello", T0));
+        await memory.AddTurnAsync("a2a-inbound/peer", new ConversationTurn("assistant", "peer digest", T0.AddMinutes(1)));
+        await memory.AddTurnAsync("patrol/daily", new ConversationTurn("user", "not broadcast", T0.AddMinutes(2)));
+
+        var turns = await Read(memory, includeBroadcast: true);
+
+        CollectionAssert.AreEqual(new[] { "hello", "peer digest" }, turns.Select(t => t.Content).ToArray());
+        Assert.AreEqual("a2a-inbound/peer", turns[1].SessionId);
     }
 
     private static Task<IReadOnlyList<ConversationHistoryTurn>> Read(IConversationMemory memory, bool includeBroadcast) =>

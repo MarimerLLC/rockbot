@@ -31,9 +31,13 @@ public static class WellKnownSessions
     /// </summary>
     public static IReadOnlyList<string> Broadcast { get; } = [Scheduled, ScheduledSystem, A2AInbound];
 
-    /// <summary>Whether <paramref name="sessionId"/> is one of the <see cref="Broadcast"/> sessions.</summary>
+    /// <summary>
+    /// Whether <paramref name="sessionId"/> is a broadcast session: one of <see cref="Broadcast"/>, or
+    /// an <c>a2a-inbound/…</c> session, which the user proxies also send to every client.
+    /// </summary>
     public static bool IsBroadcast(string? sessionId) =>
-        sessionId is Scheduled or ScheduledSystem or A2AInbound;
+        sessionId is Scheduled or ScheduledSystem or A2AInbound
+        || sessionId?.StartsWith(A2AInbound + "/", StringComparison.Ordinal) == true;
 
     /// <summary>
     /// Prefix of the session a scheduled task's agent loop runs in (<c>patrol/{task name}</c>).

@@ -30,14 +30,15 @@ public class ConversationTurnProvenanceTests
     private static InMemoryConversationMemory CreateInMemory() =>
         new(Options.Create(new ConversationMemoryOptions()), NullLogger<InMemoryConversationMemory>.Instance);
 
-    private FileConversationMemory CreateFileMemory()
+    private FileConversationMemory CreateFileMemory(IConversationLog? log = null)
     {
         var options = Options.Create(new ConversationMemoryOptions { BasePath = "conversations" });
         return new FileConversationMemory(
             new InMemoryConversationMemory(options, NullLogger<InMemoryConversationMemory>.Instance),
             options,
             Options.Create(new AgentProfileOptions { BasePath = _tempDir }),
-            NullLogger<FileConversationMemory>.Instance);
+            NullLogger<FileConversationMemory>.Instance,
+            log);
     }
 
     private static readonly ReplyOrigin Origin =
@@ -157,6 +158,8 @@ public class ConversationTurnProvenanceTests
         Assert.IsTrue(WellKnownSessions.IsBroadcast("scheduled"));
         Assert.IsTrue(WellKnownSessions.IsBroadcast("scheduled-system"));
         Assert.IsTrue(WellKnownSessions.IsBroadcast("a2a-inbound"));
+        Assert.IsTrue(WellKnownSessions.IsBroadcast("a2a-inbound/peer"));
+        Assert.IsFalse(WellKnownSessions.IsBroadcast("a2a-inboundx"));
         Assert.IsFalse(WellKnownSessions.IsBroadcast("blazor-session"));
         Assert.IsFalse(WellKnownSessions.IsBroadcast("patrol/daily"));
         Assert.IsFalse(WellKnownSessions.IsBroadcast(null));
@@ -165,6 +168,79 @@ public class ConversationTurnProvenanceTests
 
     // ── Broadcast replies ─────────────────────────────────────────────────────
 
+    [TestMethod]
+    public async Task FileMemory_LeavesBroadcastTurnsOutOfTheConversationLog()
+    {
+        // The dream and observation passes learn from the log; stored broadcast replies are only
+        // copies kept for history.
+        var log = new RecordingLog();
+        using var memory = CreateFileMemory(log);
+
+        await memory.AddTurnAsync(WellKnownSessions.Scheduled, new ConversationTurn("assistant", "report", DateTimeOffset.UtcNow));
+        await memory.AddTurnAsync("a2a-inbound/peer", new ConversationTurn("assistant", "digest", DateTimeOffset.UtcNow));
+        await memory.AddTurnAsync("blazor-session", new ConversationTurn("user", "hello", DateTimeOffset.UtcNow));
+        await Task.Delay(50); // the log append is fire-and-forget
+
+        CollectionAssert.AreEqual(new[] { "blazor-session" }, log.Entries.Select(e => e.SessionId).ToArray());
+    }
+
+    [TestMethod]
+    public async Task FileMemory_RestoresABroadcastSessionPastTheIdleTimeout()
+    {
+        // A broadcast session is merged into every thread's history, so it doesn't idle out.
+        var old = DateTimeOffset.UtcNow.AddDays(-2).ToString("O");
+        var dir = Path.Combine(_tempDir, "conversations");
+        Directory.CreateDirectory(dir);
+        await File.WriteAllTextAsync(Path.Combine(dir, "scheduled.json"),
+            $$"""[{"role":"assistant","content":"old report","timestamp":"{{old}}"}]""");
+        await File.WriteAllTextAsync(Path.Combine(dir, "blazor-session.json"),
+            $$"""[{"role":"user","content":"old chat","timestamp":"{{old}}"}]""");
+
+        using var memory = CreateFileMemory();
+        await memory.StartAsync(CancellationToken.None);
+
+        Assert.AreEqual(1, (await memory.GetTurnsAsync(WellKnownSessions.Scheduled)).Count);
+        Assert.AreEqual(0, (await memory.GetTurnsAsync("blazor-session")).Count, "an ordinary session still idles out");
+    }
+
+    [TestMethod]
+    public async Task InMemory_IdleCleanup_KeepsBroadcastSessions()
+    {
+        using var memory = new InMemoryConversationMemory(
+            Options.Create(new ConversationMemoryOptions { SessionIdleTimeout = TimeSpan.Zero }),
+            NullLogger<InMemoryConversationMemory>.Instance);
+        await memory.AddTurnAsync(WellKnownSessions.Scheduled, new ConversationTurn("assistant", "report", DateTimeOffset.UtcNow));
+        await memory.AddTurnAsync("blazor-session", new ConversationTurn("user", "hello", DateTimeOffset.UtcNow));
+        await Task.Delay(20);
+
+        typeof(InMemoryConversationMemory)
+            .GetMethod("CleanupIdleSessions", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .Invoke(memory, [null]);
+
+        Assert.IsTrue(memory.HasSession(WellKnownSessions.Scheduled));
+        Assert.IsFalse(memory.HasSession("blazor-session"));
+    }
+
+    private sealed class RecordingLog : IConversationLog
+    {
+        private readonly List<ConversationLogEntry> _entries = [];
+        public IReadOnlyList<ConversationLogEntry> Entries { get { lock (_entries) return [.. _entries]; } }
+
+        public Task AppendAsync(ConversationLogEntry entry, CancellationToken cancellationToken = default)
+        {
+            lock (_entries) _entries.Add(entry);
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<ConversationLogEntry>> ReadAllAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(Entries);
+
+        public Task ClearAsync(CancellationToken cancellationToken = default)
+        {
+            lock (_entries) _entries.Clear();
+            return Task.CompletedTask;
+        }
+    }
     [TestMethod]
     public async Task RecordBroadcastReply_StoresTheReplyInItsSession_WithItsId()
     {
