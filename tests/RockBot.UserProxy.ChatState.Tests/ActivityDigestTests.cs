@@ -114,6 +114,31 @@ public class ActivityDigestTests
     }
 
     [TestMethod]
+    public void AResultReportTrailingTheRunsEnd_JoinsItsLog_NotANewOne()
+    {
+        // Lifecycle and progress travel on different topics: the result can land after the run's end.
+        var state = ChatReducer.Replay(
+        [
+            Started("abc", 0),
+            new ActivityReported(MessageCategory.SubagentActivity, "subagent-abc", "Calling convert_time") { Timestamp = At(1) },
+            Finished("abc", 2),
+            new ActivityReported(MessageCategory.SubagentActivity, "subagent-abc", "Result: 16:00 in Berlin", IsCompletion: true)
+                { Timestamp = At(3), MessageId = "late" },
+        ]);
+
+        Assert.IsNull(state.FindMessage("late"), "no second log for the run");
+        Assert.AreEqual(1, state.Messages.Count(m => m.IsActivityLog));
+        var log = state.FindMessage("log-abc")!;
+        Assert.IsFalse(state.IsActivityLogOpen("log-abc"));
+        Assert.AreEqual("Result: 16:00 in Berlin", log.Content);
+        Assert.AreEqual(4, log.ActivityLogEntries.Count, "started, progress, finished, result");
+
+        var finished = ActivityDigest.From(state, At(4)).Subagents.Finished.Single();
+        Assert.AreEqual("Result: 16:00 in Berlin", finished.Status);
+        Assert.AreEqual(At(3), finished.FinishedAt);
+    }
+
+    [TestMethod]
     public void AResultWithNoLog_IsAFinishedItemOnItsOwn()
     {
         // After a reload: history brings back the result but not the log.

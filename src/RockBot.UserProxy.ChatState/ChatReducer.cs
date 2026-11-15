@@ -621,15 +621,35 @@ public static class ChatReducer
 
     /// <summary>
     /// Progress for a subagent or worker that has already finished and whose log is closed. It
-    /// would open a log nothing closes again (a spinner forever), so it is dropped; a completion
-    /// report still goes through, since it closes what it opens.
+    /// would open a log nothing closes again (a spinner forever), so it is dropped. A completion
+    /// report (the run's result) is added to the run's closed log instead: lifecycle events and
+    /// progress travel on different topics, so the result can trail the run's end, and a log of
+    /// its own would show one run as two.
     /// </summary>
-    private static ChatReduction OnActivityReported(ChatViewState state, ActivityReported e) =>
-        !e.IsCompletion
-        && !state.OpenActivityLogs.ContainsKey(ActivityLogKey(e.Category, e.AgentName))
-        && IsFinishedRun(state, e.Category, e.AgentName)
-            ? Reject(state)
-            : Accept(AppendActivity(state, e.Category, e.AgentName, e.Content, e.IsCompletion, e.MessageId, e.Timestamp));
+    private static ChatReduction OnActivityReported(ChatViewState state, ActivityReported e)
+    {
+        if (state.OpenActivityLogs.ContainsKey(ActivityLogKey(e.Category, e.AgentName))
+            || !IsFinishedRun(state, e.Category, e.AgentName))
+            return Accept(AppendActivity(state, e.Category, e.AgentName, e.Content, e.IsCompletion, e.MessageId, e.Timestamp));
+
+        if (!e.IsCompletion)
+            return Reject(state);
+
+        var index = state.Messages.FindLastIndex(m =>
+            m.IsActivityLog && m.Category == e.Category && m.AgentName == e.AgentName);
+        if (index < 0)
+            return Accept(AppendActivity(state, e.Category, e.AgentName, e.Content, close: true, e.MessageId, e.Timestamp));
+
+        var log = state.Messages[index];
+        return Accept(state with
+        {
+            Messages = state.Messages.SetItem(index, log with
+            {
+                Content = e.Content,
+                ActivityLogEntries = log.ActivityLogEntries.Add(new ActivityLogEntry(e.Content, e.Timestamp)),
+            }),
+        });
+    }
 
     private static bool IsFinishedRun(ChatViewState state, MessageCategory category, string? agentName) =>
         category == MessageCategory.SubagentActivity && agentName is not null && state.FinishedRuns.Contains(agentName);
