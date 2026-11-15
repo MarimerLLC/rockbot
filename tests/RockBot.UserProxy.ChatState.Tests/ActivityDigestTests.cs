@@ -74,6 +74,46 @@ public class ActivityDigestTests
     }
 
     [TestMethod]
+    public void ASubagentsResult_ClosesItsLog_EvenWhenNamedAfterRockBot()
+    {
+        // No lifecycle event: an agent that doesn't send them. The result alone has to close the log.
+        var state = ChatReducer.Replay(
+        [
+            new ActivityReported(MessageCategory.SubagentActivity, "subagent-abc", "searching") { Timestamp = At(0), MessageId = "log-abc" },
+            new ReplyReceived(Reply("Findings") with { Source = ReplySource.Subagent("abc") },
+                MessageCategory.SubagentActivity) { Timestamp = At(5), MessageId = "result" },
+        ]);
+
+        Assert.IsFalse(state.IsActivityLogOpen("log-abc"));
+        Assert.AreEqual(0, state.ActiveStatusIndicators.Count);
+        Assert.AreEqual("result", ActivityDigest.From(state, At(6)).Subagents.Finished.Single().Result?.MessageId);
+    }
+
+    [TestMethod]
+    public void ReloadedSubagentResults_PairBySource_NotByName()
+    {
+        // History brings back two runs' results, both named after RockBot.
+        var state = ChatReducer.Reduce(ChatViewState.Empty with { AgentName = Agent }, new HistoryLoaded(
+        [
+            new ConversationHistoryTurn
+            {
+                Role = "assistant", Content = "First findings", Timestamp = At(1), AgentName = Agent, Id = "r1",
+                Source = ReplySource.Subagent("abc"), SessionId = Session,
+            },
+            new ConversationHistoryTurn
+            {
+                Role = "assistant", Content = "Second findings", Timestamp = At(2), AgentName = Agent, Id = "r2",
+                Source = ReplySource.Subagent("def"), SessionId = Session,
+            },
+        ], Session) { Timestamp = At(3) });
+
+        var finished = ActivityDigest.From(state, At(4)).Subagents.Finished;
+
+        Assert.AreEqual("subagent-abc", state.FindMessage("r1")?.RunAgentName);
+        CollectionAssert.AreEqual(new[] { "def", "abc" }, finished.Select(i => i.DisplayName).ToArray(), "one item per run");
+    }
+
+    [TestMethod]
     public void AResultWithNoLog_IsAFinishedItemOnItsOwn()
     {
         // After a reload: history brings back the result but not the log.
@@ -142,6 +182,38 @@ public class ActivityDigestTests
     }
 
     [TestMethod]
+    public void BusyWithAFormAnswer_StartsWhenTheAnswerWasSent()
+    {
+        var state = ChatReducer.Replay(
+        [
+            Question("q1", atSeconds: 0),
+            new McpAnswerSubmitted("q1") { Timestamp = At(10) },
+        ]);
+
+        var running = ActivityDigest.From(state, At(40)).Agent.Running.Single();
+
+        Assert.AreEqual(At(10), running.StartedAt);
+    }
+
+    [TestMethod]
+    public void TheDigest_IsCachedPerState_UntilTheBusyStateChanges()
+    {
+        var state = ChatReducer.Replay(
+        [
+            Question("q1", atSeconds: 0),
+            new McpAnswerSubmitted("q1") { Timestamp = At(10) },
+        ]);
+
+        var first = ActivityDigest.From(state, At(20));
+        var again = ActivityDigest.From(state, At(30));
+        var expired = ActivityDigest.From(state, At(10) + ChatViewState.FormWaitLimit);
+
+        Assert.AreSame(first, again);
+        Assert.AreNotSame(first, expired, "the form wait ran out, so the agent is no longer busy");
+        Assert.AreEqual(0, expired.Agent.Running.Count);
+    }
+
+    [TestMethod]
     public void FinishedTurn_PairsItsLogWithTheReply()
     {
         var state = ChatReducer.Replay(
@@ -196,6 +268,32 @@ public class ActivityDigestTests
         Assert.AreEqual("dream-log", scheduled.Running.Single().Id);
         CollectionAssert.AreEqual(new[] { "run-2", "run-1" }, scheduled.Finished.Select(i => i.Id).ToArray());
         CollectionAssert.AreEqual(new[] { "brief-2", "brief-1" }, scheduled.Finished.Select(i => i.Result?.MessageId).ToArray());
+    }
+
+    [TestMethod]
+    public void AnIdleStatus_ClosesA2AAndBackgroundLogsLeftOpen()
+    {
+        var state = ChatReducer.Replay(
+        [
+            new ActivityReported(MessageCategory.A2AActivity, "PeerAgent", "Working") { Timestamp = At(0), MessageId = "a2a-log" },
+            new ActivityReported(MessageCategory.ScheduledUser, "daily-brief", "Gathering") { Timestamp = At(1), MessageId = "task-log" },
+            new ActiveStatusReconciled(new ActiveStatusResponse { Subagents = [], IsProcessing = false }) { Timestamp = At(2) },
+        ]);
+
+        Assert.AreEqual(0, state.ActiveStatusIndicators.Count);
+        Assert.AreEqual(0, ActivityDigest.From(state, At(3)).A2A.Running.Count);
+    }
+
+    [TestMethod]
+    public void ABusyStatus_LeavesA2AAndBackgroundLogsOpen()
+    {
+        var state = ChatReducer.Replay(
+        [
+            new ActivityReported(MessageCategory.A2AActivity, "PeerAgent", "Working") { Timestamp = At(0), MessageId = "a2a-log" },
+            new ActiveStatusReconciled(new ActiveStatusResponse { Subagents = [], IsProcessing = true }) { Timestamp = At(2) },
+        ]);
+
+        Assert.IsTrue(state.IsActivityLogOpen("a2a-log"));
     }
 
     [TestMethod]

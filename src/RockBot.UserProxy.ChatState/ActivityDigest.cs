@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace RockBot.UserProxy.ChatState;
 
 /// <summary>The kinds of work the activity panel (and the header's activity slots) shows.</summary>
@@ -104,12 +106,29 @@ public sealed record ActivityDigest(
 
     /// <param name="utcNow">The time now, for the busy state.</param>
     /// <param name="maxFinished">How many finished items to keep per kind.</param>
-    public static ActivityDigest From(ChatViewState state, DateTime utcNow, int maxFinished = DefaultMaxFinished) =>
-        new(
-            AgentGroup(state, utcNow, maxFinished),
+    /// <remarks>
+    /// Front ends call this on every render. The state is immutable and the digest depends on
+    /// <paramref name="utcNow"/> only through the busy state, so it is cached per state instance.
+    /// </remarks>
+    public static ActivityDigest From(ChatViewState state, DateTime utcNow, int maxFinished = DefaultMaxFinished)
+    {
+        var busy = state.IsBusy(utcNow);
+        if (Cache.TryGetValue(state, out var hit) && hit.Busy == busy && hit.MaxFinished == maxFinished)
+            return hit.Digest;
+
+        var digest = new ActivityDigest(
+            AgentGroup(state, busy, maxFinished),
             RunGroup(state, ActivityKind.Subagent, maxFinished),
             RunGroup(state, ActivityKind.A2A, maxFinished),
             RunGroup(state, ActivityKind.Scheduled, maxFinished));
+        Cache.AddOrUpdate(state, new CacheEntry(busy, maxFinished, digest));
+        return digest;
+    }
+
+    private sealed record CacheEntry(bool Busy, int MaxFinished, ActivityDigest Digest);
+
+    /// <summary>Keyed by state instance (reference identity); an entry goes when its state does.</summary>
+    private static readonly ConditionalWeakTable<ChatViewState, CacheEntry> Cache = new();
 
     // ── RockBot's own turns ─────────────────────────────────────────────────
 
@@ -118,7 +137,7 @@ public sealed record ActivityDigest(
     /// it before the user's next message. While the agent is busy the latest turn is running,
     /// with the live status text and the turn's plan, even before it has logged anything.
     /// </summary>
-    private static ActivityGroup AgentGroup(ChatViewState state, DateTime utcNow, int maxFinished)
+    private static ActivityGroup AgentGroup(ChatViewState state, bool busy, int maxFinished)
     {
         var messages = state.Messages;
         var items = new List<ActivityItem>();
@@ -146,18 +165,20 @@ public sealed record ActivityDigest(
         var running = items.Where(i => i.IsRunning).ToList();
         var finished = items.Where(i => !i.IsRunning).ToList();
 
-        if (state.IsBusy(utcNow) || running.Count > 0)
+        if (busy || running.Count > 0)
         {
             // One running turn: the busy turn is the latest open log, or one with nothing logged yet.
-            var current = running.LastOrDefault();
-            finished.AddRange(running.Where(r => r != current));
+            var current = running.Count > 0 ? running[^1] : null;
+            finished.AddRange(running.Take(running.Count - 1));
             state.TaskLists.TryGetValue(ReplySourceKind.Primary, out var plan);
             current = (current ?? new ActivityItem
             {
                 Id = state.CurrentTurn?.TurnId ?? "agent-turn",
                 Kind = ActivityKind.Agent,
                 IsRunning = true,
-                StartedAt = state.CurrentTurn?.StartedAt ?? utcNow,
+                // Busy with no turn means a form answer is waiting for its follow-up: since it was sent.
+                StartedAt = state.CurrentTurn?.StartedAt
+                    ?? (state.FormWaits.IsEmpty ? DateTime.MinValue : state.FormWaits.Values.Min()),
             }) with
             {
                 Status = state.ThinkingMessage ?? current?.Status,
@@ -212,7 +233,7 @@ public sealed record ActivityDigest(
                     FinishedAt = open ? null : LastEntryTime(message),
                     Status = message.Content,
                     Log = message,
-                    Plan = open && kind == ActivityKind.Subagent && TaskIdOf(name) is { } taskId
+                    Plan = open && kind == ActivityKind.Subagent && ChatReducer.SubagentTaskId(name) is { } taskId
                         && state.TaskLists.TryGetValue(taskId, out var plan) ? plan : null,
                 });
                 continue;
@@ -255,20 +276,10 @@ public sealed record ActivityDigest(
             Kind = kind,
             AgentName = name,
             IsWorker = isWorker,
-            DisplayName = TaskIdOf(name) is { } taskId ? (isWorker ? $"worker {taskId}" : taskId) : name,
+            DisplayName = ChatReducer.SubagentTaskId(name) is { } taskId ? (isWorker ? $"worker {taskId}" : taskId) : name,
             StartedAt = startedAt,
         };
     }
-
-    /// <summary>The task id in a <c>subagent-</c> or <c>worker-</c> agent name, else null.</summary>
-    private static string? TaskIdOf(string? agentName) =>
-        agentName switch
-        {
-            null => null,
-            _ when agentName.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) => agentName["subagent-".Length..],
-            _ when agentName.StartsWith("worker-", StringComparison.OrdinalIgnoreCase) => agentName["worker-".Length..],
-            _ => null,
-        };
 
     private static DateTime LastEntryTime(ChatMessage log) =>
         log.ActivityLogEntries.Count > 0 ? log.ActivityLogEntries[^1].Timestamp : log.Timestamp;

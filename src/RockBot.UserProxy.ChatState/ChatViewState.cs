@@ -185,6 +185,12 @@ public sealed record ChatMessage
     /// </summary>
     public string? RunAgentName { get; init; }
 
+    /// <summary>
+    /// For the reply that ended one of the user's turns: when that turn started. It answers the
+    /// user's message, not anything (a subagent's result, say) that arrived while the turn ran.
+    /// </summary>
+    public DateTime? TurnStartedAt { get; init; }
+
     public string? UserId { get; init; }
     public string? SessionId { get; init; }
     public string? ContentType { get; init; }

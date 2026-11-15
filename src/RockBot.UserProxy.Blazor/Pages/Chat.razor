@@ -943,12 +943,8 @@
 
     private static string DescribeSubagent(ActiveStatusIndicator sub)
     {
-        var isWorker = sub.AgentName?.StartsWith("worker-") == true;
-        var name = sub.AgentName?.StartsWith("subagent-") == true
-            ? sub.AgentName["subagent-".Length..]
-            : isWorker
-                ? sub.AgentName!["worker-".Length..]
-                : sub.AgentName ?? "subagent";
+        var isWorker = sub.AgentName?.StartsWith("worker-", StringComparison.OrdinalIgnoreCase) == true;
+        var name = ChatReducer.SubagentTaskId(sub.AgentName) ?? sub.AgentName ?? "subagent";
         return $"{(isWorker ? "Worker" : "Subagent")} {name}: {sub.LatestContent}";
     }
 

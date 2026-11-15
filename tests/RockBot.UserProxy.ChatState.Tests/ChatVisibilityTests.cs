@@ -93,6 +93,41 @@ public class ChatVisibilityTests
     }
 
     [TestMethod]
+    public void TheTurnsOwnReply_DoesNotAnswerAResultThatBeatIt()
+    {
+        // A fast subagent finishes before RockBot's "I've started…" reply to the turn.
+        var state = ChatReducer.Replay(
+        [
+            new UserMessageSent("Research it", "user", Session) { Timestamp = At(0), MessageId = "ask" },
+            new TurnStarted("turn-1") { Timestamp = At(0) },
+            new ReplyReceived(SubagentResult("abc", "Findings"), MessageCategory.SubagentActivity) { Timestamp = At(3), MessageId = "sub-result" },
+            new TurnEnded("turn-1", TurnOutcome.Completed) { Reply = Reply("I've started a subagent."), Timestamp = At(4), MessageId = "ack" },
+        ]);
+
+        var visible = ChatVisibility.VisibleMessages(state, ChatDetailLevel.Simple, At(3) + ChatVisibility.UnansweredResultGrace);
+
+        CollectionAssert.AreEqual(new[] { "ask", "sub-result", "ack" }, Ids(visible));
+    }
+
+    [TestMethod]
+    public void NextVisibilityChange_IsWhenTheSoonestGraceRunsOut()
+    {
+        var state = ChatReducer.Replay(
+        [
+            new ReplyReceived(SubagentResult("abc", "First"), MessageCategory.SubagentActivity) { Timestamp = At(10), MessageId = "r1" },
+            new ReplyReceived(SubagentResult("def", "Second"), MessageCategory.SubagentActivity) { Timestamp = At(20), MessageId = "r2" },
+        ]);
+
+        Assert.AreEqual(At(10) + ChatVisibility.UnansweredResultGrace, ChatVisibility.NextVisibilityChange(state, ChatDetailLevel.Simple, At(30)));
+        Assert.AreEqual(At(20) + ChatVisibility.UnansweredResultGrace,
+            ChatVisibility.NextVisibilityChange(state, ChatDetailLevel.Simple, At(10) + ChatVisibility.UnansweredResultGrace),
+            "the first is showing by then");
+        Assert.IsNull(ChatVisibility.NextVisibilityChange(state, ChatDetailLevel.Simple, At(20) + ChatVisibility.UnansweredResultGrace));
+        Assert.IsNull(ChatVisibility.NextVisibilityChange(state, ChatDetailLevel.Detailed, At(30)), "Detailed draws them already");
+        Assert.IsNull(ChatVisibility.NextVisibilityChange(FullTurn(), ChatDetailLevel.Simple, At(20)), "an answered result never changes");
+    }
+
+    [TestMethod]
     public void AnErrorDoesNotCountAsRockBotsReply()
     {
         var state = ChatReducer.Replay(
