@@ -1,0 +1,30 @@
+@* The circular mark to the left of an agent-side bubble, so every actor in the conversation reads
+   as one shape. "agent" is RockBot itself (orange ring, "RB"); subagent / a2a / scheduled / saved
+   carry their category colour and glyph. No kind draws an empty slot of the same width, which
+   keeps interim lines and error notices aligned with the bubbles around them. *@
+
+@switch (Kind)
+{
+    case "agent":
+        <span class="agent-avatar" aria-hidden="true">RB</span>
+        break;
+    case "subagent" or "a2a" or "scheduled" or "saved":
+        <span class="cat-avatar @Kind" aria-hidden="true"><RbIcon Name="@Glyph(Kind)" Size="14" /></span>
+        break;
+    default:
+        <span class="avatar-slot" aria-hidden="true"></span>
+        break;
+}
+
+@code {
+    /// <summary><c>agent</c>, <c>subagent</c>, <c>a2a</c>, <c>scheduled</c>, <c>saved</c>, or null for an empty slot.</summary>
+    [Parameter] public string? Kind { get; set; }
+
+    private static string Glyph(string kind) => kind switch
+    {
+        "subagent" => "robot",
+        "a2a" => "exchange",
+        "scheduled" => "hourglass",
+        _ => "bookmark",
+    };
+}

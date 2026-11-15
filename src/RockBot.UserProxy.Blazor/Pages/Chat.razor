@@ -21,57 +21,38 @@
 <PageTitle>@(state.AgentName ?? "RockBot") Chat</PageTitle>
 
 <div class="chat-container d-flex flex-column">
-    <div class="chat-header bg-primary text-white p-3 d-flex justify-content-between align-items-center">
-        <div class="d-flex align-items-baseline gap-2">
-            <h1 class="h4 mb-0">@(state.AgentName ?? "RockBot") Chat</h1>
-            <span class="small opacity-75">v@(UiVersion)</span>
-            @if (state.AgentVersion is not null)
-            {
-                <span class="small opacity-75">| Agent v@(state.AgentVersion)</span>
-            }
-        </div>
-        <div class="d-flex align-items-center gap-2">
-            @if (isBusy)
-            {
-                <span class="status-indicator agent-busy"
-                      title="@(state.ThinkingMessage ?? "Agent is processing...")">
-                    <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                </span>
-            }
+    <header class="chat-header">
+        <h1 class="chat-title">
+            <img class="brand-mark" src="@Assets["images/rockbot-mark-64.png"]"
+                 srcset="@Assets["images/rockbot-mark-64.png"] 1x, @Assets["images/rockbot-mark-128.png"] 2x"
+                 width="30" height="30" alt="" />
+            <span class="chat-title-text">@(state.AgentName ?? "RockBot") Chat</span>
+        </h1>
+        <div class="status-row">
             @{
                 var statusIndicators = state.ActiveStatusIndicators;
+                var subagents = statusIndicators.Where(i => i.Category == MessageCategory.SubagentActivity).ToList();
+                var a2aCalls = statusIndicators.Where(i => i.Category == MessageCategory.A2AActivity).ToList();
+                var tasks = statusIndicators.Where(i => i.Category == MessageCategory.ScheduledSystem).ToList();
             }
-            @foreach (var sub in statusIndicators.Where(i => i.Category == MessageCategory.SubagentActivity))
-            {
-                var isWorker = sub.AgentName?.StartsWith("worker-") == true;
-                var name = sub.AgentName?.StartsWith("subagent-") == true
-                    ? sub.AgentName["subagent-".Length..]
-                    : isWorker
-                        ? sub.AgentName!["worker-".Length..]
-                        : sub.AgentName ?? "subagent";
-                <span class="status-indicator subagent-indicator"
-                      title="@($"{(isWorker ? "Worker" : "Subagent")} {name}: {sub.LatestContent}")">
-                    🤖
-                </span>
-            }
-            @foreach (var task in statusIndicators.Where(i => i.Category == MessageCategory.ScheduledSystem))
-            {
-                <span class="status-indicator task-indicator"
-                      title="@($"Background task: {task.LatestContent}")">
-                    ⏱️
-                </span>
-            }
-            @foreach (var a2a in statusIndicators.Where(i => i.Category == MessageCategory.A2AActivity))
-            {
-                <span class="status-indicator a2a-indicator"
-                      title="@($"Inbound A2A: {a2a.LatestContent}")">
-                    🔗
-                </span>
-            }
-            <button class="btn btn-sm btn-outline-light" @onclick="ToggleSavedModal" title="Saved responses">
-                📋
+            @* Fixed order, every slot always present: the row is the status map. *@
+            <div class="activity-row" role="group" aria-label="Background activity">
+                <ActivityIcon Kind="agent" Active="isBusy"
+                              Title="@(isBusy ? state.ThinkingMessage ?? "RockBot is working…" : "RockBot is idle")" />
+                <ActivityIcon Kind="subagent" Active="subagents.Count > 0" Count="subagents.Count"
+                              Title="@ActivityTitle("No subagents running", subagents.Select(DescribeSubagent))" />
+                <ActivityIcon Kind="a2a" Active="a2aCalls.Count > 0" Count="a2aCalls.Count"
+                              Title="@ActivityTitle("No inbound A2A calls", a2aCalls.Select(a => $"Inbound A2A: {a.LatestContent}"))" />
+                <ActivityIcon Kind="scheduled" Active="tasks.Count > 0" Count="tasks.Count"
+                              Title="@ActivityTitle("No background tasks", tasks.Select(t => $"Background task: {t.LatestContent}"))" />
+            </div>
+            <ConnectionPill Connected="ProxyService.IsConnected" AppVersion="@UiVersion" AgentVersion="@state.AgentVersion" />
+            <button type="button" class="icon-btn" @onclick="ToggleSavedModal"
+                    title="Saved responses" aria-label="Saved responses">
+                <RbIcon Name="bookmark" Size="14" />
             </button>
-            <button class="btn btn-sm btn-outline-light" @onclick="ToggleDarkMode" title="Toggle dark/light mode">
+            <button type="button" class="icon-btn" @onclick="ToggleDarkMode"
+                    title="Toggle dark/light mode" aria-label="@(IsDarkMode ? "Switch to light mode" : "Switch to dark mode")">
                 @(IsDarkMode ? "☀️" : "🌙")
             </button>
             @* A real form POST rather than a link: signing out changes state, and the antiforgery
@@ -85,35 +66,36 @@
                     {
                     <form method="post" action="/auth/logout" class="d-inline">
                         <AntiforgeryToken />
-                        <button type="submit" class="btn btn-sm btn-outline-light"
-                                title="@($"Sign out {UserAllowlist.GetEmail(context.User)}")">
-                            Sign out
+                        <button type="submit" class="icon-btn text-btn"
+                                title="@($"Sign out {UserAllowlist.GetEmail(context.User)}")"
+                                aria-label="Sign out">
+                            <span class="label-wide">Sign out</span>
+                            <RbIcon Name="log-out" Size="14" Class="label-narrow" />
                         </button>
                     </form>
                     }
                 </Authorized>
             </AuthorizeView>
-            <span class="connection-dot @(ProxyService.IsConnected ? "connected" : "disconnected")"
-                  title="@(ProxyService.IsConnected ? "Connected to message bus" : "Disconnected from message bus")"></span>
         </div>
-    </div>
+    </header>
 
     <McpSignInBanner />
 
-    <div class="chat-messages flex-grow-1 overflow-auto p-3" @ref="messagesContainer">
+    <div class="chat-messages flex-grow-1" @ref="messagesContainer">
         @foreach (var message in state.Messages)
         {
             @if (message.IsActivityLog)
             {
                 <!-- Activity log bubble: collapsed one-liner with spinner, expandable to full log -->
-                <div class="message-wrapper mb-3 agent-message">
-                    <div class="message-bubble activity-log-bubble p-2 rounded category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")"
+                <div class="message-wrapper agent-message">
+                    <CategoryAvatar Kind="@CategoryKind(message.Category)" />
+                    <div class="message-bubble activity-log-bubble category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")"
                          @onclick="() => ToggleExpanded(message.MessageId)">
                         <div class="activity-log-header">
-                            <span class="chevron-indicator @(message.IsExpanded ? "open" : "")">&#9654;</span>
+                            <RbIcon Name="chevron-right" Size="12" Class="@($"chevron-indicator {(message.IsExpanded ? "open" : "")}")" />
                             @if (state.IsActivityLogOpen(message.MessageId))
                             {
-                                <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
                             }
                             @if (message.Category != MessageCategory.PrimaryProgress)
                             {
@@ -176,10 +158,11 @@
             else if (IsCollapsibleCategory(message.Category))
             {
                 <!-- Collapsible bubble: compact header when collapsed, full content when expanded -->
-                <div class="message-wrapper mb-3 agent-message">
-                    <div class="message-bubble collapsible-bubble p-3 rounded category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")">
+                <div class="message-wrapper agent-message">
+                    <CategoryAvatar Kind="@CategoryKind(message.Category)" />
+                    <div class="message-bubble collapsible-bubble category-@message.Category.ToString().ToLowerInvariant() @(message.IsExpanded ? "expanded" : "collapsed")">
                         <div class="collapsible-header" @onclick="() => ToggleExpanded(message.MessageId)" @onclick:stopPropagation="true">
-                            <span class="chevron-indicator @(message.IsExpanded ? "open" : "")">&#9654;</span>
+                            <RbIcon Name="chevron-right" Size="12" Class="@($"chevron-indicator {(message.IsExpanded ? "open" : "")}")" />
                             <span class="category-badge">@GetCategoryLabel(message.Category)</span>
                             @if (!string.IsNullOrEmpty(message.AgentName))
                             {
@@ -206,16 +189,20 @@
             else if (message.Category == MessageCategory.SavedReference)
             {
                 <!-- Saved reference bubble: distinct accent styling with dismiss button -->
-                <div class="message-wrapper mb-3 agent-message">
-                    <div class="message-bubble saved-reference-bubble p-3 rounded">
+                <div class="message-wrapper agent-message">
+                    <CategoryAvatar Kind="saved" />
+                    <div class="message-bubble saved-reference-bubble">
                         <div class="saved-badge-header">
                             <span class="category-badge saved-badge">Saved</span>
                             <span class="saved-label">@message.SavedResponseLabel</span>
-                            <button class="btn-feedback" title="Dismiss" @onclick="() => DismissSavedReference(message)">✕</button>
+                            <button type="button" class="btn-feedback" title="Dismiss" aria-label="Dismiss saved reference"
+                                    @onclick="() => DismissSavedReference(message)">
+                                <RbIcon Name="x" Size="14" />
+                            </button>
                         </div>
                         @if (!string.IsNullOrEmpty(message.AgentName))
                         {
-                            <div class="fw-bold small mb-2">@message.AgentName</div>
+                            <div class="message-agent-name">@message.AgentName</div>
                         }
                         <div class="message-content mt-2">
                             @((MarkupString)SafeMarkdownRenderer.RenderSafe(message.Content))
@@ -226,8 +213,9 @@
             else if (message.Category == MessageCategory.McpQuestion)
             {
                 <!-- A question an MCP server handed back, answered in a form built from its schema -->
-                <div class="message-wrapper mb-3 agent-message">
-                    <div class="message-bubble mcp-question-bubble p-3 rounded">
+                <div class="message-wrapper agent-message">
+                    <CategoryAvatar Kind="agent" />
+                    <div class="message-bubble mcp-question-bubble">
                         <McpQuestionCard Message="message" DisplayZone="_displayZone" OnSubmit="SubmitMcpAnswer" />
                     </div>
                 </div>
@@ -235,11 +223,16 @@
             else
             {
                 <!-- Standard expanded bubble: user input, primary final, scheduled user, error -->
-                <div class="message-wrapper mb-3 @(message.IsFromUser ? "user-message" : "agent-message")">
-                    <div class="message-bubble p-3 rounded @(message.IsError ? "bg-danger text-white" : (message.IsFromUser ? "bg-primary text-white" : "")) @(message.IsInterim ? "interim-message" : "")">
+                <div class="message-wrapper @(message.IsFromUser ? "user-message" : "agent-message")">
+                    @if (!message.IsFromUser)
+                    {
+                        @* Orange "RB" marks RockBot speaking; interim and error lines keep the indent without it. *@
+                        <CategoryAvatar Kind="@(message.IsInterim || message.IsError ? null : "agent")" />
+                    }
+                    <div class="message-bubble @BubbleVariant(message)">
                         @if (!message.IsFromUser && !message.IsError && !string.IsNullOrEmpty(message.AgentName))
                         {
-                            <div class="@(message.IsInterim ? "fst-italic" : "fw-bold") small mb-2">@message.AgentName</div>
+                            <div class="message-agent-name">@message.AgentName</div>
                         }
                         <div class="message-content">
                             @((MarkupString)SafeMarkdownRenderer.RenderSafe(message.Content))
@@ -251,36 +244,37 @@
                         @if (!message.IsFromUser && !message.IsError)
                         {
                             <div class="feedback-bar">
-                                <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsUp ? "active" : "")"
-                                        title="This was helpful"
+                                <button type="button" class="btn-feedback @(message.Feedback == FeedbackState.ThumbsUp ? "active" : "")"
+                                        title="This was helpful" aria-label="This was helpful"
+                                        aria-pressed="@(message.Feedback == FeedbackState.ThumbsUp ? "true" : "false")"
                                         disabled="@(message.Feedback != FeedbackState.None)"
                                         @onclick="() => SendFeedback(message, isPositive: true)">
-                                    👍
+                                    <RbIcon Name="thumbs-up" Size="15" />
                                 </button>
-                                <button class="btn-feedback @(message.Feedback == FeedbackState.ThumbsDown ? "active" : "")"
-                                        title="This wasn't helpful — please try again"
+                                <button type="button" class="btn-feedback @(message.Feedback == FeedbackState.ThumbsDown ? "active" : "")"
+                                        title="This wasn't helpful — please try again" aria-label="This wasn't helpful — please try again"
+                                        aria-pressed="@(message.Feedback == FeedbackState.ThumbsDown ? "true" : "false")"
                                         disabled="@(message.Feedback != FeedbackState.None)"
                                         @onclick="() => SendFeedback(message, isPositive: false)">
-                                    👎
+                                    <RbIcon Name="thumbs-down" Size="15" />
                                 </button>
                                 @if (message.Category == MessageCategory.PrimaryFinal)
                                 {
-                                    <button class="btn-feedback" title="Save this response"
+                                    <button type="button" class="btn-feedback save-btn @(_savingMessageId == message.MessageId ? "active" : "")"
+                                            title="Save this response" aria-label="Save this response"
                                             @onclick="() => StartSaveFlow(message)">
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
-                                            <path d="M11 2H9v3h2z"/>
-                                            <path d="M1.5 0h11.586a1.5 1.5 0 0 1 1.06.44l1.415 1.414A1.5 1.5 0 0 1 16 2.914V14.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 14.5v-13A1.5 1.5 0 0 1 1.5 0M1 1.5v13a.5.5 0 0 0 .5.5H2v-4.5A1.5 1.5 0 0 1 3.5 9h9a1.5 1.5 0 0 1 1.5 1.5V15h.5a.5.5 0 0 0 .5-.5V2.914a.5.5 0 0 0-.146-.353l-1.415-1.415A.5.5 0 0 0 13.086 1H13v4.5A1.5 1.5 0 0 1 11.5 7h-7A1.5 1.5 0 0 1 3 5.5V1H1.5a.5.5 0 0 0-.5.5m3 0V5a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 .5-.5V1zM3 15h10v-4.5a.5.5 0 0 0-.5-.5h-9a.5.5 0 0 0-.5.5z"/>
-                                        </svg>
+                                        <RbIcon Name="bookmark" Size="15" Filled="_savingMessageId == message.MessageId" />
                                     </button>
                                 }
                             </div>
                             @if (_savingMessageId == message.MessageId)
                             {
-                                <div class="save-label-input d-flex gap-1 mt-1">
+                                <div class="save-label-input">
                                     <input type="text" class="form-control form-control-sm" placeholder="Label this response..."
+                                           aria-label="Label for the saved response"
                                            @bind="_saveLabel" @bind:event="oninput"
                                            @onkeydown="HandleSaveLabelKeyDown" />
-                                    <button class="btn btn-sm btn-success" @onclick="() => ConfirmSave(message)"
+                                    <button class="btn btn-sm btn-primary" @onclick="() => ConfirmSave(message)"
                                             disabled="@string.IsNullOrWhiteSpace(_saveLabel)">Save</button>
                                     <button class="btn btn-sm btn-outline-secondary" @onclick="CancelSave">Cancel</button>
                                 </div>
@@ -299,10 +293,12 @@
         }
         @if ((isBusy && !hasActiveActivityLog) || (!isBusy && !string.IsNullOrEmpty(state.ThinkingMessage)))
         {
-            <div class="message-wrapper mb-3 agent-message">
-                <div class="message-bubble p-3 rounded">
+            <div class="message-wrapper agent-message">
+                <CategoryAvatar />
+                <div class="message-bubble interim-message thinking-bubble">
                     <div class="thinking-indicator">
-                        <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                        <span class="category-badge thinking-badge">Thinking</span>
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
                         @if (!string.IsNullOrEmpty(state.ThinkingMessage))
                         {
                             <span>@state.ThinkingMessage</span>
@@ -320,7 +316,7 @@
     @if (state.TaskLists.Count > 0)
     {
         <!-- The agent's plans: the primary turn's task list, and any running subagent's -->
-        <div class="plan-panel border-top px-3 py-2">
+        <div class="plan-panel">
             @foreach (var list in state.TaskLists.Values.OrderBy(l => l.Key == ReplySourceKind.Primary ? 0 : 1).ThenBy(l => l.UpdatedAt))
             {
                 <div class="plan-list">
@@ -343,7 +339,7 @@
     @if (_showSavedModal)
     {
         <div class="modal-overlay" @onclick="ToggleSavedModal">
-            <div class="saved-modal" @onclick:stopPropagation="true">
+            <div class="saved-modal" role="dialog" aria-modal="true" aria-label="Saved responses" @onclick:stopPropagation="true">
                 @if (_viewingItem is not null)
                 {
                     <div class="saved-view-header">
@@ -379,8 +375,14 @@
                                     <small class="saved-item-meta d-block">@item.AgentName@(DescribeSavedSource(item.Source)) — @TimeZoneInfo.ConvertTime(item.SavedAt, _displayZone).ToString("MMM d, yyyy h:mm tt")</small>
                                 </div>
                                 <div class="d-flex gap-1">
-                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => ViewSavedItem(item.Id)" title="View">👁️</button>
-                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteSavedItem(item.Id)" title="Delete">🗑️</button>
+                                    <button type="button" class="row-icon-btn" @onclick="() => ViewSavedItem(item.Id)"
+                                            title="View" aria-label="@($"View {item.Label}")">
+                                        <RbIcon Name="eye" Size="15" />
+                                    </button>
+                                    <button type="button" class="row-icon-btn danger" @onclick="() => DeleteSavedItem(item.Id)"
+                                            title="Delete" aria-label="@($"Delete {item.Label}")">
+                                        <RbIcon Name="trash" Size="15" />
+                                    </button>
                                 </div>
                             </div>
                         }
@@ -391,33 +393,39 @@
         </div>
     }
 
-    <div class="chat-input bg-light p-3 border-top">
-        @if (_stagedAttachments.Count > 0 || _attachmentError is not null)
+    <div class="composer">
+        @if (_stagedAttachments.Count > 0 || _attachmentError is not null || _isUploading)
         {
-            <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
+            <div class="staged-attachments">
                 @foreach (var staged in _stagedAttachments)
                 {
-                    <span class="badge bg-secondary d-inline-flex align-items-center gap-1">
-                        @(staged.FileName ?? staged.Path)
-                        <button type="button" class="btn-close btn-close-white btn-sm"
+                    <span class="staged-chip">
+                        <RbIcon Name="paperclip" Size="12" />
+                        <span class="staged-chip-name">@(staged.FileName ?? staged.Path)</span>
+                        <button type="button" class="staged-chip-remove"
                                 aria-label="@($"Remove {staged.FileName ?? staged.Path}")"
-                                @onclick="() => RemoveAttachment(staged)"></button>
+                                @onclick="() => RemoveAttachment(staged)">
+                            <RbIcon Name="x" Size="12" />
+                        </button>
                     </span>
                 }
                 @if (_isUploading)
                 {
-                    <span class="small text-muted">Uploading…</span>
+                    <span class="staged-status">Uploading…</span>
                 }
                 @if (_attachmentError is not null)
                 {
-                    <span class="small text-danger">@_attachmentError</span>
+                    <span class="staged-error">@_attachmentError</span>
                 }
             </div>
         }
-        <form @onsubmit="SendMessage" @onsubmit:preventDefault="true" class="d-flex gap-2">
-            <label class="btn btn-outline-secondary d-flex align-items-center" title="Attach a file">
-                📎
-                <InputFile OnChange="StageAttachmentsAsync" multiple class="d-none"
+        <form @onsubmit="SendMessage" @onsubmit:preventDefault="true" class="composer-row">
+            @* A label, so the whole button opens the file picker; the visually hidden input keeps
+               it keyboard-reachable (focus-within draws the ring on the label). *@
+            <label class="btn-ghost composer-attach @(isBusy ? "disabled" : null)" title="Attach a file">
+                <RbIcon Name="paperclip" Size="18" />
+                <span class="visually-hidden">Attach a file</span>
+                <InputFile OnChange="StageAttachmentsAsync" multiple class="visually-hidden"
                            accept="@AcceptedFileTypes" disabled="@isBusy" />
             </label>
             <textarea
@@ -430,23 +438,27 @@
                 disabled="@isBusy"
                 rows="1"
                 aria-label="Message input"></textarea>
-            <button
-                type="submit"
-                class="btn btn-primary"
-                disabled="@((string.IsNullOrWhiteSpace(currentMessage) && _stagedAttachments.Count == 0) || isBusy || _isUploading || !ProxyService.IsConnected)"
-                aria-label="Send message">
-                Send
-            </button>
             @if (isBusy)
             {
                 <button
                     type="button"
-                    class="btn btn-outline-danger btn-sm"
+                    class="btn-ghost composer-cancel"
                     @onclick="CancelSession"
+                    title="Cancel current work"
                     aria-label="Cancel current work">
-                    Cancel
+                    <span class="label-wide">Cancel</span>
+                    <RbIcon Name="x" Size="18" Class="label-narrow" />
                 </button>
             }
+            <button
+                type="submit"
+                class="btn-send"
+                disabled="@((string.IsNullOrWhiteSpace(currentMessage) && _stagedAttachments.Count == 0) || isBusy || _isUploading || !ProxyService.IsConnected)"
+                title="Send message"
+                aria-label="Send message">
+                <span class="label-wide">Send</span>
+                <RbIcon Name="send" Size="18" Class="label-narrow" />
+            </button>
         </form>
     </div>
 </div>
@@ -865,6 +877,43 @@
         MessageCategory.ScheduledSystem => "Background Task",
         _ => "Agent"
     };
+
+    /// <summary>
+    /// The standard bubble's variant: an error notice, an interim line, a user message, or one of
+    /// RockBot's own replies — the only kind that carries the orange agent accent.
+    /// </summary>
+    private static string BubbleVariant(ChatMessage message) =>
+        message.IsError ? "error-message"
+        : message.IsInterim ? "interim-message"
+        : message.IsFromUser ? "user-bubble"
+        : "agent-reply";
+
+    /// <summary>The design system's category kind for a message's avatar, or null for none.</summary>
+    private static string? CategoryKind(MessageCategory category) => category switch
+    {
+        MessageCategory.SubagentActivity => "subagent",
+        MessageCategory.A2AActivity => "a2a",
+        MessageCategory.ScheduledSystem => "scheduled",
+        _ => null
+    };
+
+    /// <summary>A header activity slot's tooltip: one line per running item, or the idle text.</summary>
+    private static string ActivityTitle(string idle, IEnumerable<string> lines)
+    {
+        var text = string.Join("\n", lines);
+        return text.Length == 0 ? idle : text;
+    }
+
+    private static string DescribeSubagent(ActiveStatusIndicator sub)
+    {
+        var isWorker = sub.AgentName?.StartsWith("worker-") == true;
+        var name = sub.AgentName?.StartsWith("subagent-") == true
+            ? sub.AgentName["subagent-".Length..]
+            : isWorker
+                ? sub.AgentName!["worker-".Length..]
+                : sub.AgentName ?? "subagent";
+        return $"{(isWorker ? "Worker" : "Subagent")} {name}: {sub.LatestContent}";
+    }
 
     private static string ToolCallMarker(string phase) => phase switch
     {

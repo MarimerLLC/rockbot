@@ -1,0 +1,36 @@
+@* Message-bus connection state, always as a word beside the dot (never colour alone), with the UI
+   and agent versions one click away. The popover is the browser's own (popover/popovertarget):
+   light dismiss and Escape come free, and no script or circuit round trip is needed to open it.
+   The title repeats the versions for a browser without popover support. *@
+
+<button type="button" class="conn-pill" popovertarget="rb-version-popover"
+        title="@($"{StateText} · UI v{AppVersion}" + (AgentVersion is null ? "" : $" · Agent v{AgentVersion}"))">
+    <span class="connection-dot @(Connected ? "connected" : "disconnected")" aria-hidden="true"></span>
+    <span class="status-text">@StateText</span>
+    <RbIcon Name="chevron-down" Size="12" Class="conn-pill-chev" />
+</button>
+<div id="rb-version-popover" class="conn-popover" popover role="dialog" aria-label="Version info">
+    <div class="conn-popover-row">
+        <span class="conn-popover-label">Message bus</span>
+        <span class="conn-popover-val">@StateText</span>
+    </div>
+    <div class="conn-popover-row">
+        <span class="conn-popover-label">UI</span>
+        <span class="conn-popover-val">v@(AppVersion)</span>
+    </div>
+    <div class="conn-popover-row">
+        <span class="conn-popover-label">Agent</span>
+        <span class="conn-popover-val">@(AgentVersion is null ? "unknown" : $"v{AgentVersion}")</span>
+    </div>
+</div>
+
+@code {
+    [Parameter] public bool Connected { get; set; }
+
+    [Parameter, EditorRequired] public string AppVersion { get; set; } = "";
+
+    /// <summary>Null until the agent has answered the info request.</summary>
+    [Parameter] public string? AgentVersion { get; set; }
+
+    private string StateText => Connected ? "Connected" : "Disconnected";
+}
