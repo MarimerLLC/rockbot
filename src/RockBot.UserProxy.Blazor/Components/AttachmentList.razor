@@ -25,7 +25,7 @@
                     <div class="attachment-preview">
                         <div class="attachment-preview-bar">
                             <span class="attachment-preview-title">@label</span>
-                            <a class="attachment-link" href="@url" target="_blank" rel="noopener">Open in new tab ↗</a>
+                            <a class="attachment-link" href="@url" target="_blank" rel="noopener">Open in new tab <RbIcon Name="external-link" Size="13" /></a>
                         </div>
                         <iframe class="attachment-preview-frame" src="@url" title="@label"
                                 sandbox="@AttachmentPresentation.HtmlSandbox" loading="lazy"
@@ -34,7 +34,7 @@
                     break;
 
                 default:
-                    <a class="attachment-link" href="@url" target="_blank" rel="noopener">📎 @label</a>
+                    <a class="attachment-link" href="@url" target="_blank" rel="noopener"><RbIcon Name="paperclip" Size="14" /> @label</a>
                     break;
             }
         }

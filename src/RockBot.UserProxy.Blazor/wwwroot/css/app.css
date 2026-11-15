@@ -1,43 +1,318 @@
+/* RockBot chat UI.
+   Styled to the RockBot Design System (https://claude.ai/artifact/By42C3bKBZFMSpH1ushPZ5): the
+   --rb-* tokens in tokens.css (loaded first) supply every colour, radius and shadow. The only
+   colours defined here are the four --app-* shades in the override block below, which the token
+   set doesn't have yet, and translucent rgba() washes.
+   The rules this file keeps:
+   - Blue does interaction (header, user bubbles, buttons, focus); orange is RockBot itself (the
+     agent avatar and the left edge of its replies, interim lines, subagents, brand moments).
+   - Dashed borders mean interim / activity / collapsible. Never decoration.
+   - Category tints (subagent orange, A2A blue, scheduled amber, saved indigo) carry meaning.
+   - No glow in product chrome; the one exception is a live header activity slot.
+   - No emoji; icons are monochrome stroke SVG in currentColor (Components/RbIcon.razor).
+   Dark mode is the body.dark-mode class, set by Chat.razor. */
+
+/* ── App-level token overrides ─────────────────────────────────────────── */
+
 :root {
-    --primary-color: #0d6efd;
-    --secondary-color: #6c757d;
-    --light-bg: #f8f9fa;
-    --dark-bg: #212529;
-    --user-message-bg: #0d6efd;
-    --agent-message-bg: #e9ecef;
-    --border-color: #dee2e6;
+    /* System fonts only: the product UI makes no third-party font request. */
+    --font-body: var(--font-sans);
+    --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, Menlo, monospace;
+
+    /* Dark-mode interaction shades the design system doesn't have yet. */
+    --app-blue-tint-dark: #1e3a5f;    /* hover / badge fill for blue controls on dark panels */
+    --app-blue-fg-dark: #bfdbfe;      /* text and icons on that fill; chosen feedback */
+    --app-saved-active-dark: #c7d2fe; /* the save bookmark once chosen */
+    --app-control-border-dark: #6b7280; /* Bootstrap outline-secondary buttons on dark panels */
 }
 
 body {
     margin: 0;
     padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-family: var(--font-body);
+    color: var(--rb-fg);
+    background-color: var(--rb-bg);
+    -webkit-font-smoothing: antialiased;
 }
+
+code, pre, kbd, samp {
+    font-family: var(--font-mono);
+}
+
+/* FocusOnNavigate (Routes.razor) moves focus to each page's h1 for screen readers; that
+   programmatic focus shouldn't draw a ring around the heading. */
+h1:focus {
+    outline: none;
+}
+
+/* ── Layout: header / messages / composer ──────────────────────────────── */
 
 .chat-container {
     max-width: 100%;
     margin: 0 auto;
-    background-color: white;
+    background-color: var(--rb-bg);
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
 }
 
-.chat-header {
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    z-index: 10;
-}
-
 .chat-messages {
-    background-color: #f5f5f5;
-    padding: 1rem;
+    background-color: var(--rb-bg-muted);
+    padding: var(--rb-space-4);
     overflow-y: auto;
     scroll-behavior: smooth;
 }
 
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.chat-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--rb-space-4);
+    padding: var(--rb-space-3) var(--rb-space-4);
+    background-color: var(--rb-primary);
+    color: var(--rb-fg-on-primary);
+    box-shadow: var(--rb-shadow-bar);
+    z-index: 10;
+}
+
+.chat-title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--rb-space-2);
+    font-family: var(--font-sans);
+    font-size: var(--rb-text-xl);
+    font-weight: var(--rb-weight-semi);
+}
+
+.chat-title-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The app mark is the real artwork on its own night-navy tile: rounded, never redrawn. */
+.brand-mark {
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border-radius: 7px;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.status-row {
+    display: flex;
+    align-items: center;
+    gap: var(--rb-space-2);
+    font-size: 0.875rem;
+}
+
+/* Header buttons: translucent on the blue bar. */
+.icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.14);
+    color: var(--rb-fg-on-primary);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.icon-btn:hover {
+    background: rgba(255, 255, 255, 0.28);
+}
+
+.icon-btn.text-btn {
+    width: auto;
+    padding: 0 var(--rb-space-3);
+    font-size: 0.8rem;
+    font-weight: var(--rb-weight-medium);
+}
+
+/* Connection pill. A darker translucent fill (not the mock's lighter one) keeps the small white
+   label above 4.5:1 on the blue bar. */
+.conn-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    height: 28px;
+    padding: 4px 9px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.18);
+    color: var(--rb-fg-on-primary);
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.conn-pill:hover {
+    background: rgba(0, 0, 0, 0.28);
+    border-color: rgba(255, 255, 255, 0.35);
+}
+
+.conn-pill-chev {
+    opacity: 0.75;
+}
+
+.connection-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+    transition: background-color 0.15s ease;
+}
+
+.connection-dot.connected {
+    background-color: var(--rb-success);
+}
+
+.connection-dot.disconnected {
+    background-color: var(--rb-danger-bg);
+}
+
+/* The version popover lives in the browser's top layer, so it is placed against the viewport:
+   just under the header's right end. */
+.conn-popover {
+    position: fixed;
+    inset: auto;
+    top: 3.4rem;
+    right: var(--rb-space-4);
+    margin: 0;
+    min-width: 200px;
+    padding: 8px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--rb-radius-lg);
+    background: var(--rb-popover-bg);
+    color: var(--rb-popover-fg);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+    font-size: 0.78rem;
+}
+
+.conn-popover-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 3px 0;
+}
+
+.conn-popover-row + .conn-popover-row {
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.conn-popover-label {
+    color: rgba(230, 235, 242, 0.7);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.68rem;
+}
+
+.conn-popover-val {
+    font-family: var(--font-mono);
+    white-space: nowrap;
+}
+
+/* ── Header activity slots ──────────────────────────────────────────────
+   One circle per actor type, always present: dim when idle, ringed and pulsing when live,
+   with a count badge for concurrent instances. --ring / --glow come from ActivityIcon.razor. */
+
+.activity-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 2px;
+}
+
+.activity-icon {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.45);
+    cursor: default;
+    transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.activity-icon:not(.active) {
+    opacity: 0.38;
+}
+
+.activity-icon-inner {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Ring colours per kind, from the design system's ACTIVITY_SPECS (the same family as .cat-avatar). */
+.activity-icon.agent     { --ring: var(--rb-orange);     --glow: rgba(255, 122, 26, 0.55); }
+.activity-icon.subagent  { --ring: var(--rb-orange-300); --glow: rgba(255, 155, 77, 0.50); }
+.activity-icon.a2a       { --ring: var(--rb-eye-glow);   --glow: rgba(58, 184, 255, 0.55); }
+.activity-icon.scheduled { --ring: var(--rb-warning);    --glow: rgba(251, 191, 36, 0.55); }
+
+.activity-icon.active {
+    background: rgba(10, 18, 32, 0.55);
+    border-color: var(--ring);
+    color: var(--ring);
+    box-shadow: 0 0 8px var(--glow), inset 0 0 4px rgba(0, 0, 0, 0.2);
+    animation: rb-activity-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes rb-activity-pulse {
+    0%, 100% { box-shadow: 0 0 6px var(--glow), inset 0 0 4px rgba(0, 0, 0, 0.2); }
+    50%      { box-shadow: 0 0 14px var(--glow), inset 0 0 4px rgba(0, 0, 0, 0.2); }
+}
+
+.activity-icon-count {
+    position: absolute;
+    top: -4px;
+    right: -5px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3px;
+    border-radius: 999px;
+    background: var(--ring);
+    color: var(--rb-night);
+    font-size: 9px;
+    font-weight: var(--rb-weight-bold);
+    line-height: 15px;
+    text-align: center;
+    box-shadow: 0 0 0 1.5px var(--rb-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .activity-icon.active,
+    .spinner-border {
+        animation-duration: 0s;
+        animation-iteration-count: 1;
+    }
+}
+
+/* ── Message rows and avatars ──────────────────────────────────────────── */
+
 .message-wrapper {
     display: flex;
-    margin-bottom: 1rem;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: var(--rb-space-4);
 }
 
 .message-wrapper.user-message {
@@ -48,58 +323,202 @@ body {
     justify-content: flex-start;
 }
 
-.message-bubble {
-    max-width: 70%;
-    word-wrap: break-word;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-    position: relative;
-    padding-top: 1.5rem !important;
+/* RockBot speaking: orange ring on night navy. */
+.agent-avatar,
+.cat-avatar,
+.avatar-slot {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    margin-top: 2px;
 }
 
-.user-message .message-bubble {
-    background-color: var(--user-message-bg);
-    color: white;
+.agent-avatar,
+.cat-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--rb-night);
+}
+
+.agent-avatar {
+    border: 2px solid var(--rb-agent-accent);
+    color: var(--rb-agent-accent);
+    font-size: 11px;
+    font-weight: var(--rb-weight-bold);
+    letter-spacing: 0.04em;
+}
+
+.cat-avatar.subagent  { border: 2px solid var(--rb-orange);      color: var(--rb-orange-300); }
+.cat-avatar.a2a       { border: 2px solid var(--rb-blue);        color: var(--rb-eye-glow); }
+.cat-avatar.scheduled { border: 2px solid var(--rb-cat-scheduled-accent);               color: var(--rb-warning); }
+.cat-avatar.saved     { border: 2px solid var(--rb-saved-border); color: var(--rb-saved-glyph); }
+
+/* ── Bubbles ────────────────────────────────────────────────────────────── */
+
+.message-bubble {
+    position: relative;
+    max-width: 70%;
+    min-width: 0;
+    padding: 1.4rem 1rem 0.75rem;
+    border-radius: var(--rb-radius-bubble);
+    overflow-wrap: break-word;
+    box-shadow: var(--rb-shadow-hairline);
+    font-size: 0.975rem;
+    line-height: var(--rb-leading-normal);
 }
 
 .agent-message .message-bubble {
-    background-color: white;
-    color: #212529;
-    border: 1px solid var(--border-color);
+    background-color: var(--rb-bg);
+    color: var(--rb-fg);
+    border: 1px solid var(--rb-border);
 }
 
-/* Interim/progress messages (IsFinal=false): muted but legible in both themes.
-   Used for subagent status updates, A2A working state, and raw completion previews. */
-.agent-message .message-bubble.interim-message {
-    background-color: #f8f9fa;
-    color: #6c757d;
-    border: 1px dashed #ced4da;
+/* RockBot's own replies: the orange left edge carries the brand inside the product. */
+.message-bubble.agent-reply {
+    border-left: 3px solid var(--rb-agent-accent);
+    border-radius: 4px var(--rb-radius-bubble) var(--rb-radius-bubble) var(--rb-radius-bubble);
+}
+
+.message-bubble.user-bubble {
+    background-color: var(--rb-primary-600);
+    border: 1px solid var(--rb-primary-600);
+    color: var(--rb-fg-on-primary);
+}
+
+/* Interim lines and the thinking indicator: dashed, orange-tinted, italic. */
+.message-bubble.interim-message {
+    background-color: var(--rb-cat-subagent-bg);
+    border: 1px dashed var(--rb-interim-border);
+    color: var(--rb-interim-fg);
+    font-style: italic;
     box-shadow: none;
 }
 
+.message-bubble.thinking-bubble {
+    padding: 0.6rem 1rem;
+}
+
+.thinking-indicator {
+    display: flex;
+    align-items: center;
+    gap: var(--rb-space-2);
+}
+
+.thinking-indicator .spinner-border {
+    color: var(--rb-orange);
+}
+
+.category-badge.thinking-badge {
+    background-color: var(--rb-cat-subagent-badge-bg);
+    color: var(--rb-cat-subagent-badge-fg);
+    font-style: normal;
+}
+
+.message-bubble.error-message {
+    background-color: var(--rb-danger);
+    border: 1px solid var(--rb-danger);
+    color: var(--rb-fg-on-primary);
+}
+
+.message-agent-name {
+    margin-bottom: var(--rb-space-2);
+    font-size: var(--rb-text-sm);
+    font-weight: var(--rb-weight-semi);
+}
+
+.interim-message .message-agent-name {
+    font-weight: var(--rb-weight-regular);
+}
+
+.message-time {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.75rem;
+    font-size: var(--rb-text-xs);
+    opacity: 0.7;
+}
+
+.user-bubble .message-time {
+    opacity: 0.9;
+}
+
+/* ── Message content (rendered markdown) ───────────────────────────────── */
+
 .message-content {
-    line-height: 1.5;
+    line-height: var(--rb-leading-normal);
 }
 
 .message-content p:last-child {
     margin-bottom: 0;
 }
 
-/* Native reply attachments — rendered outside the markdown sanitizer. */
+/* Inline code takes the text colour (Bootstrap's pink would be a fifth colour). */
+.message-content code {
+    padding: 1px 5px;
+    border-radius: var(--rb-radius-xs);
+    background-color: rgba(0, 0, 0, 0.05);
+    color: inherit;
+    font-size: 0.9em;
+}
+
+.message-content pre {
+    margin: var(--rb-space-2) 0;
+    padding: 10px 12px;
+    border-radius: var(--rb-radius-md);
+    background-color: var(--rb-bg-code);
+    color: var(--rb-fg);
+    font-size: 0.85em;
+    overflow-x: auto;
+}
+
+.message-content pre code {
+    padding: 0;
+    background-color: transparent;
+    font-size: inherit;
+}
+
+/* Links on blue (user) and red (error) bubbles must be white to stay visible. */
+.user-bubble .message-content a,
+.error-message .message-content a {
+    color: rgba(255, 255, 255, 0.92);
+    text-decoration: underline;
+}
+
+.user-bubble .message-content a:hover,
+.error-message .message-content a:hover {
+    color: var(--rb-fg-on-primary);
+}
+
+.user-bubble .message-content code {
+    background-color: rgba(255, 255, 255, 0.18);
+}
+
+.user-bubble .message-content pre {
+    background-color: rgba(0, 0, 0, 0.25);
+    color: var(--rb-fg-on-primary);
+}
+
+/* ── Attachments (rendered outside the markdown sanitizer) ─────────────── */
+
 .message-attachments {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--rb-space-2);
 }
 
 .message-attachments .attachment-image {
     max-width: 100%;
     height: auto;
     border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.1);
+    border: 1px solid var(--rb-border);
 }
 
 .message-attachments .attachment-link {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
     width: fit-content;
 }
 
@@ -108,21 +527,21 @@ body {
 .message-attachments .attachment-preview {
     width: 720px;
     max-width: 100%;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border: 1px solid var(--rb-border);
     border-radius: 6px;
     overflow: hidden;
-    background: #fff;
+    background: var(--rb-bg);
 }
 
 .message-attachments .attachment-preview-bar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--rb-space-3);
     padding: 0.25rem 0.6rem;
-    font-size: 0.85rem;
-    background: rgba(0, 0, 0, 0.04);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    font-size: var(--rb-text-sm);
+    background: var(--rb-bg-subtle);
+    border-bottom: 1px solid var(--rb-border);
 }
 
 .message-attachments .attachment-preview-title {
@@ -142,332 +561,227 @@ body {
     border: 0;
 }
 
-/* Links inside user bubbles (blue bg) must be white to stay visible */
-.user-message .message-bubble .message-content a {
-    color: rgba(255, 255, 255, 0.9);
-    text-decoration: underline;
-}
+/* ── Feedback bar ───────────────────────────────────────────────────────── */
 
-.user-message .message-bubble .message-content a:hover {
-    color: white;
-}
-
-/* Links inside error bubbles (red bg) — same issue */
-.message-bubble.bg-danger .message-content a {
-    color: rgba(255, 255, 255, 0.9);
-    text-decoration: underline;
-}
-
-.message-bubble.bg-danger .message-content a:hover {
-    color: white;
-}
-
-.message-content code {
-    background-color: rgba(0, 0, 0, 0.05);
-    padding: 2px 4px;
-    border-radius: 3px;
-    font-family: 'Courier New', monospace;
-}
-
-.message-content pre {
-    background-color: #f6f8fa;
-    padding: 10px;
-    border-radius: 5px;
-    overflow-x: auto;
-}
-
-.message-content pre code {
-    background-color: transparent;
-    padding: 0;
-}
-
-.message-time {
-    position: absolute;
-    top: 0.25rem;
-    right: 0.5rem;
-    font-size: 0.7rem;
-    opacity: 0.65;
-}
-
-.thinking-indicator {
-    display: flex;
-    align-items: center;
-    color: #6c757d;
-}
-
-.chat-input {
-    box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.1);
-    z-index: 10;
-}
-
-.chat-input textarea {
-    field-sizing: content;
-    min-height: 38px;
-    max-height: 150px;
-    overflow-y: auto;
-    resize: none;
-    line-height: 1.5;
-}
-
-.chat-input textarea:focus {
-    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
-}
-
-/* Connection status indicator */
-.connection-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    display: inline-block;
-    flex-shrink: 0;
-}
-
-.connection-dot.connected {
-    background-color: #4ade80;
-    box-shadow: 0 0 4px #4ade80;
-}
-
-.connection-dot.disconnected {
-    background-color: #f87171;
-    box-shadow: 0 0 4px #f87171;
-}
-
-/* ── Header status indicators ────────────────────────────────────────── */
-
-.status-indicator {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.85rem;
-    line-height: 1;
-    cursor: default;
-}
-
-.status-indicator.agent-busy .spinner-border {
-    width: 14px;
-    height: 14px;
-    border-width: 2px;
-    color: #fbbf24;
-}
-
-.status-indicator.subagent-indicator,
-.status-indicator.task-indicator,
-.status-indicator.a2a-indicator {
-    animation: status-pulse 2s ease-in-out infinite;
-}
-
-@keyframes status-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-}
-
-/* Dark mode support */
-body.dark-mode {
-    background-color: var(--dark-bg);
-    color: white;
-}
-
-body.dark-mode .chat-container {
-    background-color: var(--dark-bg);
-}
-
-body.dark-mode .chat-messages {
-    background-color: #1a1a1a;
-}
-
-body.dark-mode .message-content code {
-    background-color: rgba(255, 255, 255, 0.1);
-    color: #e8e8e8;
-}
-
-body.dark-mode .message-content pre {
-    background-color: #1a1a1a;
-    color: #e8e8e8;
-    border: 1px solid #444;
-}
-
-body.dark-mode .message-content pre code {
-    background-color: transparent;
-}
-
-body.dark-mode .agent-message .message-bubble {
-    background-color: #2d2d2d;
-    color: white;
-    border-color: #444;
-}
-
-body.dark-mode .agent-message .message-bubble.interim-message {
-    background-color: #1e1e1e;
-    color: #9ca3af;
-    border: 1px dashed #4b5563;
-    box-shadow: none;
-}
-
-body.dark-mode .chat-input {
-    background-color: #2d2d2d;
-    border-top-color: #444;
-}
-
-body.dark-mode .form-control {
-    background-color: #1a1a1a;
-    border-color: #444;
-    color: white;
-}
-
-body.dark-mode .form-control:focus {
-    background-color: #1a1a1a;
-    color: white;
-}
-
-/* Responsive design */
-@media (max-width: 768px) {
-    .message-bubble {
-        max-width: 85%;
-    }
-    
-    .chat-header h1 {
-        font-size: 1.25rem;
-    }
-}
-
-@media (max-width: 576px) {
-    .message-bubble {
-        max-width: 90%;
-    }
-    
-    .chat-messages {
-        padding: 0.5rem;
-    }
-    
-    .chat-input {
-        padding: 0.5rem;
-    }
-}
-
-/* Feedback thumbs */
 .feedback-bar {
     display: flex;
-    gap: 0.25rem;
-    margin-top: 0.5rem;
+    gap: 4px;
+    margin-top: var(--rb-space-2);
     padding-top: 0.4rem;
-    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    border-top: 1px solid var(--rb-divider);
 }
 
 .btn-feedback {
-    background: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px 6px;
     border: none;
-    padding: 2px 6px;
-    cursor: pointer;
-    font-size: 0.95rem;
-    opacity: 0.35;
-    border-radius: 4px;
-    transition: opacity 0.15s, background-color 0.15s;
+    border-radius: var(--rb-radius-sm);
+    background: none;
+    color: var(--rb-fg-muted);
     line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease;
 }
 
 .btn-feedback:hover:not(:disabled) {
-    opacity: 0.85;
+    color: var(--rb-fg);
     background-color: rgba(0, 0, 0, 0.06);
 }
 
 .btn-feedback.active {
-    opacity: 1;
+    color: var(--rb-primary-700);
+    background-color: rgba(13, 110, 253, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(13, 110, 253, 0.35);
 }
 
 .btn-feedback:disabled {
     cursor: default;
 }
 
-/* Monochrome SVG icons need more opacity than colored emoji to read at the same weight */
-.btn-feedback:has(svg) {
-    opacity: 0.7;
+.btn-feedback:disabled:not(.active) {
+    opacity: 0.45;
 }
 
-/* In dark mode, tint the SVG orange so it stands out against the dark bubble */
-body.dark-mode .btn-feedback svg {
-    color: #fb923c;
+/* Save is the saved-reference indigo, so it reads as "keep this", not as a vote. */
+.btn-feedback.save-btn {
+    margin-left: auto;
+    color: var(--rb-saved-border);
 }
 
-body.dark-mode .feedback-bar {
-    border-top-color: rgba(255, 255, 255, 0.1);
+.btn-feedback.save-btn.active {
+    background-color: rgba(99, 102, 241, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.4);
 }
 
-body.dark-mode .btn-feedback:hover:not(:disabled) {
-    background-color: rgba(255, 255, 255, 0.08);
+.save-label-input {
+    display: flex;
+    gap: var(--rb-space-1);
+    margin-top: var(--rb-space-1);
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--rb-divider);
 }
 
-/* Accessibility */
-.btn:focus,
-.form-control:focus {
-    outline: 2px solid var(--primary-color);
-    outline-offset: 2px;
+.save-label-input input {
+    max-width: 220px;
 }
 
-/* Loading animation */
-@keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+/* ── Category badges, shared by every collapsible bubble ───────────────── */
+
+.category-badge {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: var(--rb-radius-sm);
+    font-size: var(--rb-text-xs);
+    font-weight: var(--rb-weight-semi);
+    font-style: normal;
+    text-transform: uppercase;
+    letter-spacing: var(--rb-tracking-caps);
 }
 
-.spinner-border {
-    animation: spin 1s linear infinite;
+.category-subagentactivity .category-badge {
+    background-color: var(--rb-cat-subagent-badge-bg);
+    color: var(--rb-cat-subagent-badge-fg);
 }
 
-/* ── Activity log bubble ──────────────────────────────────────────────── */
+.category-a2aactivity .category-badge {
+    background-color: var(--rb-cat-a2a-badge-bg);
+    color: var(--rb-cat-a2a-badge-fg);
+}
 
-.activity-log-bubble {
-    max-width: 70%;
-    background-color: #f0f1f3;
-    border: 1px solid #d1d5db;
+.category-scheduledsystem .category-badge {
+    background-color: var(--rb-cat-scheduled-badge-bg);
+    color: var(--rb-cat-scheduled-badge-fg);
+}
+
+.chevron-indicator {
+    flex-shrink: 0;
+    color: var(--rb-fg-subtle);
+    transition: transform 0.2s ease;
+}
+
+.chevron-indicator.open {
+    transform: rotate(90deg);
+}
+
+/* ── Collapsible bubbles (subagent, A2A, scheduled) ────────────────────── */
+
+.message-bubble.collapsible-bubble,
+.message-bubble.activity-log-bubble {
+    border: 1px dashed var(--rb-border-dashed);
+    background-color: var(--rb-cat-neutral-bg);
+    box-shadow: none;
+    color: var(--rb-fg);
+}
+
+.message-bubble.collapsible-bubble.collapsed {
+    padding: 0.55rem 0.9rem;
+}
+
+.message-bubble.category-subagentactivity {
+    background-color: var(--rb-cat-subagent-bg);
+    border-color: var(--rb-interim-border);
+}
+
+.message-bubble.category-a2aactivity {
+    background-color: var(--rb-cat-a2a-bg);
+}
+
+.message-bubble.category-scheduledsystem {
+    background-color: var(--rb-cat-scheduled-bg);
+}
+
+.collapsible-header {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: var(--rb-text-sm);
+    color: var(--rb-fg-muted-on-tint);
     cursor: pointer;
-    transition: background-color 0.15s;
 }
 
-.activity-log-bubble:hover {
-    background-color: #e5e7eb;
+.collapsible-header:hover {
+    color: var(--rb-fg);
+}
+
+.collapsible-agent-name {
+    flex-shrink: 0;
+    font-weight: var(--rb-weight-medium);
+    color: var(--rb-fg-secondary);
+}
+
+.collapsible-preview {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--rb-fg-muted-on-tint);
+    font-style: italic;
+}
+
+/* ── Activity log ───────────────────────────────────────────────────────── */
+
+.message-bubble.activity-log-bubble {
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.message-bubble.activity-log-bubble:hover {
+    background-color: var(--rb-cat-neutral-bg-hover);
 }
 
 .activity-log-header {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
-    font-size: 0.85rem;
-    color: #6b7280;
+    gap: 0.4rem;
+    min-width: 0;
+    font-size: var(--rb-text-sm);
+    color: var(--rb-fg-muted-on-tint);
+}
+
+.activity-log-header .spinner-border {
+    width: 0.85rem;
+    height: 0.85rem;
+    border-width: 2px;
+    color: var(--rb-orange);
 }
 
 .activity-log-summary {
-    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    flex: 1;
+    white-space: nowrap;
 }
 
 .activity-log-count {
     flex-shrink: 0;
     font-size: 0.75rem;
-    color: #9ca3af;
 }
 
 .activity-log-entries {
-    margin-top: 0.5rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid #d1d5db;
     max-height: 300px;
+    margin-top: var(--rb-space-2);
+    padding-top: var(--rb-space-2);
+    border-top: 1px solid var(--rb-divider);
     overflow-y: auto;
-    font-family: 'Courier New', monospace;
+    font-family: var(--font-mono);
     font-size: 0.8rem;
 }
 
 .activity-log-entry {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--rb-space-2);
     padding: 0.15rem 0;
-    color: #4b5563;
+    color: var(--rb-fg-secondary);
 }
 
 .entry-time {
     flex-shrink: 0;
-    color: #9ca3af;
+    color: var(--rb-fg-muted-on-tint);
     font-size: 0.75rem;
 }
 
@@ -475,245 +789,76 @@ body.dark-mode .btn-feedback:hover:not(:disabled) {
     word-break: break-word;
 }
 
-/* ── Collapsible bubbles (subagent, A2A, scheduled-system) ──────────── */
+/* Tool-call cards inside the log (#795). */
+.tool-call-card { display: inline-block; vertical-align: top; }
+.tool-call-card summary { cursor: pointer; }
+.tool-call-name { font-family: var(--font-mono); }
+.tool-call-duration { margin-left: 0.5em; color: var(--rb-fg-muted-on-tint); font-size: 0.85em; }
+.tool-call-failed .tool-call-status, .tool-call-error { color: var(--rb-danger); }
+.tool-call-finished .tool-call-status { color: var(--rb-success-fg); }
+.tool-call-field { margin: 0.15em 0 0 1.2em; white-space: pre-wrap; word-break: break-word; }
+.tool-call-label { font-weight: var(--rb-weight-semi); margin-right: 0.3em; }
 
-.collapsible-bubble {
-    max-width: 70%;
-    border: 1px dashed #ced4da;
-    box-shadow: none;
-    transition: opacity 0.15s, background-color 0.15s;
-}
+/* ── Saved reference ───────────────────────────────────────────────────── */
 
-.collapsible-bubble.collapsed {
-    opacity: 0.75;
-    padding-top: 0.6rem !important;
-    padding-bottom: 0.6rem !important;
-}
-
-.collapsible-header {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    cursor: pointer;
-    font-size: 0.85rem;
-    color: #6b7280;
-}
-
-.collapsible-header:hover {
-    color: #374151;
-}
-
-.category-badge {
-    display: inline-block;
-    padding: 0.1rem 0.45rem;
-    border-radius: 0.25rem;
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
-}
-
-.collapsible-agent-name {
-    font-weight: 500;
-    color: #4b5563;
-}
-
-.collapsible-preview {
-    flex: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: #9ca3af;
-    font-style: italic;
-}
-
-/* Category-specific tints */
-.category-subagentactivity .category-badge {
-    background-color: #e5e7eb;
-    color: #4b5563;
-}
-
-.category-a2aactivity .category-badge {
-    background-color: #dbeafe;
-    color: #1d4ed8;
-}
-
-.category-scheduledsystem .category-badge {
-    background-color: #fef3c7;
-    color: #92400e;
-}
-
-.category-subagentactivity {
-    background-color: #fafafa;
-}
-
-.category-a2aactivity {
-    background-color: #f8faff;
-}
-
-.category-scheduledsystem {
-    background-color: #fffdf5;
-}
-
-/* ── Shared chevron indicator ─────────────────────────────────────────── */
-
-.chevron-indicator {
-    display: inline-block;
-    font-size: 0.6rem;
-    transition: transform 0.2s ease;
-    flex-shrink: 0;
-    color: #9ca3af;
-}
-
-.chevron-indicator.open {
-    transform: rotate(90deg);
-}
-
-/* ── Dark mode: activity log ──────────────────────────────────────────── */
-
-body.dark-mode .activity-log-bubble {
-    background-color: #1e1e1e;
-    border-color: #4b5563;
-    color: #d1d5db;
-}
-
-body.dark-mode .activity-log-bubble:hover {
-    background-color: #262626;
-}
-
-body.dark-mode .activity-log-header {
-    color: #9ca3af;
-}
-
-body.dark-mode .activity-log-entries {
-    border-top-color: #4b5563;
-}
-
-body.dark-mode .activity-log-entry {
-    color: #9ca3af;
-}
-
-body.dark-mode .entry-time {
-    color: #6b7280;
-}
-
-body.dark-mode .activity-log-count {
-    color: #6b7280;
-}
-
-/* ── Dark mode: collapsible bubbles ──────────────────────────────────── */
-
-body.dark-mode .collapsible-bubble {
-    border-color: #4b5563;
-}
-
-body.dark-mode .collapsible-header {
-    color: #9ca3af;
-}
-
-body.dark-mode .collapsible-header:hover {
-    color: #d1d5db;
-}
-
-body.dark-mode .collapsible-agent-name {
-    color: #9ca3af;
-}
-
-body.dark-mode .collapsible-preview {
-    color: #6b7280;
-}
-
-body.dark-mode .category-subagentactivity {
-    background-color: #1a1a1a;
-}
-
-body.dark-mode .category-subagentactivity .category-badge {
-    background-color: #374151;
-    color: #d1d5db;
-}
-
-body.dark-mode .category-a2aactivity {
-    background-color: #1a1d2e;
-}
-
-body.dark-mode .category-a2aactivity .category-badge {
-    background-color: #1e3a5f;
-    color: #93c5fd;
-}
-
-body.dark-mode .category-scheduledsystem {
-    background-color: #1f1d14;
-}
-
-body.dark-mode .category-scheduledsystem .category-badge {
-    background-color: #44380d;
-    color: #fcd34d;
-}
-
-body.dark-mode .chevron-indicator {
-    color: #6b7280;
-}
-
-/* ── Saved reference bubble ─────────────────────────────────────────── */
-
-.saved-reference-bubble {
-    max-width: 70%;
-    border: 2px solid #6366f1;
-    background-color: #f5f3ff;
-    box-shadow: 0 1px 3px rgba(99, 102, 241, 0.15);
+.message-bubble.saved-reference-bubble {
+    border: 2px solid var(--rb-saved-border);
+    border-radius: var(--rb-radius-xl);
+    background-color: var(--rb-saved-bg);
+    box-shadow: var(--rb-shadow-saved);
+    padding-top: 0.75rem;
 }
 
 .saved-badge-header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.25rem;
+    gap: var(--rb-space-2);
+    margin-bottom: var(--rb-space-1);
 }
 
-.saved-badge {
-    background-color: #6366f1;
-    color: white;
+.category-badge.saved-badge {
+    background-color: var(--rb-saved-badge-bg);
+    color: var(--rb-fg-on-primary);
 }
 
 .saved-label {
-    font-weight: 500;
-    font-size: 0.85rem;
-    color: #4b5563;
     flex: 1;
+    font-size: var(--rb-text-sm);
+    font-weight: var(--rb-weight-medium);
+    color: var(--rb-saved-fg);
 }
 
-/* ── MCP question bubble (a server's question, answered in a form) ─── */
+/* ── MCP question (a server's question, answered in a form) ────────────── */
 
-/* Qualified past `.agent-message .message-bubble`, which would otherwise win. */
-.agent-message .message-bubble.mcp-question-bubble {
-    border: 2px solid #0d9488;
-    background-color: #f0fdfa;
-    box-shadow: 0 1px 3px rgba(13, 148, 136, 0.15);
+/* Asking the user something is interaction, so it is blue. */
+.message-bubble.mcp-question-bubble {
+    border: 2px solid var(--rb-primary);
+    border-radius: var(--rb-radius-xl);
+    background-color: var(--rb-question-bg);
 }
 
 .mcp-question-header {
     display: flex;
     align-items: baseline;
     gap: 0.4rem;
-    margin-bottom: 0.4rem;
     min-width: 0;
+    margin-bottom: 0.4rem;
 }
 
-/* Darker than the border: white at the badge's small size needs 4.5:1 (this is ~5.5:1). */
-.mcp-question-badge {
-    background-color: #0f766e;
-    color: white;
+.category-badge.mcp-question-badge {
+    background-color: var(--rb-primary-700);
+    color: var(--rb-fg-on-primary);
 }
 
 .mcp-question-server {
-    font-weight: 600;
+    font-weight: var(--rb-weight-semi);
     font-size: 0.9rem;
     overflow-wrap: anywhere;
 }
 
 .mcp-question-tool {
     font-size: 0.8rem;
-    color: #6b7280;
+    color: var(--rb-fg-muted-on-tint);
     overflow-wrap: anywhere;
 }
 
@@ -723,82 +868,282 @@ body.dark-mode .chevron-indicator {
 }
 
 .mcp-question-form fieldset {
-    border: 0;
+    min-width: 0;
     margin: 0;
     padding: 0;
-    min-width: 0;
+    border: 0;
 }
 
 .mcp-question-required {
-    color: #dc3545;
     margin-left: 0.15rem;
+    color: var(--rb-danger);
 }
 
 .mcp-question-decision {
     margin-left: 0.4rem;
-    font-size: 0.75rem;
     padding: 0 0.35rem;
-    border-radius: 0.25rem;
-    background-color: #fef3c7;
-    color: #92400e;
+    border-radius: var(--rb-radius-sm);
+    background-color: var(--rb-cat-scheduled-badge-bg);
+    color: var(--rb-cat-scheduled-badge-fg);
+    font-size: 0.75rem;
 }
 
 .mcp-question-error {
-    color: #b91c1c;
     margin-top: 0.15rem;
+    color: var(--rb-danger-fg);
 }
 
 .mcp-question-closed {
-    color: #4b5563;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--rb-divider);
+    color: var(--rb-fg-secondary);
     font-style: italic;
-    padding-top: 0.4rem;
-    border-top: 1px solid rgba(0, 0, 0, 0.08);
 }
 
-/* ── Save label input ───────────────────────────────────────────────── */
+/* ── MCP sign-in banner (under the header) ─────────────────────────────── */
 
-.save-label-input {
-    padding-top: 0.4rem;
-    border-top: 1px solid rgba(0, 0, 0, 0.08);
+.mcp-signin-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--rb-space-3);
+    padding: var(--rb-space-2) var(--rb-space-4);
+    border-bottom: 1px solid var(--rb-warning-border);
+    background-color: var(--rb-cat-scheduled-badge-bg);
+    color: var(--rb-cat-scheduled-badge-fg);
+    font-size: 0.9rem;
 }
 
-.save-label-input input {
-    max-width: 200px;
+.mcp-signin-note {
+    margin-left: var(--rb-space-2);
+    font-size: var(--rb-text-sm);
 }
 
-/* ── Saved items modal ──────────────────────────────────────────────── */
+.mcp-signin-error {
+    margin-top: var(--rb-space-1);
+    color: var(--rb-danger-fg);
+    font-size: var(--rb-text-sm);
+}
+
+.mcp-signin-actions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: var(--rb-space-2);
+}
+
+.mcp-signin-actions .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+/* Bootstrap's link blue is under 4.5:1 on the amber banner; use the banner's own text colour. */
+.mcp-signin-actions .btn-link {
+    color: var(--rb-cat-scheduled-badge-fg);
+}
+
+/* ── Plan panel (#795) ─────────────────────────────────────────────────── */
+
+.plan-panel {
+    flex: 0 0 auto;
+    max-height: 30vh;
+    overflow-y: auto;
+    padding: var(--rb-space-2) var(--rb-space-4);
+    border-top: 1px solid var(--rb-border);
+    background-color: var(--rb-bg-subtle);
+    font-size: 0.9em;
+}
+
+.plan-list + .plan-list { margin-top: 0.5em; }
+.plan-title { font-weight: var(--rb-weight-semi); }
+.plan-progress { margin-left: 0.5em; color: var(--rb-fg-muted-on-tint); font-weight: normal; }
+.plan-item { display: flex; gap: 0.5em; align-items: baseline; margin-left: 0.5em; }
+.plan-item input { accent-color: var(--rb-primary); }
+.plan-item-in-progress { font-weight: var(--rb-weight-semi); }
+.plan-item-in-progress span { box-shadow: inset 0 -2px 0 var(--rb-orange); }
+.plan-item-completed span { text-decoration: line-through; color: var(--rb-fg-muted-on-tint); }
+
+/* ── Composer ───────────────────────────────────────────────────────────── */
+
+.composer {
+    flex: 0 0 auto;
+    container-type: inline-size;
+    padding: var(--rb-space-4);
+    border-top: 1px solid var(--rb-border);
+    background-color: var(--rb-bg-subtle);
+    box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05);
+    z-index: 10;
+}
+
+.composer-row {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--rb-space-2);
+}
+
+.composer textarea {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 44px;
+    max-height: 160px;
+    padding: 10px 12px;
+    field-sizing: content;
+    resize: none;
+    overflow-y: auto;
+    border: 1px solid var(--rb-border);
+    border-radius: 6px;
+    background-color: var(--rb-bg);
+    color: var(--rb-fg);
+    font: inherit;
+    font-size: 0.975rem;
+    line-height: 1.4;
+}
+
+.btn-send,
+.btn-ghost {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 44px;
+    border-radius: 6px;
+    font: inherit;
+    font-weight: var(--rb-weight-medium);
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.btn-send {
+    padding: 0 18px;
+    border: none;
+    background-color: var(--rb-primary-600);
+    color: var(--rb-fg-on-primary);
+}
+
+.btn-send:hover:not(:disabled) {
+    background-color: var(--rb-primary-700);
+}
+
+.btn-send:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-ghost {
+    padding: 0 12px;
+    border: 1px solid var(--rb-border);
+    background: transparent;
+    color: var(--rb-fg-muted-on-tint);
+}
+
+.btn-ghost:hover {
+    background-color: rgba(0, 0, 0, 0.04);
+}
+
+.composer-attach.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.composer-attach:focus-within {
+    outline: 2px solid var(--rb-primary);
+    outline-offset: 2px;
+}
+
+.composer-cancel {
+    min-width: 80px;
+}
+
+/* Wide labels by default; icon-only when the composer itself is narrow. */
+.label-narrow { display: none; }
+
+@container (max-width: 480px) {
+    .composer-row { gap: 0.375rem; }
+    .composer textarea { padding: 10px; font-size: 0.95rem; }
+    .label-wide { display: none; }
+    .label-narrow { display: inline-block; }
+    .btn-send { width: 44px; padding: 0; }
+    .composer-cancel { min-width: 40px; width: 40px; padding: 0; }
+}
+
+.staged-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--rb-space-2);
+    margin-bottom: var(--rb-space-2);
+}
+
+.staged-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    max-width: 100%;
+    padding: 2px 4px 2px 8px;
+    border: 1px solid var(--rb-border);
+    border-radius: 999px;
+    background-color: var(--rb-bg);
+    color: var(--rb-fg);
+    font-size: 0.8rem;
+}
+
+.staged-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.staged-chip-remove {
+    display: inline-flex;
+    padding: 2px;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--rb-fg-muted-on-tint);
+    cursor: pointer;
+}
+
+.staged-chip-remove:hover {
+    background-color: rgba(0, 0, 0, 0.08);
+    color: var(--rb-fg);
+}
+
+.staged-status { font-size: var(--rb-text-sm); color: var(--rb-fg-muted-on-tint); }
+.staged-error { font-size: var(--rb-text-sm); color: var(--rb-danger-fg); }
+
+/* ── Saved responses modal ─────────────────────────────────────────────── */
 
 .modal-overlay {
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.5);
+    inset: 0;
     z-index: 1000;
     display: flex;
     align-items: center;
     justify-content: center;
+    background-color: rgba(0, 0, 0, 0.5);
 }
 
 .saved-modal {
-    background: white;
-    border-radius: 0.5rem;
-    padding: 1.5rem;
-    max-width: 500px;
     width: 90%;
+    max-width: 500px;
     max-height: 70vh;
     overflow-y: auto;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    padding: var(--rb-space-5);
+    border-radius: var(--rb-radius-lg);
+    background: var(--rb-bg);
+    color: var(--rb-fg);
+    box-shadow: var(--rb-shadow-modal);
 }
 
 .saved-item {
-    transition: background-color 0.15s;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--rb-border-muted);
+    transition: background-color 0.15s ease;
 }
 
 .saved-item:hover {
-    background-color: #f3f4f6;
+    background-color: var(--rb-bg-subtle);
 }
 
 .saved-item-info {
@@ -807,138 +1152,99 @@ body.dark-mode .chevron-indicator {
 }
 
 .saved-item-meta {
-    color: #6b7280;
+    color: var(--rb-fg-muted-on-tint);
+}
+
+.row-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--rb-border);
+    border-radius: var(--rb-radius-sm);
+    background: transparent;
+    color: var(--rb-fg-muted-on-tint);
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.row-icon-btn:hover {
+    background-color: var(--rb-primary-100);
+    color: var(--rb-primary-700);
+}
+
+.row-icon-btn.danger:hover {
+    background-color: var(--rb-danger-100);
+    color: var(--rb-danger-700);
 }
 
 .saved-view-header {
-    margin-bottom: 0.75rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: var(--rb-space-3);
+    padding-bottom: var(--rb-space-2);
+    border-bottom: 1px solid var(--rb-border-muted);
 }
 
 .saved-view-header h5 {
-    margin-bottom: 0.25rem;
+    margin-bottom: var(--rb-space-1);
 }
 
 .saved-view-content {
     max-height: 50vh;
     overflow-y: auto;
-    padding: 0.75rem;
-    background: #f9fafb;
-    border-radius: 0.375rem;
-    border: 1px solid #e5e7eb;
+    padding: var(--rb-space-3);
+    border: 1px solid var(--rb-border-muted);
+    border-radius: 6px;
+    background: var(--rb-bg-subtle);
     font-size: 0.9rem;
     line-height: 1.6;
 }
 
-/* ── Dark mode: saved reference ─────────────────────────────────────── */
+/* ── Focus: 2px primary outline, 2px offset, everywhere ────────────────── */
 
-body.dark-mode .saved-reference-bubble {
-    background-color: #1e1b3a;
-    border-color: #818cf8;
-    color: #e5e7eb;
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.conn-pill:focus-visible,
+.btn-send:focus-visible,
+.btn-ghost:focus-visible,
+.btn-feedback:focus-visible,
+.row-icon-btn:focus-visible,
+.staged-chip-remove:focus-visible,
+.login-btn:focus-visible,
+.collapsible-header:focus-visible,
+.activity-log-header:focus-visible,
+.saved-modal:focus-visible,
+.form-control:focus,
+.form-select:focus {
+    outline: 2px solid var(--rb-primary);
+    outline-offset: 2px;
 }
 
-body.dark-mode .saved-label {
-    color: #c4b5fd;
+/* On the blue header the ring is white, or it would vanish into the bar. */
+.chat-header .icon-btn:focus-visible,
+.chat-header .conn-pill:focus-visible {
+    outline-color: var(--rb-fg-on-primary);
 }
 
-body.dark-mode .saved-modal {
-    background: #2d2d2d;
-    color: #e5e7eb;
+.composer textarea:focus {
+    border-color: var(--rb-primary);
+    box-shadow: 0 0 0 0.25rem var(--rb-primary-focus);
 }
 
-body.dark-mode .saved-item {
-    border-color: #4b5563;
+/* ── Spinner ────────────────────────────────────────────────────────────── */
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
 }
 
-body.dark-mode .saved-item:hover {
-    background-color: #374151;
+.spinner-border {
+    animation: spin 1s linear infinite;
 }
 
-body.dark-mode .saved-item-meta {
-    color: #9ca3af;
-}
-
-body.dark-mode .saved-view-header {
-    border-bottom-color: #4b5563;
-}
-
-body.dark-mode .saved-view-content {
-    background: #1f2937;
-    border-color: #4b5563;
-    color: #e5e7eb;
-}
-
-body.dark-mode .save-label-input {
-    border-top-color: rgba(255, 255, 255, 0.1);
-}
-
-/* ── Dark mode: MCP question ────────────────────────────────────────── */
-
-body.dark-mode .agent-message .message-bubble.mcp-question-bubble {
-    background-color: #102a28;
-    border-color: #2dd4bf;
-    color: #e5e7eb;
-}
-
-body.dark-mode .mcp-question-tool,
-body.dark-mode .mcp-question-closed {
-    color: #9ca3af;
-}
-
-body.dark-mode .mcp-question-closed {
-    border-top-color: rgba(255, 255, 255, 0.1);
-}
-
-body.dark-mode .mcp-question-decision {
-    background-color: #451a03;
-    color: #fcd34d;
-}
-
-body.dark-mode .mcp-question-error {
-    color: #fca5a5;
-}
-
-body.dark-mode .mcp-question-bubble .form-text,
-body.dark-mode .mcp-question-bubble .text-muted {
-    color: #9ca3af !important;
-}
-
-body.dark-mode .mcp-question-bubble .form-select {
-    background-color: #1a1a1a;
-    border-color: #444;
-    color: white;
-}
-
-/* ── Responsive: collapsible bubbles ──────────────────────────────────── */
-
-@media (max-width: 768px) {
-    .activity-log-bubble,
-    .collapsible-bubble {
-        max-width: 85%;
-    }
-
-    .saved-reference-bubble {
-        max-width: 85%;
-    }
-}
-
-@media (max-width: 576px) {
-    .activity-log-bubble,
-    .collapsible-bubble {
-        max-width: 90%;
-    }
-
-    .saved-reference-bubble {
-        max-width: 90%;
-    }
-}
-
-/* ── Sign-in pages (/login, /access-denied) ──────────────────────────────────
-   Static-SSR pages, so no circuit and no Blazor interactivity — these styles are
-   the whole presentation. Dark mode follows the same body.dark-mode convention as
-   the chat page; chat.js applies the class from localStorage on every page. */
+/* ── Sign-in pages (/login, /access-denied) ──────────────────────────────
+   Static-SSR pages, so no circuit and no Blazor interactivity: these styles are the whole
+   presentation. The orange top edge is the page's brand moment. */
 
 .login-shell {
     min-height: 100vh;
@@ -946,107 +1252,528 @@ body.dark-mode .mcp-question-bubble .form-select {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 1.5rem;
-    background-color: var(--light-bg);
+    padding: var(--rb-space-5);
+    background-color: var(--rb-bg-muted);
 }
 
 .login-card {
     width: 100%;
     max-width: 24rem;
-    padding: 2rem;
-    border-radius: 0.75rem;
-    background-color: white;
-    border: 1px solid var(--border-color);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    padding: var(--rb-space-6);
+    border: 1px solid var(--rb-border);
+    border-top: 3px solid var(--rb-orange);
+    border-radius: var(--rb-radius-xl);
+    background-color: var(--rb-bg);
+    box-shadow: var(--rb-shadow-hairline);
     text-align: center;
 }
 
+.login-mark {
+    display: block;
+    width: 64px;
+    height: 64px;
+    margin: 0 auto var(--rb-space-4);
+    border-radius: 14px;
+}
+
 .login-title {
-    margin: 0 0 0.5rem;
-    font-size: 1.5rem;
-    font-weight: 600;
+    margin: 0 0 var(--rb-space-2);
+    font-size: var(--rb-text-2xl);
+    font-weight: var(--rb-weight-semi);
 }
 
 .login-lede {
-    margin: 0 0 1.5rem;
-    color: var(--secondary-color);
+    margin: 0 0 var(--rb-space-5);
+    color: var(--rb-fg-muted);
 }
 
 .login-note {
-    margin: 0 0 1.5rem;
+    margin: 0 0 var(--rb-space-5);
     font-size: 0.875rem;
-    color: var(--secondary-color);
+    color: var(--rb-fg-muted);
 }
 
 .login-providers {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--rb-space-2);
 }
 
 .login-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
+    gap: var(--rb-space-2);
     width: 100%;
     padding: 0.625rem 1rem;
-    border: 1px solid var(--border-color);
-    border-radius: 0.5rem;
-    background-color: white;
+    border: 1px solid var(--rb-border);
+    border-radius: var(--rb-radius-lg);
+    background-color: var(--rb-bg);
     color: inherit;
     font: inherit;
     text-decoration: none;
     cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .login-btn:hover {
-    background-color: var(--light-bg);
+    border-color: var(--rb-primary);
+    background-color: var(--rb-primary-100);
+    color: var(--rb-primary-700);
 }
 
 .login-badge {
     padding: 0.125rem 0.5rem;
     border-radius: 1rem;
-    background-color: var(--agent-message-bg);
+    background-color: var(--rb-primary-100);
+    color: var(--rb-primary-700);
     font-size: 0.75rem;
-    color: var(--secondary-color);
 }
 
+/* ═══ Dark mode ═══════════════════════════════════════════════════════════ */
+
+body.dark-mode,
+body.dark-mode .chat-container {
+    background-color: var(--rb-bg-dark);
+    color: var(--rb-fg-dark);
+}
+
+body.dark-mode .chat-messages {
+    background-color: var(--rb-bg-dark-muted);
+}
+
+/* The bright blue bar flares against a dark canvas: drop it to a muted navy. */
+body.dark-mode .chat-header {
+    background-color: var(--rb-header-dark);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+body.dark-mode .activity-icon-count {
+    box-shadow: 0 0 0 1.5px var(--rb-header-dark);
+}
+
+body.dark-mode .agent-message .message-bubble {
+    background-color: var(--rb-bg-dark-subtle);
+    border-color: var(--rb-border-dark);
+    color: var(--rb-fg-dark);
+}
+
+/* A thicker edge with a soft glow so the orange still reads against the dark panel. */
+body.dark-mode .message-bubble.agent-reply {
+    border-left: 4px solid var(--rb-agent-accent-dark);
+    box-shadow: -2px 0 12px rgba(255, 122, 26, 0.28);
+}
+
+body.dark-mode .message-bubble.user-bubble {
+    background-color: var(--rb-blue-dark);
+    border-color: var(--rb-blue-dark);
+}
+
+body.dark-mode .message-bubble.interim-message {
+    background-color: var(--rb-panel-dark);
+    border-color: var(--rb-interim-border-dark);
+    color: var(--rb-interim-fg-dark);
+}
+
+body.dark-mode .category-badge.thinking-badge,
+body.dark-mode .category-subagentactivity .category-badge {
+    background-color: var(--rb-cat-subagent-badge-bg-dark);
+    color: var(--rb-cat-subagent-badge-fg-dark);
+}
+
+body.dark-mode .message-bubble.error-message {
+    background-color: var(--rb-danger-dark);
+    border-color: var(--rb-danger-dark);
+}
+
+body.dark-mode .message-content code {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--rb-code-fg-dark);
+}
+
+body.dark-mode .message-content pre {
+    background-color: var(--rb-code-bg-dark);
+    border: 1px solid var(--rb-border-dark);
+    color: var(--rb-code-fg-dark);
+}
+
+body.dark-mode .message-content pre code {
+    background-color: transparent;
+}
+
+body.dark-mode .message-content a {
+    color: var(--rb-link-dark);
+}
+
+/* ...but links on the blue and red bubbles stay white, as in light mode. */
+body.dark-mode .user-bubble .message-content a,
+body.dark-mode .error-message .message-content a {
+    color: rgba(255, 255, 255, 0.92);
+}
+
+body.dark-mode .message-attachments .attachment-image,
+body.dark-mode .message-attachments .attachment-preview {
+    border-color: var(--rb-border-dark);
+}
+
+body.dark-mode .message-attachments .attachment-preview-bar {
+    background: var(--rb-bg-dark-muted);
+    border-bottom-color: var(--rb-border-dark);
+}
+
+/* Feedback icons wash out on dark panels: lift them and invert the hover. */
+body.dark-mode .feedback-bar,
+body.dark-mode .save-label-input {
+    border-top-color: rgba(255, 255, 255, 0.12);
+}
+
+body.dark-mode .btn-feedback {
+    color: var(--rb-fg-dark-muted);
+}
+
+body.dark-mode .btn-feedback:hover:not(:disabled) {
+    color: var(--rb-fg-dark);
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+body.dark-mode .btn-feedback.active {
+    color: var(--app-blue-fg-dark);
+    background-color: rgba(59, 130, 246, 0.22);
+    box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.45);
+}
+
+body.dark-mode .btn-feedback.save-btn {
+    color: var(--rb-saved-glyph);
+}
+
+body.dark-mode .btn-feedback.save-btn.active {
+    color: var(--app-saved-active-dark);
+    background-color: rgba(99, 102, 241, 0.22);
+}
+
+/* Activity, category and saved bubbles. */
+body.dark-mode .message-bubble.collapsible-bubble,
+body.dark-mode .message-bubble.activity-log-bubble {
+    background-color: var(--rb-panel-dark);
+    border-color: var(--rb-border-dark-muted);
+    color: var(--rb-fg-dark-muted);
+}
+
+body.dark-mode .message-bubble.activity-log-bubble:hover {
+    background-color: var(--rb-panel-dark-hover);
+}
+
+body.dark-mode .message-bubble.category-subagentactivity {
+    border-color: var(--rb-interim-border-dark);
+}
+
+body.dark-mode .message-bubble.category-a2aactivity {
+    background-color: var(--rb-cat-a2a-bg-dark);
+}
+
+body.dark-mode .message-bubble.category-scheduledsystem {
+    background-color: var(--rb-cat-scheduled-bg-dark);
+}
+
+body.dark-mode .category-a2aactivity .category-badge {
+    background-color: var(--rb-cat-a2a-badge-bg-dark);
+    color: var(--rb-cat-a2a-badge-fg-dark);
+}
+
+body.dark-mode .category-scheduledsystem .category-badge {
+    background-color: var(--rb-cat-scheduled-badge-bg-dark);
+    color: var(--rb-cat-scheduled-badge-fg-dark);
+}
+
+body.dark-mode .collapsible-header,
+body.dark-mode .activity-log-header,
+body.dark-mode .collapsible-preview,
+body.dark-mode .entry-time,
+body.dark-mode .tool-call-duration {
+    color: var(--rb-fg-dark-subtle);
+}
+
+body.dark-mode .collapsible-header:hover {
+    color: var(--rb-fg-dark);
+}
+
+body.dark-mode .collapsible-agent-name {
+    color: var(--rb-fg-dark-strong);
+}
+
+body.dark-mode .activity-log-entries {
+    border-top-color: var(--rb-border-dark-muted);
+}
+
+body.dark-mode .activity-log-entry {
+    color: var(--rb-fg-dark-muted);
+}
+
+body.dark-mode .tool-call-failed .tool-call-status,
+body.dark-mode .tool-call-error {
+    color: var(--rb-danger-fg-dark);
+}
+
+body.dark-mode .tool-call-finished .tool-call-status {
+    color: var(--rb-success);
+}
+
+body.dark-mode .message-bubble.saved-reference-bubble {
+    background-color: var(--rb-saved-bg-dark);
+    border-color: var(--rb-saved-border-dark);
+    color: var(--rb-fg-dark-strong);
+}
+
+body.dark-mode .saved-label {
+    color: var(--rb-saved-fg-dark);
+}
+
+body.dark-mode .message-bubble.mcp-question-bubble {
+    background-color: var(--rb-question-bg-dark);
+    border-color: var(--rb-question-border-dark);
+    color: var(--rb-fg-dark-strong);
+}
+
+body.dark-mode .category-badge.mcp-question-badge {
+    background-color: var(--app-blue-tint-dark);
+    color: var(--rb-question-badge-fg-dark);
+}
+
+body.dark-mode .mcp-question-tool,
+body.dark-mode .mcp-question-closed {
+    color: var(--rb-fg-dark-subtle);
+}
+
+body.dark-mode .mcp-question-closed {
+    border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+body.dark-mode .mcp-question-decision {
+    background-color: var(--rb-cat-scheduled-badge-bg-dark);
+    color: var(--rb-cat-scheduled-badge-fg-dark);
+}
+
+body.dark-mode .mcp-question-error,
+body.dark-mode .mcp-signin-error,
+body.dark-mode .staged-error {
+    color: var(--rb-danger-fg-dark);
+}
+
+/* Bootstrap's outline-secondary is drawn for light grounds. */
+body.dark-mode .btn-outline-secondary {
+    border-color: var(--app-control-border-dark);
+    color: var(--rb-fg-dark-muted);
+}
+
+body.dark-mode .btn-outline-secondary:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    color: var(--rb-fg-dark);
+}
+
+body.dark-mode .mcp-question-bubble .form-text,
+body.dark-mode .mcp-question-bubble .text-muted {
+    color: var(--rb-fg-dark-subtle) !important;
+}
+
+body.dark-mode .mcp-signin-banner,
+body.dark-mode .mcp-signin-actions .btn-link {
+    color: var(--rb-warning-fg-dark);
+}
+
+body.dark-mode .mcp-signin-banner {
+    background-color: var(--rb-warning-bg-dark);
+    border-bottom-color: var(--rb-warning-border-dark);
+}
+
+/* Form controls, the composer and the plan panel. */
+body.dark-mode .form-control,
+body.dark-mode .form-select,
+body.dark-mode .composer textarea {
+    background-color: var(--rb-bg-dark-muted);
+    border-color: var(--rb-border-dark);
+    color: var(--rb-fg-dark);
+}
+
+body.dark-mode .form-control:focus,
+body.dark-mode .composer textarea:focus {
+    background-color: var(--rb-bg-dark-muted);
+    color: var(--rb-fg-dark);
+}
+
+body.dark-mode .form-control::placeholder,
+body.dark-mode .composer textarea::placeholder {
+    color: var(--rb-fg-dark-subtle);
+}
+
+body.dark-mode .composer {
+    background-color: var(--rb-bg-dark-subtle);
+    border-top-color: var(--rb-border-dark);
+}
+
+body.dark-mode .btn-send {
+    background-color: var(--rb-blue-dark);
+}
+
+body.dark-mode .btn-send:hover:not(:disabled) {
+    background-color: var(--rb-blue-dark-hover);
+}
+
+body.dark-mode .btn-ghost,
+body.dark-mode .staged-chip-remove,
+body.dark-mode .row-icon-btn {
+    border-color: var(--rb-border-dark);
+    color: var(--rb-fg-dark-muted);
+}
+
+body.dark-mode .btn-ghost:hover,
+body.dark-mode .staged-chip-remove:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+    color: var(--rb-fg-dark);
+}
+
+body.dark-mode .staged-chip {
+    background-color: var(--rb-bg-dark-muted);
+    border-color: var(--rb-border-dark);
+    color: var(--rb-fg-dark);
+}
+
+body.dark-mode .staged-status {
+    color: var(--rb-fg-dark-subtle);
+}
+
+body.dark-mode .plan-panel {
+    background-color: var(--rb-bg-dark);
+    border-top-color: var(--rb-border-dark);
+    color: var(--rb-fg-dark-muted);
+}
+
+body.dark-mode .plan-progress,
+body.dark-mode .plan-item-completed span {
+    color: var(--rb-fg-dark-subtle);
+}
+
+/* The saved responses modal. */
+body.dark-mode .saved-modal {
+    background: var(--rb-bg-dark-subtle);
+    color: var(--rb-fg-dark-strong);
+}
+
+body.dark-mode .saved-item {
+    border-color: var(--rb-border-dark-muted);
+}
+
+body.dark-mode .saved-item:hover {
+    background-color: var(--rb-hover-dark);
+}
+
+body.dark-mode .saved-item-meta {
+    color: var(--rb-fg-dark-subtle);
+}
+
+body.dark-mode .row-icon-btn:hover {
+    background-color: var(--app-blue-tint-dark);
+    color: var(--app-blue-fg-dark);
+}
+
+body.dark-mode .row-icon-btn.danger:hover {
+    background-color: var(--rb-danger-100-dark);
+    color: var(--rb-danger-fg-dark);
+}
+
+body.dark-mode .saved-view-header {
+    border-bottom-color: var(--rb-border-dark-muted);
+}
+
+body.dark-mode .saved-view-content {
+    background: var(--rb-panel-dark);
+    border-color: var(--rb-border-dark-muted);
+    color: var(--rb-fg-dark-strong);
+}
+
+/* The sign-in pages. */
 body.dark-mode .login-shell {
-    background-color: var(--dark-bg);
+    background-color: var(--rb-bg-dark-muted);
 }
 
 body.dark-mode .login-card,
 body.dark-mode .login-btn {
-    background-color: #2b3035;
-    border-color: #495057;
-    color: #dee2e6;
+    background-color: var(--rb-bg-dark-subtle);
+    border-color: var(--rb-border-dark);
+    color: var(--rb-fg-dark-muted);
+}
+
+body.dark-mode .login-card {
+    border-top-color: var(--rb-orange);
+}
+
+body.dark-mode .login-lede,
+body.dark-mode .login-note {
+    color: var(--rb-fg-dark-muted);
 }
 
 body.dark-mode .login-btn:hover {
-    background-color: #343a40;
+    background-color: var(--app-blue-tint-dark);
+    border-color: var(--rb-link-dark);
+    color: var(--rb-fg-dark);
 }
 
 body.dark-mode .login-badge {
-    background-color: #495057;
-    color: #dee2e6;
+    background-color: var(--app-blue-tint-dark);
+    color: var(--app-blue-fg-dark);
 }
 
-/* ── Tool-call cards and the plan panel (#795) ─────────────────────────── */
-.tool-call-card { display: inline-block; vertical-align: top; }
-.tool-call-card summary { cursor: pointer; }
-.tool-call-name { font-family: var(--bs-font-monospace, monospace); }
-.tool-call-duration { margin-left: 0.5em; color: var(--secondary-color); font-size: 0.85em; }
-.tool-call-failed .tool-call-status, .tool-call-error { color: #dc3545; }
-.tool-call-finished .tool-call-status { color: #198754; }
-.tool-call-field { margin: 0.15em 0 0 1.2em; white-space: pre-wrap; word-break: break-word; }
-.tool-call-label { font-weight: 600; margin-right: 0.3em; }
+/* ═══ Responsive ══════════════════════════════════════════════════════════ */
 
-.plan-panel { background-color: var(--light-bg); max-height: 30vh; overflow-y: auto; font-size: 0.9em; }
-.plan-list + .plan-list { margin-top: 0.5em; }
-.plan-title { font-weight: 600; }
-.plan-progress { margin-left: 0.5em; color: var(--secondary-color); font-weight: normal; }
-.plan-item { display: flex; gap: 0.5em; align-items: baseline; margin-left: 0.5em; }
-.plan-item-in-progress { font-weight: 600; }
-.plan-item-completed span { text-decoration: line-through; color: var(--secondary-color); }
-body.dark-mode .plan-panel { background-color: var(--dark-bg); color: #dee2e6; }
+@media (max-width: 768px) {
+    .message-bubble {
+        max-width: 85%;
+    }
+
+    .chat-title {
+        font-size: 1.1rem;
+    }
+}
+
+@media (max-width: 576px) {
+    .message-bubble {
+        max-width: 90%;
+    }
+
+    /* Avatars give up their column so the bubbles keep their width. */
+    .agent-avatar,
+    .cat-avatar,
+    .avatar-slot {
+        display: none;
+    }
+
+    .chat-messages,
+    .composer {
+        padding: var(--rb-space-2);
+    }
+
+    .chat-header {
+        gap: var(--rb-space-2);
+        padding: var(--rb-space-2) var(--rb-space-3);
+    }
+
+    /* A phone-width header keeps the mark, the connection word and the buttons. Idle activity
+       slots step aside (only live ones show), the title text goes, and Sign out becomes an icon. */
+    .chat-title-text,
+    .activity-icon:not(.active),
+    .chat-header .label-wide {
+        display: none;
+    }
+
+    .chat-header .label-narrow {
+        display: inline-block;
+    }
+
+    .chat-header .icon-btn.text-btn {
+        width: 32px;
+        padding: 0;
+    }
+
+    .activity-row {
+        gap: 4px;
+    }
+}

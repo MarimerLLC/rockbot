@@ -11,32 +11,32 @@
 @foreach (var server in SignIns.NeedingSignIn)
 {
     var started = _started.GetValueOrDefault(server.ServerName);
-    <div class="alert alert-warning mcp-signin-banner d-flex justify-content-between align-items-center mb-0"
+    <div class="mcp-signin-banner"
          role="alert">
         <div>
             @if (server.State is McpSignInState.Required or McpSignInState.Pending)
             {
                 <strong>@server.ServerName needs you to sign in.</strong>
-                <span class="ms-2 small text-muted">Its tools are unavailable until you do.</span>
+                <span class="mcp-signin-note">Its tools are unavailable until you do.</span>
             }
             else
             {
                 <strong>Sign-in to @server.ServerName didn't finish.</strong>
                 @if (!string.IsNullOrWhiteSpace(server.Message))
                 {
-                    <span class="ms-2 small text-muted">@server.Message</span>
+                    <span class="mcp-signin-note">@server.Message</span>
                 }
             }
             @if (_errors.GetValueOrDefault(server.ServerName) is { } error)
             {
-                <div class="small text-danger mt-1">@error</div>
+                <div class="mcp-signin-error">@error</div>
             }
         </div>
-        <div class="d-flex gap-2 align-items-center">
+        <div class="mcp-signin-actions">
             @if (started?.AuthorizationUri is { } authorizationUri)
             {
                 <a class="btn btn-sm btn-warning" href="@authorizationUri" target="_blank" rel="noopener noreferrer">
-                    Continue to sign-in ↗
+                    Continue to sign-in <RbIcon Name="external-link" Size="13" />
                 </a>
                 <button class="btn btn-sm btn-link" @onclick="() => StartAsync(server.ServerName)"
                         disabled="@_starting.Contains(server.ServerName)" title="Start over">Restart</button>
