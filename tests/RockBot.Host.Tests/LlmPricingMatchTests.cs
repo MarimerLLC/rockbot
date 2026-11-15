@@ -43,6 +43,9 @@ public sealed class LlmPricingMatchTests
 
         Assert.AreEqual(0.60, direct, 1e-9);
         Assert.AreEqual(direct, viaOpenRouter, 1e-9, "the OpenRouter fallback used to cost $0");
+
+        // And the info views (#834) show the same row for it.
+        Assert.AreEqual("claude-haiku-5-5", estimator.FindEntry("anthropic/claude-haiku-5.5")!.Prefix);
     }
 
     [TestMethod]
