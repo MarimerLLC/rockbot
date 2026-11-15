@@ -29,7 +29,11 @@ public sealed record ActivityLogEntry(string Content, DateTime Timestamp)
     public ToolCallInfo? ToolCall { get; init; }
 }
 
-public sealed record ActiveStatusIndicator(MessageCategory Category, string? AgentName, string LatestContent);
+public sealed record ActiveStatusIndicator(MessageCategory Category, string? AgentName, string LatestContent)
+{
+    /// <summary>The open activity log this indicator stands for.</summary>
+    public string? MessageId { get; init; }
+}
 
 /// <summary>
 /// A run's task list as the agent last reported it.
@@ -142,14 +146,16 @@ public sealed record ChatViewState
         Messages.Any(m => m.IsActivityLog && IsActivityLogOpen(m.MessageId));
 
     /// <summary>
-    /// Running subagent and background-task indicators for the header, in transcript order.
-    /// Agent-busy state is separate: see <see cref="IsBusy"/>.
+    /// Running subagent, inbound A2A and background-task indicators for the header, in transcript
+    /// order: one per open activity log. Agent-busy state is separate: see <see cref="IsBusy"/>.
     /// </summary>
     public IReadOnlyList<ActiveStatusIndicator> ActiveStatusIndicators =>
         Messages
-            .Where(m => m.Category is MessageCategory.SubagentActivity or MessageCategory.ScheduledSystem
+            .Where(m => m.IsActivityLog
+                        && m.Category is MessageCategory.SubagentActivity or MessageCategory.A2AActivity
+                            or MessageCategory.ScheduledSystem or MessageCategory.ScheduledUser
                         && IsActivityLogOpen(m.MessageId))
-            .Select(m => new ActiveStatusIndicator(m.Category, m.AgentName, m.Content))
+            .Select(m => new ActiveStatusIndicator(m.Category, m.AgentName, m.Content) { MessageId = m.MessageId })
             .ToList();
 
     /// <summary>The most recent saved reference, which the next user message carries as context.</summary>
@@ -170,6 +176,21 @@ public sealed record ChatMessage
     public required bool IsFromUser { get; init; }
     public required DateTime Timestamp { get; init; }
     public string? AgentName { get; init; }
+
+    /// <summary>
+    /// The agent name of the run that produced this reply, as its activity log is kept under:
+    /// <c>subagent-{taskId}</c> or <c>worker-{taskId}</c> for a subagent's or worker's result, from the
+    /// reply's source. Null when the source names no such run; <see cref="AgentName"/> then stands in.
+    /// Pairs a result with its run's log (<see cref="ActivityDigest"/>).
+    /// </summary>
+    public string? RunAgentName { get; init; }
+
+    /// <summary>
+    /// For the reply that ended one of the user's turns: when that turn started. It answers the
+    /// user's message, not anything (a subagent's result, say) that arrived while the turn ran.
+    /// </summary>
+    public DateTime? TurnStartedAt { get; init; }
+
     public string? UserId { get; init; }
     public string? SessionId { get; init; }
     public string? ContentType { get; init; }

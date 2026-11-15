@@ -137,9 +137,7 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
     /// source, so its progress lands in the same log its lifecycle events open.
     /// </summary>
     private static string? LogAgentName(AgentReply reply) =>
-        reply.Source is { Kind: ReplySourceKind.Subagent or ReplySourceKind.Worker, TaskId: { Length: > 0 } taskId } source
-            ? ChatReducer.SubagentAgentName(source.Kind, taskId)
-            : reply.AgentName;
+        ChatReducer.LogAgentName(reply.Source, reply.AgentName);
 
     public Task DisplayErrorAsync(string message, CancellationToken cancellationToken = default)
     {

@@ -132,6 +132,7 @@ public static class ChatReducer
                 Timestamp = turn.Timestamp.UtcDateTime,
                 SessionId = turn.SessionId ?? e.SessionId,
                 AgentName = effectiveName,
+                RunAgentName = RunAgentName(turn.Source),
                 Category = category,
                 Attachments = turn.Attachments,
                 IsExpanded = IsExpandedByDefault(category),
@@ -182,8 +183,7 @@ public static class ChatReducer
         {
             // Subagent and worker synthetic turns are stored as "user" role with a subagent- or
             // worker- prefixed AgentName. Both represent spawned activity.
-            if (turn.AgentName?.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) == true
-                || turn.AgentName?.StartsWith("worker-", StringComparison.OrdinalIgnoreCase) == true)
+            if (SubagentTaskId(turn.AgentName) is not null)
                 return (MessageCategory.SubagentActivity, false);
 
             // A2A synthetic turns have a non-null AgentName that differs from the primary agent.
@@ -252,6 +252,12 @@ public static class ChatReducer
             && current.TurnId != e.TurnId
             && current.TurnId != ChatViewState.ReconciledTurnId;
 
+        // When the turn this reply ends started, if it's the one running: tells its reply apart
+        // from an answer to something that arrived during the turn (ChatVisibility).
+        DateTime? started = state.CurrentTurn is { } ending && (ending.TurnId == e.TurnId || ending.TurnId == ChatViewState.ReconciledTurnId)
+            ? ending.StartedAt
+            : null;
+
         state = e.Outcome switch
         {
             TurnOutcome.Completed when e.Reply is not null && newerTurnRunning =>
@@ -259,7 +265,7 @@ public static class ChatReducer
                     closesSource: false),
             TurnOutcome.Completed when e.Reply is not null =>
                 AddReply(state with { ThinkingMessage = null }, e.Reply, MessageCategory.PrimaryFinal,
-                    e.MessageId, e.Timestamp),
+                    e.MessageId, e.Timestamp, turnStartedAt: started),
             TurnOutcome.TimedOut =>
                 AddError(state with { ThinkingMessage = null }, "No reply received (timeout)",
                     e.MessageId, e.Timestamp),
@@ -269,7 +275,8 @@ public static class ChatReducer
             // reply ends the turn like any final reply), else its error text.
             TurnOutcome.AgentError when e.Reply is not null =>
                 AddReply(state with { ThinkingMessage = newerTurnRunning ? state.ThinkingMessage : null },
-                    e.Reply, MessageCategory.PrimaryFinal, e.MessageId, e.Timestamp, closesSource: !newerTurnRunning),
+                    e.Reply, MessageCategory.PrimaryFinal, e.MessageId, e.Timestamp, closesSource: !newerTurnRunning,
+                    turnStartedAt: started),
             TurnOutcome.AgentError =>
                 CloseThisTurnsProgress(
                     AddError(state, $"Error: {e.Error ?? "the agent reported an error"}", e.MessageId, e.Timestamp),
@@ -285,7 +292,7 @@ public static class ChatReducer
             // still waiting: say so. A reply the agent sent with it is shown instead.
             TurnOutcome.Cancelled when state.CurrentTurn?.TurnId == e.TurnId && e.Reply is not null =>
                 AddReply(state with { ThinkingMessage = null }, e.Reply, MessageCategory.PrimaryFinal,
-                    e.MessageId, e.Timestamp),
+                    e.MessageId, e.Timestamp, turnStartedAt: started),
             TurnOutcome.Cancelled when state.CurrentTurn?.TurnId == e.TurnId =>
                 CloseThisTurnsProgress(
                     AddError(state, "Turn cancelled", e.MessageId, e.Timestamp),
@@ -308,9 +315,10 @@ public static class ChatReducer
     /// False for a reply whose source has already moved on (a stale turn's reply): it is shown,
     /// but the source's current activity log and turn belong to newer work and stay open.
     /// </param>
+    /// <param name="turnStartedAt">For the reply that ends a turn: when that turn started.</param>
     private static ChatViewState AddReply(
         ChatViewState state, AgentReply reply, MessageCategory category, string messageId, DateTime at,
-        bool closesSource = true)
+        bool closesSource = true, DateTime? turnStartedAt = null)
     {
         var formWaits = state.FormWaits;
         var logs = state.OpenActivityLogs;
@@ -334,7 +342,7 @@ public static class ChatReducer
             turn = null;
         }
         else if (closesSource)
-            logs = logs.Remove(ActivityLogKey(category, reply.AgentName));
+            logs = logs.Remove(ActivityLogKey(category, LogAgentName(reply.Source, reply.AgentName)));
 
         // A reply the agent also stored carries its history id (#809). The message takes that id,
         // so a reply that history already brought in (it was stored before it was sent, and the
@@ -355,6 +363,8 @@ public static class ChatReducer
                 IsFromUser = false,
                 Timestamp = at,
                 AgentName = reply.AgentName,
+                RunAgentName = RunAgentName(reply.Source),
+                TurnStartedAt = turnStartedAt,
                 SessionId = reply.SessionId,
                 ContentType = reply.ContentType,
                 Attachments = reply.Attachments,
@@ -458,6 +468,19 @@ public static class ChatReducer
                         !activeAgentNames.Contains(k[subagentPrefix.Length..]))
             .ToList());
 
+        // The status doesn't list inbound A2A calls or background tasks. When it says nothing at
+        // all is running (an idle agent, or the empty snapshot an agent broadcasts as it starts),
+        // their logs go too: otherwise one that never got its final reply would light the header
+        // for good. A call that is in fact still running opens a new log with its next report.
+        if (!status.IsProcessing && running.Count == 0)
+        {
+            logs = logs.RemoveRange(logs.Keys
+                .Where(k => k.StartsWith($"{MessageCategory.A2AActivity}:", StringComparison.Ordinal)
+                            || k.StartsWith($"{MessageCategory.ScheduledSystem}:", StringComparison.Ordinal)
+                            || k.StartsWith($"{MessageCategory.ScheduledUser}:", StringComparison.Ordinal))
+                .ToList());
+        }
+
         var messages = state.Messages;
         foreach (var sub in running)
         {
@@ -505,6 +528,32 @@ public static class ChatReducer
         string.Equals(kind, ReplySourceKind.Worker, StringComparison.OrdinalIgnoreCase)
             ? $"worker-{taskId}"
             : $"subagent-{taskId}";
+
+    /// <summary>
+    /// The agent name a source's activity log is kept under: a subagent's or worker's comes from
+    /// its task id (<see cref="SubagentAgentName"/>), anything else is <paramref name="agentName"/>.
+    /// </summary>
+    public static string? LogAgentName(ReplySource? source, string? agentName) =>
+        RunAgentName(source) ?? agentName;
+
+    /// <summary>
+    /// The task id in a <c>subagent-{taskId}</c> or <c>worker-{taskId}</c> agent name (the inverse of
+    /// <see cref="SubagentAgentName"/>), or null for any other name.
+    /// </summary>
+    public static string? SubagentTaskId(string? agentName) =>
+        agentName switch
+        {
+            null => null,
+            _ when agentName.StartsWith("subagent-", StringComparison.OrdinalIgnoreCase) => agentName["subagent-".Length..],
+            _ when agentName.StartsWith("worker-", StringComparison.OrdinalIgnoreCase) => agentName["worker-".Length..],
+            _ => null,
+        };
+
+    /// <summary>The <c>subagent-</c> / <c>worker-</c> name of the run <paramref name="source"/> names, or null.</summary>
+    private static string? RunAgentName(ReplySource? source) =>
+        source is { Kind: ReplySourceKind.Subagent or ReplySourceKind.Worker, TaskId: { Length: > 0 } taskId }
+            ? SubagentAgentName(source.Kind, taskId)
+            : null;
 
     // ── Structured agent events (#795) ──────────────────────────────────────
 
