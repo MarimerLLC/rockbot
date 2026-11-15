@@ -28,6 +28,12 @@ window.chatHelpers = {
         }
     },
 
+    // Moves focus to the first element matching a selector, when there is one.
+    focusSelector: function (selector) {
+        const el = document.querySelector(selector);
+        if (el) el.focus();
+    },
+
     getBrowserTimezone: function () {
         try {
             return Intl.DateTimeFormat().resolvedOptions().timeZone;

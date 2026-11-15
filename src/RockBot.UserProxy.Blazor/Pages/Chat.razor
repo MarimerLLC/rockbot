@@ -20,6 +20,9 @@
     // What this view draws: Simple leaves the agent's working detail out of the transcript (#828).
     var visibleMessages = ChatVisibility.VisibleMessages(state, _detailLevel, ChatState.UtcNow);
     _drawnMessageCount = visibleMessages.Count;
+
+    // What's running and what finished, per kind: the header slots and the activity panel.
+    var digest = ActivityDigest.From(state, ChatState.UtcNow);
 }
 
 <PageTitle>@(state.AgentName ?? "RockBot") Chat</PageTitle>
@@ -36,21 +39,29 @@
         </h1>
         <div class="status-row">
             @{
-                var statusIndicators = state.ActiveStatusIndicators;
-                var subagents = statusIndicators.Where(i => i.Category == MessageCategory.SubagentActivity).ToList();
-                var a2aCalls = statusIndicators.Where(i => i.Category == MessageCategory.A2AActivity).ToList();
-                var tasks = statusIndicators.Where(i => i.Category == MessageCategory.ScheduledSystem).ToList();
+                var subagents = digest.Subagents.Running;
+                var a2aCalls = digest.A2A.Running;
+                var tasks = digest.Scheduled.Running;
             }
-            @* Fixed order, every slot always present: the row is the status map. *@
+            @* Fixed order, every slot always present: the row is the status map. Each slot opens the
+               activity panel on its tab, idle or not (the panel also lists finished work). *@
             <div class="activity-row" role="group" aria-label="Background activity">
                 <ActivityIcon Kind="agent" Active="isBusy"
-                              Title="@(isBusy ? state.ThinkingMessage ?? "RockBot is working…" : "RockBot is idle")" />
+                              Title="@(isBusy ? state.ThinkingMessage ?? "RockBot is working…" : "RockBot is idle")"
+                              OnClick="() => ToggleActivityPanel(ActivityKind.Agent)"
+                              Expanded="_openActivity == ActivityKind.Agent" Controls="@ActivityPanelId" />
                 <ActivityIcon Kind="subagent" Active="subagents.Count > 0" Count="subagents.Count"
-                              Title="@ActivityTitle("No subagents running", subagents.Select(DescribeSubagent))" />
+                              Title="@ActivityTitle("No subagents running", subagents.Select(DescribeSubagent))"
+                              OnClick="() => ToggleActivityPanel(ActivityKind.Subagent)"
+                              Expanded="_openActivity == ActivityKind.Subagent" Controls="@ActivityPanelId" />
                 <ActivityIcon Kind="a2a" Active="a2aCalls.Count > 0" Count="a2aCalls.Count"
-                              Title="@ActivityTitle("No inbound A2A calls", a2aCalls.Select(a => $"Inbound A2A: {a.LatestContent}"))" />
+                              Title="@ActivityTitle("No inbound A2A calls", a2aCalls.Select(a => $"Inbound A2A: {a.Status}"))"
+                              OnClick="() => ToggleActivityPanel(ActivityKind.A2A)"
+                              Expanded="_openActivity == ActivityKind.A2A" Controls="@ActivityPanelId" />
                 <ActivityIcon Kind="scheduled" Active="tasks.Count > 0" Count="tasks.Count"
-                              Title="@ActivityTitle("No background tasks", tasks.Select(t => $"Background task: {t.LatestContent}"))" />
+                              Title="@ActivityTitle("No background tasks", tasks.Select(t => $"Background task: {t.Status}"))"
+                              OnClick="() => ToggleActivityPanel(ActivityKind.Scheduled)"
+                              Expanded="_openActivity == ActivityKind.Scheduled" Controls="@ActivityPanelId" />
             </div>
             <ConnectionPill Connected="ProxyService.IsConnected" AppVersion="@UiVersion" AgentVersion="@state.AgentVersion" />
             <button type="button" class="icon-btn" @onclick="ToggleSavedModal"
@@ -93,6 +104,15 @@
 
     <div inert="@_showSavedModal"><McpSignInBanner /></div>
 
+    @if (_openActivity is { } openActivity)
+    {
+        @* In the page flow under the header: it pushes the messages down, never floats over them. *@
+        <div inert="@_showSavedModal">
+            <ActivityPanel Id="@ActivityPanelId" Kind="openActivity" Digest="digest" DisplayZone="_displayZone"
+                           OnKindChanged="kind => _openActivity = kind" OnClose="CloseActivityPanel" />
+        </div>
+    }
+
     <div class="chat-messages flex-grow-1" inert="@_showSavedModal" @ref="messagesContainer">
         @foreach (var message in visibleMessages)
         {
@@ -125,47 +145,7 @@
                         </div>
                         @if (message.IsExpanded)
                         {
-                            <div class="activity-log-entries">
-                                @foreach (var entry in message.ActivityLogEntries)
-                                {
-                                    @if (entry.ToolCall is { } call)
-                                    {
-                                        <!-- A tool call: one card, updated in place as the call finishes -->
-                                        <div class="activity-log-entry" @onclick:stopPropagation="true">
-                                            <span class="entry-time">@TimeZoneInfo.ConvertTimeFromUtc(entry.Timestamp, _displayZone).ToString("HH:mm:ss")</span>
-                                            <details class="tool-call-card tool-call-@call.Phase">
-                                                <summary>
-                                                    <span class="tool-call-status">@ToolCallMarker(call.Phase)</span>
-                                                    <span class="tool-call-name">@call.ToolCallName</span>
-                                                    @if (call.DurationMs is { } ms)
-                                                    {
-                                                        <span class="tool-call-duration">@FormatDuration(ms)</span>
-                                                    }
-                                                </summary>
-                                                @if (!string.IsNullOrEmpty(call.ArgsSummary))
-                                                {
-                                                    <div class="tool-call-field"><span class="tool-call-label">Arguments</span> @call.ArgsSummary</div>
-                                                }
-                                                @if (!string.IsNullOrEmpty(call.Result))
-                                                {
-                                                    <div class="tool-call-field"><span class="tool-call-label">Result</span> @call.Result</div>
-                                                }
-                                                @if (!string.IsNullOrEmpty(call.Error))
-                                                {
-                                                    <div class="tool-call-field tool-call-error"><span class="tool-call-label">Error</span> @call.Error</div>
-                                                }
-                                            </details>
-                                        </div>
-                                    }
-                                    else
-                                    {
-                                        <div class="activity-log-entry">
-                                            <span class="entry-time">@TimeZoneInfo.ConvertTimeFromUtc(entry.Timestamp, _displayZone).ToString("HH:mm:ss")</span>
-                                            <span class="entry-content">@entry.Content</span>
-                                        </div>
-                                    }
-                                }
-                            </div>
+                            <ActivityLogEntries Entries="message.ActivityLogEntries" DisplayZone="_displayZone" />
                         }
                     </div>
                 </div>
@@ -1013,22 +993,44 @@
         return text.Length == 0 ? idle : text;
     }
 
-    private static string DescribeSubagent(ActiveStatusIndicator sub)
+    private static string DescribeSubagent(ActivityItem sub)
     {
-        var isWorker = sub.AgentName?.StartsWith("worker-", StringComparison.OrdinalIgnoreCase) == true;
         var name = ChatReducer.SubagentTaskId(sub.AgentName) ?? sub.AgentName ?? "subagent";
-        return $"{(isWorker ? "Worker" : "Subagent")} {name}: {sub.LatestContent}";
+        return $"{(sub.IsWorker ? "Worker" : "Subagent")} {name}: {sub.Status}";
     }
 
-    private static string ToolCallMarker(string phase) => phase switch
-    {
-        ToolCallPhase.Finished => "✓",
-        ToolCallPhase.Failed => "✗",
-        _ => "…",
-    };
+    // ── Activity panel (#828) ──────────────────────────────────────────────
 
-    private static string FormatDuration(long ms) =>
-        ms < 1000 ? $"{ms} ms" : $"{ms / 1000.0:0.0} s";
+    private const string ActivityPanelId = "rb-activity-panel";
+
+    /// <summary>The activity panel's open tab, or null while it's closed.</summary>
+    private ActivityKind? _openActivity;
+
+    /// <summary>A slot opens the panel on its tab, switches to it, or (its own tab open) closes it.</summary>
+    private async Task ToggleActivityPanel(ActivityKind kind)
+    {
+        if (_openActivity == kind)
+            await CloseActivityPanel();
+        else
+            _openActivity = kind;
+    }
+
+    /// <summary>Closes the panel and gives focus back to the slot of the tab that was open.</summary>
+    private async Task CloseActivityPanel()
+    {
+        if (_openActivity is not { } kind)
+            return;
+
+        _openActivity = null;
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("chatHelpers.focusSelector", $".chat-header .activity-icon.{ActivityPanel.Css(kind)}");
+        }
+        catch (JSException)
+        {
+            // Focus stays where the browser puts it.
+        }
+    }
 
     private static string TruncateText(string text, int maxLength)
     {

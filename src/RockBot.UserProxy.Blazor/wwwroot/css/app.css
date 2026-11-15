@@ -305,9 +305,38 @@ h1:focus {
     box-shadow: 0 0 0 1.5px var(--rb-primary);
 }
 
+/* A slot is a button that opens the activity panel (#828). Idle slots brighten on hover and focus
+   so they still read as buttons; the slot whose tab is open gets a white tick under it (no glow:
+   the ring glow stays reserved for live activity). */
+button.activity-icon {
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+}
+
+button.activity-icon:not(.active):hover,
+button.activity-icon:not(.active):focus-visible,
+.activity-icon[aria-expanded="true"]:not(.active) {
+    opacity: 0.8;
+}
+
+.activity-icon[aria-expanded="true"]::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: -8px;
+    width: 14px;
+    height: 2px;
+    margin-left: -7px;
+    border-radius: 1px;
+    background: var(--rb-fg-on-primary);
+}
+
 @media (prefers-reduced-motion: reduce) {
     .activity-icon.active,
-    .spinner-border {
+    .spinner-border,
+    .activity-spinner,
+    .activity-tab.live .activity-tab-dot {
         animation-duration: 0s;
         animation-iteration-count: 1;
     }
@@ -970,6 +999,308 @@ h1:focus {
 .plan-item-in-progress { font-weight: var(--rb-weight-semi); }
 .plan-item-in-progress span { box-shadow: inset 0 -2px 0 var(--rb-orange); }
 .plan-item-completed span { text-decoration: line-through; color: var(--rb-fg-muted-on-tint); }
+
+/* ── Activity panel (#828; RockBot Design System "ActivityPanel") ───────────
+   The detail behind the header's slots. Docks in the page flow directly under the header and
+   pushes the messages down; never floats over the chat. Solid borders: dashed stays the
+   transcript's interim / collapsible signal. Hairline shadows only, no glow. */
+
+.activity-panel {
+    display: flex;
+    flex-direction: column;
+    max-height: min(40vh, 28rem);
+    background: var(--rb-bg);
+    color: var(--rb-fg);
+    border-bottom: 1px solid var(--rb-border);
+    box-shadow: var(--rb-shadow-bar);
+    position: relative;
+    z-index: 1;
+}
+
+.activity-panel-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 0.25rem;
+    padding: 0 0.5rem 0 1rem;
+    border-bottom: 1px solid var(--rb-border);
+}
+
+.activity-panel-tabs [role="tablist"] {
+    display: flex;
+    gap: 0.25rem;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+}
+
+/* Kind colours: the same rings as the header slots. */
+.activity-tab.agent,     .activity-card.agent     { --kind: var(--rb-agent-accent); }
+.activity-tab.subagent,  .activity-card.subagent  { --kind: var(--rb-orange-300); }
+.activity-tab.a2a,       .activity-card.a2a       { --kind: var(--rb-cat-a2a-accent); }
+.activity-tab.scheduled, .activity-card.scheduled { --kind: var(--rb-cat-scheduled-accent); }
+
+.activity-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.6rem 0.6rem 0.5rem;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--rb-fg-muted);
+    font: inherit;
+    font-size: var(--rb-text-sm);
+    font-weight: var(--rb-weight-medium);
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.activity-tab:hover { color: var(--rb-fg); }
+
+/* Tabs are interaction: the selected one is underlined in blue, and bold. */
+.activity-tab[aria-selected="true"] {
+    color: var(--rb-fg);
+    font-weight: var(--rb-weight-semi);
+    border-bottom-color: var(--rb-primary);
+}
+
+.activity-tab:focus-visible {
+    outline: 2px solid var(--rb-primary);
+    outline-offset: -2px;
+    border-radius: 4px;
+}
+
+.activity-tab-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--kind);
+    opacity: 0.35;
+}
+
+.activity-tab.live .activity-tab-dot {
+    opacity: 1;
+    animation: activity-tab-pulse 2s ease-in-out infinite;
+}
+
+@keyframes activity-tab-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.5; }
+}
+
+.activity-tab-short { display: none; }
+
+.activity-tab-count {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--rb-night);
+    color: var(--rb-fg-on-primary);
+    font-size: 0.7rem;
+    font-weight: var(--rb-weight-bold);
+    line-height: 18px;
+    text-align: center;
+}
+
+.activity-panel-close {
+    align-self: center;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--rb-fg-muted);
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.activity-panel-close:hover { background: rgba(0, 0, 0, 0.06); color: var(--rb-fg); }
+.activity-panel-close:focus-visible { outline: 2px solid var(--rb-primary); outline-offset: 2px; }
+
+.activity-panel-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    overflow-y: auto;
+    padding: 0.75rem 1rem 1rem;
+    background: var(--rb-bg-subtle);
+}
+
+.activity-section-title {
+    margin: 0.25rem 0 0;
+    font-size: 0.7rem;
+    font-weight: var(--rb-weight-semi);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--rb-fg-muted);
+}
+
+.activity-section-title:not(:first-child) { margin-top: 0.75rem; }
+
+.activity-empty {
+    margin: 0;
+    font-size: var(--rb-text-sm);
+    color: var(--rb-fg-muted);
+}
+
+/* Cards: the category tint, a solid hairline border, the badge as the label. */
+.activity-card {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--rb-border);
+    border-radius: 0.375rem;
+    background: var(--rb-cat-neutral-bg);
+    box-shadow: var(--rb-shadow-hairline);
+}
+
+.activity-card.agent, .activity-card.subagent { background: var(--rb-cat-subagent-bg); }
+.activity-card.a2a { background: var(--rb-cat-a2a-bg); }
+.activity-card.scheduled { background: var(--rb-cat-scheduled-bg); }
+
+.activity-card.agent .category-badge { background: var(--rb-night); color: var(--rb-orange-300); }
+.activity-card.subagent .category-badge { background: var(--rb-cat-subagent-badge-bg); color: var(--rb-cat-subagent-badge-fg); }
+.activity-card.a2a .category-badge { background: var(--rb-cat-a2a-badge-bg); color: var(--rb-cat-a2a-badge-fg); }
+.activity-card.scheduled .category-badge { background: var(--rb-cat-scheduled-badge-bg); color: var(--rb-cat-scheduled-badge-fg); }
+
+.activity-card-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.activity-card-head:disabled { cursor: default; }
+.activity-card-head:disabled .activity-card-chevron { visibility: hidden; }
+.activity-card-head:focus-visible { outline: 2px solid var(--rb-primary); outline-offset: 3px; border-radius: 4px; }
+
+.activity-card-chevron {
+    flex-shrink: 0;
+    color: var(--rb-fg-muted-on-tint);
+    transition: transform 0.2s ease;
+}
+
+.activity-card-chevron.open { transform: rotate(90deg); }
+
+.activity-card-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--rb-text-sm);
+    font-weight: var(--rb-weight-medium);
+    color: var(--rb-fg-secondary);
+}
+
+.activity-card-time {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--rb-fg-muted-on-tint);
+}
+
+.activity-spinner {
+    flex: 0 0 auto;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--kind, var(--rb-orange));
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+.activity-card-status {
+    margin: 0.35rem 0 0 20px;
+    font-size: 0.875rem;
+    color: var(--rb-fg);
+    word-break: break-word;
+}
+
+.activity-plan {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.4rem 0 0 20px;
+}
+
+.activity-plan-bar {
+    flex: 0 0 72px;
+    height: 4px;
+    border-radius: 2px;
+    overflow: hidden;
+    background: var(--rb-divider);
+}
+
+.activity-plan-bar > span { display: block; height: 100%; background: var(--kind); }
+
+.activity-plan-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.78rem;
+    color: var(--rb-fg-muted-on-tint);
+}
+
+.activity-card-body {
+    margin: 0.5rem 0 0.15rem 20px;
+}
+
+/* The log's own top rule separates it from the status; a result with no log gets one too. */
+.activity-card-body > .activity-log-entries { margin-top: 0; }
+.activity-card-body > .activity-card-result:first-child { padding-top: 0.5rem; border-top: 1px solid var(--rb-divider); }
+
+.activity-card-result {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.activity-card-result .message-content p:last-child { margin-bottom: 0; }
+
+body.dark-mode .activity-panel { background: var(--rb-bg-dark-subtle); color: var(--rb-fg-dark); border-bottom-color: var(--rb-border-dark); }
+body.dark-mode .activity-panel-tabs { border-bottom-color: var(--rb-border-dark); }
+body.dark-mode .activity-tab { color: var(--rb-fg-dark-subtle); }
+body.dark-mode .activity-tab:hover,
+body.dark-mode .activity-tab[aria-selected="true"] { color: var(--rb-fg-dark); }
+body.dark-mode .activity-tab[aria-selected="true"] { border-bottom-color: var(--rb-link-dark); }
+body.dark-mode .activity-tab:focus-visible,
+body.dark-mode .activity-panel-close:focus-visible,
+body.dark-mode .activity-card-head:focus-visible { outline-color: var(--rb-link-dark); }
+body.dark-mode .activity-tab-count { background: var(--rb-fg-dark-strong); color: var(--rb-night); }
+body.dark-mode .activity-panel-close { color: var(--rb-fg-dark-subtle); }
+body.dark-mode .activity-panel-close:hover { background: rgba(255, 255, 255, 0.08); color: var(--rb-fg-dark); }
+body.dark-mode .activity-panel-body { background: var(--rb-bg-dark-muted); }
+body.dark-mode .activity-section-title,
+body.dark-mode .activity-empty { color: var(--rb-fg-dark-subtle); }
+body.dark-mode .activity-card { background: var(--rb-panel-dark); border-color: var(--rb-border-dark-muted); box-shadow: none; }
+body.dark-mode .activity-card.a2a { background: var(--rb-cat-a2a-bg-dark); }
+body.dark-mode .activity-card.scheduled { background: var(--rb-cat-scheduled-bg-dark); }
+body.dark-mode .activity-card.subagent .category-badge { background: var(--rb-cat-subagent-badge-bg-dark); color: var(--rb-cat-subagent-badge-fg-dark); }
+body.dark-mode .activity-card.a2a .category-badge { background: var(--rb-cat-a2a-badge-bg-dark); color: var(--rb-cat-a2a-badge-fg-dark); }
+body.dark-mode .activity-card.scheduled .category-badge { background: var(--rb-cat-scheduled-badge-bg-dark); color: var(--rb-cat-scheduled-badge-fg-dark); }
+body.dark-mode .activity-card-name { color: var(--rb-fg-dark-strong); }
+body.dark-mode .activity-card-status { color: var(--rb-fg-dark); }
+body.dark-mode .activity-card-chevron,
+body.dark-mode .activity-card-time,
+body.dark-mode .activity-plan-label { color: var(--rb-fg-dark-subtle); }
+body.dark-mode .activity-plan-bar { background: rgba(255, 255, 255, 0.12); }
+body.dark-mode .activity-card-body > .activity-card-result:first-child { border-top-color: var(--rb-border-dark-muted); }
 
 /* ── Composer ───────────────────────────────────────────────────────────── */
 
@@ -1764,12 +2095,33 @@ body.dark-mode .login-badge {
     }
 
     /* A phone-width header keeps the mark, the connection word and the buttons. Idle activity
-       slots step aside (only live ones show), the title text goes, and Sign out becomes an icon. */
+       slots step aside (only live ones show), except RockBot's, which keeps the activity panel
+       reachable; the title text goes, and Sign out becomes an icon. */
     .chat-title-text,
-    .activity-icon:not(.active),
+    .activity-icon:not(.active):not(.agent),
     .chat-header .label-wide {
         display: none;
     }
+
+    .activity-panel { max-height: 50vh; }
+    .activity-panel-tabs { padding: 0 0.25rem 0 0.5rem; }
+    .activity-panel-tabs [role="tablist"] { gap: 0; }
+    .activity-panel-body { padding: 0.5rem; }
+    .activity-tab { gap: 0.3rem; padding: 0.55rem 0.35rem 0.45rem; }
+    .activity-tab-dot { display: none; }
+
+    /* The full label stays for screen readers; the short one is aria-hidden. */
+    .activity-tab-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+    }
+
+    .activity-tab-short { display: inline; }
 
     .chat-header .label-narrow {
         display: inline-block;

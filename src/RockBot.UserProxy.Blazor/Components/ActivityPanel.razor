@@ -1,0 +1,264 @@
+@* The activity panel (RockBot Design System "ActivityPanel", #828): the detail behind the header's
+   activity slots. One tab per kind (RockBot, subagents, inbound A2A, background tasks), each with
+   what is running and what finished recently, from ActivityDigest. It docks in the page flow under
+   the header and pushes the messages down; it never floats over the chat. It is the same in Simple
+   and Detailed views: in Simple it is the only place the agent's working detail appears. *@
+@using RockBot.UserProxy.Blazor.Services
+@inject ChatStateService ChatState
+@implements IDisposable
+
+<section id="@Id" class="activity-panel" aria-label="Activity details" @onkeydown="OnKeyDown">
+    <div class="activity-panel-tabs">
+        <div role="tablist" aria-label="Activity">
+            @foreach (var kind in Kinds)
+            {
+                var running = Digest[kind].Running.Count;
+                <button type="button" role="tab" id="@TabId(kind)"
+                        class="activity-tab @Css(kind) @(running > 0 ? "live" : null)"
+                        aria-selected="@(kind == Kind ? "true" : "false")" aria-controls="@BodyId"
+                        tabindex="@(kind == Kind ? 0 : -1)"
+                        @ref="_tabs[(int)kind]" @onclick="() => SelectAsync(kind)">
+                    <span class="activity-tab-dot" aria-hidden="true"></span>
+                    <span class="activity-tab-label">@TabLabel(kind)</span>
+                    <span class="activity-tab-short" aria-hidden="true">@ShortLabel(kind)</span>
+                    @if (running > 0)
+                    {
+                        <span class="activity-tab-count"><span class="visually-hidden">, </span>@running<span class="visually-hidden"> running</span></span>
+                    }
+                </button>
+            }
+        </div>
+        <button type="button" class="activity-panel-close" title="Close" aria-label="Close activity details"
+                @onclick="OnClose">
+            <RbIcon Name="x" Size="14" />
+        </button>
+    </div>
+    <div class="activity-panel-body" role="tabpanel" id="@BodyId" aria-labelledby="@TabId(Kind)">
+        @{
+            var group = Digest[Kind];
+        }
+        <h3 class="activity-section-title">Running</h3>
+        @if (group.Running.Count == 0)
+        {
+            <p class="activity-empty">@IdleText(Kind)</p>
+        }
+        @foreach (var item in group.Running)
+        {
+            @Card(item)
+        }
+        <h3 class="activity-section-title">Recently finished</h3>
+        @if (group.Finished.Count == 0)
+        {
+            <p class="activity-empty">Nothing finished yet this session.</p>
+        }
+        @foreach (var item in group.Finished)
+        {
+            @Card(item)
+        }
+    </div>
+</section>
+
+@code {
+    private static readonly ActivityKind[] Kinds =
+        [ActivityKind.Agent, ActivityKind.Subagent, ActivityKind.A2A, ActivityKind.Scheduled];
+
+    [Parameter] public string Id { get; set; } = "rb-activity-panel";
+
+    /// <summary>The open tab.</summary>
+    [Parameter] public ActivityKind Kind { get; set; }
+
+    [Parameter, EditorRequired] public ActivityDigest Digest { get; set; } = ActivityDigest.Empty;
+
+    [Parameter] public TimeZoneInfo DisplayZone { get; set; } = TimeZoneInfo.Utc;
+
+    [Parameter] public EventCallback<ActivityKind> OnKindChanged { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly ElementReference[] _tabs = new ElementReference[4];
+
+    // Cards the user opened or closed, against each card's default (only RockBot's running turn opens by itself).
+    private readonly HashSet<string> _toggled = new(StringComparer.Ordinal);
+
+    // The tab to move focus to after the next render: the open one when the panel opens, then
+    // whichever the arrow keys select.
+    private ActivityKind? _focusTab;
+
+    // Ticks the running items' elapsed time while the panel is open.
+    private Timer? _clock;
+
+    private string BodyId => $"{Id}-body";
+
+    private string TabId(ActivityKind kind) => $"{Id}-tab-{Css(kind)}";
+
+    protected override void OnInitialized()
+    {
+        _focusTab = Kind;
+        _clock = new Timer(_ => InvokeAsync(StateHasChanged), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusTab is { } tab)
+        {
+            _focusTab = null;
+            await _tabs[(int)tab].FocusAsync();
+        }
+    }
+
+    private Task SelectAsync(ActivityKind kind) => OnKindChanged.InvokeAsync(kind);
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+        {
+            await OnClose.InvokeAsync();
+            return;
+        }
+
+        // Arrow keys move between tabs (the tablist pattern); a tab is selected as it gets focus.
+        var step = e.Key switch { "ArrowRight" => 1, "ArrowLeft" => Kinds.Length - 1, _ => 0 };
+        if (step == 0)
+            return;
+        var next = Kinds[(Array.IndexOf(Kinds, Kind) + step) % Kinds.Length];
+        _focusTab = next;
+        await OnKindChanged.InvokeAsync(next);
+    }
+
+    private bool IsOpen(ActivityItem item) =>
+        _toggled.Contains(item.Id) != (item.IsRunning && item.Kind == ActivityKind.Agent);
+
+    private void Toggle(ActivityItem item)
+    {
+        if (!_toggled.Remove(item.Id))
+            _toggled.Add(item.Id);
+    }
+
+    private RenderFragment Card(ActivityItem item) => __builder =>
+    {
+        var hasDetail = item.Log is { ActivityLogEntries.Count: > 0 } || item.Result is not null;
+        var open = hasDetail && IsOpen(item);
+        var bodyId = $"{Id}-card-{item.Id}";
+        <article class="activity-card @Css(item.Kind) @(item.IsRunning ? "running" : "finished")">
+            <button type="button" class="activity-card-head" disabled="@(!hasDetail)"
+                    aria-expanded="@(hasDetail ? (open ? "true" : "false") : null)"
+                    aria-controls="@(hasDetail ? bodyId : null)" @onclick="() => Toggle(item)">
+                <RbIcon Name="chevron-right" Size="12" Class="@($"activity-card-chevron {(open ? "open" : "")}")" />
+                <span class="category-badge">@Badge(item)</span>
+                @if (Name(item) is { Length: > 0 } name)
+                {
+                    <span class="activity-card-name">@name</span>
+                }
+                @if (item.IsRunning)
+                {
+                    <span class="activity-spinner" role="img" aria-label="Running"></span>
+                }
+                <span class="activity-card-time" title="@TimeTitle(item)">@TimeText(item)</span>
+            </button>
+            @if (!string.IsNullOrEmpty(item.Status))
+            {
+                <p class="activity-card-status">@item.Status</p>
+            }
+            @if (item.Plan is { Items.Count: > 0 } plan)
+            {
+                var done = plan.CompletedCount;
+                var total = plan.Items.Count;
+                <div class="activity-plan">
+                    <span class="activity-plan-bar" aria-hidden="true"><span style="width: @(100 * done / total)%"></span></span>
+                    <span class="activity-plan-label">
+                        Step @Math.Min(done + 1, total) of @total@(plan.CurrentItem is { } current ? $" · {current.Description}" : "")
+                    </span>
+                </div>
+            }
+            @if (open)
+            {
+                <div class="activity-card-body" id="@bodyId">
+                    @if (item.Log is { ActivityLogEntries.Count: > 0 } log)
+                    {
+                        <ActivityLogEntries Entries="log.ActivityLogEntries" DisplayZone="DisplayZone" />
+                    }
+                    @if (item.Result is { } result)
+                    {
+                        <div class="activity-card-result">
+                            <span class="tool-call-label">Result</span>
+                            <div class="message-content">@((MarkupString)SafeMarkdownRenderer.RenderSafe(result.Content))</div>
+                        </div>
+                    }
+                </div>
+            }
+        </article>
+    };
+
+    /// <summary>Elapsed time while running; the local finish time once finished.</summary>
+    private string TimeText(ActivityItem item) =>
+        item.IsRunning
+            ? FormatElapsed(ChatState.UtcNow - item.StartedAt)
+            : Local(item.FinishedAt ?? item.StartedAt).ToString("HH:mm");
+
+    private string TimeTitle(ActivityItem item) =>
+        item.IsRunning
+            ? $"Started {Local(item.StartedAt):HH:mm:ss}"
+            : $"Started {Local(item.StartedAt):HH:mm:ss}, finished {Local(item.FinishedAt ?? item.StartedAt):HH:mm:ss}";
+
+    private DateTime Local(DateTime utc) => TimeZoneInfo.ConvertTimeFromUtc(utc, DisplayZone);
+
+    internal static string FormatElapsed(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.Zero)
+            elapsed = TimeSpan.Zero;
+        return elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
+            : $"{elapsed.Minutes}:{elapsed.Seconds:00}";
+    }
+
+    internal static string Css(ActivityKind kind) => kind switch
+    {
+        ActivityKind.Agent => "agent",
+        ActivityKind.Subagent => "subagent",
+        ActivityKind.A2A => "a2a",
+        _ => "scheduled",
+    };
+
+    private static string TabLabel(ActivityKind kind) => kind switch
+    {
+        ActivityKind.Agent => "RockBot",
+        ActivityKind.Subagent => "Subagents",
+        ActivityKind.A2A => "Inbound A2A",
+        _ => "Background tasks",
+    };
+
+    private static string ShortLabel(ActivityKind kind) => kind switch
+    {
+        ActivityKind.A2A => "A2A",
+        ActivityKind.Scheduled => "Tasks",
+        _ => TabLabel(kind),
+    };
+
+    private static string IdleText(ActivityKind kind) => kind switch
+    {
+        ActivityKind.Agent => "RockBot is idle.",
+        ActivityKind.Subagent => "No subagents running.",
+        ActivityKind.A2A => "No inbound A2A calls.",
+        _ => "No background tasks running.",
+    };
+
+    /// <summary>The name beside the badge: a subagent's or worker's task id (the badge already says which).</summary>
+    private static string? Name(ActivityItem item) =>
+        item.Kind == ActivityKind.Subagent
+            ? ChatReducer.SubagentTaskId(item.AgentName) ?? item.DisplayName
+            : item.DisplayName;
+
+    private static string Badge(ActivityItem item) => item.Kind switch
+    {
+        ActivityKind.Agent => "RockBot",
+        ActivityKind.Subagent => item.IsWorker ? "Worker" : "Subagent",
+        ActivityKind.A2A => "Inbound A2A",
+        _ => "Background task",
+    };
+
+    public void Dispose()
+    {
+        _clock?.Dispose();
+        _clock = null;
+    }
+}
