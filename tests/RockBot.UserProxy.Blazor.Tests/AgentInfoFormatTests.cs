@@ -54,6 +54,29 @@ public sealed class AgentInfoFormatTests
     }
 
     [TestMethod]
+    [DataRow(0.0, "$0.00")]
+    [DataRow(0.004, "<$0.01")]
+    [DataRow(1.5, "$1.50")]
+    [DataRow(1234.567, "$1,234.57")]
+    public void Cost(double usd, string expected) => Assert.AreEqual(expected, AgentInfoFormat.Cost(usd));
+
+    [TestMethod]
+    [DataRow(950L, "950")]
+    [DataRow(9_999L, "9,999")]
+    [DataRow(12_345L, "12.3K")]
+    [DataRow(4_560_000L, "4.56M")]
+    public void Tokens(long count, string expected) => Assert.AreEqual(expected, AgentInfoFormat.Tokens(count));
+
+    [TestMethod]
+    public void CacheShare_AndDay()
+    {
+        Assert.AreEqual("62% cached", AgentInfoFormat.CacheShare(new UsageTotalsIntrospection { InputTokens = 1000, CachedInputTokens = 620 }));
+        Assert.IsNull(AgentInfoFormat.CacheShare(new UsageTotalsIntrospection()));
+        Assert.AreEqual("Sun, Nov 15", AgentInfoFormat.Day("2026-11-15"));
+        Assert.AreEqual("garbage", AgentInfoFormat.Day("garbage"));
+    }
+
+    [TestMethod]
     [DataRow(30, "under a minute")]
     [DataRow(42 * 60, "42m")]
     [DataRow(5 * 3600 + 12 * 60, "5h 12m")]

@@ -6,7 +6,7 @@ using Spectre.Console.Cli;
 namespace RockBot.UserProxy.Cli;
 
 /// <summary>
-/// Prints the agent's name and version (round-trip ping). With <c>--models</c>, <c>--pricing</c>
+/// Prints the agent's name and version (round-trip ping). With <c>--models</c>, <c>--pricing</c>, <c>--usage</c>
 /// or <c>--all</c> it also prints what the agent is configured with, which the agent reports
 /// without invoking its LLM (#834).
 /// </summary>
@@ -22,6 +22,10 @@ internal sealed class InfoCommand : AsyncCommand<InfoCommand.Settings>
         [Description("Also show the pricing table the agent estimates cost with (USD per million tokens)")]
         public bool Pricing { get; init; }
 
+        [CommandOption("--usage")]
+        [Description("Also show tokens and estimated cost: today, the last 7 and 30 days, per model, and this session (--session)")]
+        public bool Usage { get; init; }
+
         [CommandOption("--all")]
         [Description("Show every section the agent reports")]
         public bool All { get; init; }
@@ -34,7 +38,8 @@ internal sealed class InfoCommand : AsyncCommand<InfoCommand.Settings>
         public IReadOnlyList<string> Sections =>
             All ? IntrospectionSections.All
             : [.. (Models ? [IntrospectionSections.Models] : Array.Empty<string>()),
-               .. (Pricing ? [IntrospectionSections.Pricing] : Array.Empty<string>())];
+               .. (Pricing ? [IntrospectionSections.Pricing] : Array.Empty<string>()),
+               .. (Usage ? [IntrospectionSections.Usage] : Array.Empty<string>())];
     }
 
     private static readonly JsonSerializerOptions JsonOutput = new(JsonSerializerDefaults.Web)
@@ -65,7 +70,7 @@ internal sealed class InfoCommand : AsyncCommand<InfoCommand.Settings>
                 return 0;
             }
 
-            var introspection = await proxy.GetIntrospectionAsync(sections);
+            var introspection = await proxy.GetIntrospectionAsync(sections, threadId: settings.EffectiveSessionId);
             if (introspection is null)
             {
                 Console.Error.WriteLine(

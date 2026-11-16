@@ -1284,11 +1284,13 @@ public sealed class UserProxyService(
     /// Asks the agent to describe its configuration (<see cref="IntrospectionSections"/>): the
     /// agent answers from its own state, without invoking the LLM (#834). Null or empty
     /// <paramref name="sections"/> asks for all of them. Returns null when the agent doesn't answer
-    /// in time, which is also what an agent older than this request does.
+    /// in time, which is also what an agent older than this request does. <paramref name="threadId"/>
+    /// (a raw session id) adds that thread's own totals to the usage section.
     /// </summary>
     public async Task<AgentIntrospectionResponse?> GetIntrospectionAsync(
         IReadOnlyList<string>? sections = null,
         TimeSpan? timeout = null,
+        string? threadId = null,
         CancellationToken cancellationToken = default)
     {
         var effectiveTimeout = timeout ?? options.DefaultReplyTimeout;
@@ -1298,7 +1300,11 @@ public sealed class UserProxyService(
 
         try
         {
-            var request = new AgentIntrospectionRequest { Sections = sections is { Count: > 0 } ? sections : null };
+            var request = new AgentIntrospectionRequest
+            {
+                Sections = sections is { Count: > 0 } ? sections : null,
+                ThreadId = string.IsNullOrEmpty(threadId) ? null : threadId,
+            };
             var envelope = request.ToEnvelope<AgentIntrospectionRequest>(
                 source: options.ProxyId,
                 correlationId: correlationId,

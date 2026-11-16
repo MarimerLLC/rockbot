@@ -82,7 +82,8 @@ which focus returns to the info button.
 
 - **Modal**, like the saved-responses dialog: everything behind it is inert. Up to 720px wide and
   80vh tall; below 576px it is a full-width sheet from the bottom (90vh).
-- **Tabs** (`tablist`, arrow keys): Agent, Models, Pricing, in the activity panel's tab style.
+- **Tabs** (`tablist`, arrow keys): Agent, Models, Pricing, Usage, in the activity panel's tab
+  style; the row scrolls sideways when it doesn't fit.
 - **Agent**: a definition list (versions, bus state, uptime, when the models were loaded).
 - **Models**: one section per tier. A fallback chain is a numbered list. Each model is a card
   with its id in monospace, its facts as small pills (service, host, reasoning effort, image
@@ -91,6 +92,10 @@ which focus returns to the info button.
 - **Pricing**: a table with numeric columns right-aligned in tabular figures, a sticky header,
   scrolling sideways on narrow screens. A cache rate the row leaves out shows its default
   (input, 1.25×, 2×).
+- **Usage**: a row of cost cards (Today, Last 7 days, Last 30 days, This chat), each the cost large
+  with requests, tokens and cache share beneath. Then tables: by day (with a thin `--rb-primary`
+  bar for the day's share of the busiest day, hidden below 576px), by model, by workload.
+  Unpriced requests get the bordered note.
 - **Unavailable** (an older agent, or no bus): a bordered note in the panel, never an error colour.
 
 ### Header (`.chat-header`)

@@ -41,6 +41,10 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<LlmCostEstimator>();
         services.Configure<LlmPricingOptions>(_ => { });
+        // #834: running token and cost totals, per day and per conversation, for the info views.
+        services.Configure<LlmUsageOptions>(_ => { });
+        services.TryAddSingleton<LlmUsageLedger>();
+        services.AddHostedService<LlmUsageLedgerFlusher>();
         services.Configure<LlmGatewayOptions>(_ => { });
         services.AddSingleton<ILlmGateway, LlmGateway>();
         services.AddTransient<ILlmClient, LlmClient>();

@@ -48,6 +48,41 @@ public static class AgentInfoFormat
         return $"{(int)elapsed.TotalDays}d {elapsed.Hours}h";
     }
 
+    /// <summary>An estimated cost: "$12.34", "<$0.01" for a sliver, "$0.00" for none.</summary>
+    public static string Cost(double usd) =>
+        usd <= 0 ? "$0.00"
+        : usd < 0.01 ? "<$0.01"
+        : "$" + usd.ToString("#,##0.00", CultureInfo.InvariantCulture);
+
+    /// <summary>A token count, compact: 950, 12.3K, 4.56M.</summary>
+    public static string Tokens(long count) => count switch
+    {
+        >= 1_000_000 => (count / 1_000_000d).ToString("0.00", CultureInfo.InvariantCulture) + "M",
+        >= 10_000 => (count / 1_000d).ToString("0.0", CultureInfo.InvariantCulture) + "K",
+        _ => count.ToString("N0", CultureInfo.InvariantCulture),
+    };
+
+    /// <summary>The share of input tokens served from the prompt cache, as "62% cached", or null with no input.</summary>
+    public static string? CacheShare(UsageTotalsIntrospection totals) =>
+        totals.InputTokens <= 0 ? null
+        : $"{(int)Math.Round(totals.CachedInputTokens * 100.0 / totals.InputTokens)}% cached";
+
+    /// <summary>A workload kind in words.</summary>
+    public static string KindLabel(string kind) => kind switch
+    {
+        "session" => "Conversations and scheduled tasks",
+        "subagent" => "Subagents",
+        "worker" => "Workers",
+        "patrol" => "Background (dreams, audits)",
+        _ => "Other",
+    };
+
+    /// <summary>A <c>yyyy-MM-dd</c> date as "Sun, Nov 15"; the text unchanged when it doesn't parse.</summary>
+    public static string Day(string date) =>
+        DateOnly.TryParseExact(date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+            ? d.ToString("ddd, MMM d", CultureInfo.InvariantCulture)
+            : date;
+
     /// <summary>A timestamp in the viewer's time zone.</summary>
     public static string When(DateTimeOffset value, TimeZoneInfo zone) =>
         TimeZoneInfo.ConvertTime(value, zone).ToString("MMM d, yyyy h:mm tt", CultureInfo.InvariantCulture);

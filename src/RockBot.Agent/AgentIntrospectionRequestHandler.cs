@@ -16,7 +16,8 @@ internal sealed class AgentIntrospectionRequestHandler(
     AgentNameHolder agentNameHolder,
     ILogger<AgentIntrospectionRequestHandler> logger,
     LlmConfigSnapshot? llmConfig = null,
-    LlmCostEstimator? costEstimator = null) : IMessageHandler<AgentIntrospectionRequest>
+    LlmCostEstimator? costEstimator = null,
+    LlmUsageLedger? usageLedger = null) : IMessageHandler<AgentIntrospectionRequest>
 {
     private static readonly DateTimeOffset ProcessStartedAt = GetProcessStart();
 
@@ -35,7 +36,8 @@ internal sealed class AgentIntrospectionRequestHandler(
             AssemblyVersion.Current,
             ProcessStartedAt,
             llmConfig,
-            costEstimator);
+            costEstimator,
+            usageLedger);
 
         var envelope = response.ToEnvelope<AgentIntrospectionResponse>(
             source: context.Agent.Name,
@@ -43,8 +45,8 @@ internal sealed class AgentIntrospectionRequestHandler(
 
         await publisher.PublishAsync(replyTo, envelope, context.CancellationToken);
 
-        logger.LogDebug("Published agent introspection: models={Models} pricing={Pricing}",
-            response.Models is not null, response.Pricing is not null);
+        logger.LogDebug("Published agent introspection: models={Models} pricing={Pricing} usage={Usage}",
+            response.Models is not null, response.Pricing is not null, response.Usage is not null);
     }
 
     /// <summary>The answer to <paramref name="request"/>, from the given state.</summary>
@@ -54,7 +56,8 @@ internal sealed class AgentIntrospectionRequestHandler(
         string agentVersion,
         DateTimeOffset? startedAt,
         LlmConfigSnapshot? llmConfig,
-        LlmCostEstimator? costEstimator)
+        LlmCostEstimator? costEstimator,
+        LlmUsageLedger? usageLedger = null)
     {
         var wanted = request.Sections is { Count: > 0 } sections
             ? new HashSet<string>(sections, StringComparer.OrdinalIgnoreCase)
@@ -70,6 +73,9 @@ internal sealed class AgentIntrospectionRequestHandler(
                 : null,
             Pricing = wanted.Contains(IntrospectionSections.Pricing) && costEstimator is not null
                 ? Pricing(costEstimator)
+                : null,
+            Usage = wanted.Contains(IntrospectionSections.Usage) && usageLedger is not null
+                ? Usage(usageLedger.GetReport(request.ThreadId))
                 : null,
         };
     }
@@ -116,6 +122,33 @@ internal sealed class AgentIntrospectionRequestHandler(
     {
         LoadedFrom = costEstimator.LoadedFrom,
         Rows = [.. costEstimator.Entries.Select(Price)],
+    };
+
+    private static UsageIntrospection Usage(LlmUsageReport report) => new()
+    {
+        TimeZone = report.TimeZone,
+        Since = report.Since,
+        Today = report.Today,
+        TodayTotals = Totals(report.TodayTotals),
+        Last7Days = Totals(report.Last7Days),
+        Last30Days = Totals(report.Last30Days),
+        Days = [.. report.Days.Select(d => new DayUsageIntrospection { Date = d.Date, Totals = Totals(d.Totals) })],
+        Models = [.. report.Models30Days.Select(m => new ModelUsageIntrospection { ModelId = m.ModelId, Totals = Totals(m.Totals) })],
+        Kinds = [.. report.Kinds30Days.Select(k => new KindUsageIntrospection { Kind = k.Kind, Totals = Totals(k.Totals) })],
+        Thread = report.Thread is { } t && report.ThreadId is { } id
+            ? new ThreadUsageIntrospection { ThreadId = id, FirstAt = t.FirstAt, LastAt = t.LastAt, Totals = Totals(t.Totals) }
+            : null,
+    };
+
+    private static UsageTotalsIntrospection Totals(LlmUsageTotals t) => new()
+    {
+        Requests = t.Requests,
+        InputTokens = t.InputTokens,
+        CachedInputTokens = t.CachedInputTokens,
+        CacheWriteTokens = t.CacheWriteTokens,
+        OutputTokens = t.OutputTokens,
+        CostUsd = t.CostUsd,
+        UnpricedRequests = t.UnpricedRequests,
     };
 
     private static PriceIntrospection Price(LlmPricingEntry entry) => new()

@@ -406,7 +406,7 @@
     @if (_showInfoDialog)
     {
         <AgentInfoDialog AgentName="@state.AgentName" AgentVersion="@state.AgentVersion" AppVersion="@UiVersion"
-                         DisplayZone="_displayZone" OnClose="CloseInfoDialog" />
+                         DisplayZone="_displayZone" ThreadId="@SessionId" OnClose="CloseInfoDialog" />
     }
 
     <div class="composer" inert="@ModalOpen">

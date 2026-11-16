@@ -674,14 +674,27 @@ internal static class AgUiRestEndpoints
     }
 
     /// <summary>
-    /// <c>GET /agent/introspection?sections=models,pricing</c>: what the agent is configured with,
-    /// as the agent describes it without invoking its LLM (#834). <c>sections</c> is a
-    /// comma-separated list of <see cref="IntrospectionSections"/>; without it, every section.
-    /// About the agent as a whole, so it takes no thread.
+    /// <c>GET /agent/introspection?sections=models,pricing,usage&amp;threadId=</c>: what the agent is
+    /// configured with and what it has used, as the agent describes it without invoking its LLM
+    /// (#834). <c>sections</c> is a comma-separated list of <see cref="IntrospectionSections"/>;
+    /// without it, every section. The thread (the one named, or the only one there is) adds its
+    /// own totals to the usage section; with several threads and none named, there are none.
     /// </summary>
     private static async Task<IResult> IntrospectionAsync(
-        string? sections, UserProxyService proxy, AgUiOptions options, CancellationToken ct)
+        string? sections, string? threadId, UserProxyService proxy, AgUiOptions options, CancellationToken ct)
     {
+        string? thread = null;
+        if (!string.IsNullOrEmpty(threadId))
+        {
+            if (!options.IsThreadAllowed(threadId))
+                return ThreadNotAllowed(threadId);
+            thread = threadId;
+        }
+        else if (options.ThreadIds() is [var only])
+        {
+            thread = only;
+        }
+
         if (!proxy.IsConnected)
             return NotConnected();
 
@@ -690,7 +703,7 @@ internal static class AgUiRestEndpoints
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return await proxy.GetIntrospectionAsync(wanted, options.RequestTimeout, ct) is { } introspection
+        return await proxy.GetIntrospectionAsync(wanted, options.RequestTimeout, thread, ct) is { } introspection
             ? Json(introspection)
             : NoAnswer("the request to describe itself");
     }

@@ -83,6 +83,7 @@ public static class LlmServiceCollectionExtensions
             var logger = sp.GetRequiredService<ILogger<RockBotFunctionInvokingChatClient>>();
             var diagLogger = sp.GetRequiredService<ILogger<DiagnosticLoggingChatClient>>();
             var accountingLogger = sp.GetRequiredService<ILogger<RequestAccountingChatClient>>();
+            var usageLedger = sp.GetService<LlmUsageLedger>();
             var progressNotifier = sp.GetService<IToolProgressNotifier>();
             var toolCallLog = sp.GetService<IToolCallLog>();
             var costEstimator = sp.GetRequiredService<LlmCostEstimator>();
@@ -96,7 +97,7 @@ public static class LlmServiceCollectionExtensions
                 // Request accounting (#670) sits innermost so each request the provider sees is
                 // measured once — every function-invoking iteration, not the loop's summed usage.
                 var watched = new DiagnosticLoggingChatClient(
-                    new RequestAccountingChatClient(raw, accountingLogger, tierLabel), diagLogger, tierLabel);
+                    new RequestAccountingChatClient(raw, accountingLogger, tierLabel, usageLedger), diagLogger, tierLabel);
                 if (behavior.UseTextBasedToolCalling)
                 {
                     // Tools stay in ChatOptions for AgentLoopRunner to dispatch parsed calls.
@@ -122,7 +123,7 @@ public static class LlmServiceCollectionExtensions
             // watch), not its function-invoking wrapper: the Low tier's loop keeps running and
             // only its model changes.
             var escalationTarget = new DiagnosticLoggingChatClient(
-                new RequestAccountingChatClient(balancedInnerClient, accountingLogger, "Balanced (escalated)"),
+                new RequestAccountingChatClient(balancedInnerClient, accountingLogger, "Balanced (escalated)", usageLedger),
                 diagLogger, "Balanced (escalated)");
 
             return new TieredChatClientRegistry(

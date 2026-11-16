@@ -157,6 +157,10 @@ without calling its LLM, so it works while the LLM is failing and costs no token
   embedding model and the decision model.
 - **Pricing**: the pricing table, in USD per million tokens, and whether it came from
   `llm-pricing.json` or the agent's built-in table.
+- **Usage**: estimated cost and tokens for today, the last 7 and 30 days and this chat (with the
+  subagents and workers it started), then by day, by model and by workload (conversations,
+  subagents, workers, the agent's background work). Requests on a model no pricing row matches are
+  called out, since they are counted at $0. The Agent tab also shows today's cost.
 
 The refresh button asks again. An agent older than this UI doesn't answer; the Agent tab still
 shows what the page already knows, and the other tabs say the agent doesn't report it. The same

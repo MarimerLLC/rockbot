@@ -56,7 +56,7 @@ browser apps. A small Blazor WebAssembly app in the repository shows a client us
 | `GET /mcp-signin`, `POST /mcp-signin/{server}/start` | Signing in to an OAuth-protected MCP server. See [MCP sign-in](#mcp-sign-in). |
 | `GET /mcp-oauth/callback` | Where an authorization server sends the browser back. Not called by a client. |
 | `GET /agent` | The agent's name, version and current work. See [Agent info](#agent-info-get-agent). |
-| `GET /agent/introspection` | What the agent is configured with: its models and its pricing table. See [Introspection](#introspection-get-agentintrospection). |
+| `GET /agent/introspection` | What the agent is configured with and what it has used: its models, its pricing table, its token usage and cost. See [Introspection](#introspection-get-agentintrospection). |
 | `POST /tickets` | A short-lived URL for an attachment or the notify stream, for a browser request that can't send a token. See [Access tickets](#access-tickets-post-tickets). |
 | `GET /healthz` | `200` while the proxy is subscribed on the message bus, `503` otherwise. |
 
@@ -967,12 +967,28 @@ curl 'http://rockbot-agui/agent/introspection?sections=models,pricing'
     "rows": [ { "prefix": "claude-haiku-5-5", "inputPerM": 0.1, "outputPerM": 0.5, "cachedInputPerM": 0.01 }, … ] } }
 ```
 
-What the agent is configured with, for an info screen. The agent answers from its own state without
-calling its LLM, so this works while the LLM is failing and costs no tokens. It is about the agent
-as a whole and takes no `threadId`.
+With `sections=usage` (here for a thread named `agui-session`):
 
-- **`sections`** (optional) is a comma-separated list: `models`, `pricing`. Without it, every
-  section. A section the agent doesn't know, or can't report, is left out of the answer.
+```json
+{ "agentName": "RockBot", "agentVersion": "0.18.4",
+  "usage": {
+    "timeZone": "America/Chicago", "since": "2026-11-15T08:00:00+00:00", "today": "2026-11-15",
+    "todayTotals": { "requests": 142, "inputTokens": 3120000, "cachedInputTokens": 2400000,
+                     "cacheWriteTokens": 90000, "outputTokens": 41000, "costUsd": 0.61, "unpricedRequests": 0 },
+    "last7Days": { … }, "last30Days": { … },
+    "days": [ { "date": "2026-11-15", "totals": { … } }, … ],
+    "models": [ { "modelId": "claude-haiku-5-5", "totals": { … } }, … ],
+    "kinds": [ { "kind": "session", "totals": { … } }, { "kind": "patrol", "totals": { … } }, … ],
+    "thread": { "threadId": "agui-session", "firstAt": "…", "lastAt": "…", "totals": { … } } } }
+```
+
+What the agent is configured with and what it has used, for an info screen. The agent answers from
+its own state without calling its LLM, so this works while the LLM is failing and costs no tokens.
+
+- **`sections`** (optional) is a comma-separated list: `models`, `pricing`, `usage`. Without it,
+  every section. A section the agent doesn't know, or can't report, is left out of the answer.
+- **`threadId`** (optional) adds that thread's own totals to `usage` (`usage.thread`). It must be
+  an allowed thread (`403` otherwise). Left out, it is the only thread when there is one, else none.
 - **`models`**: each tier's models in the order the agent tries them (more than one is a fallback
   chain; `usesTier` means the tier has no model of its own), with the pricing row each is costed
   with (no `price` means no row matches and the model is costed at $0), the embedding model and the
@@ -981,6 +997,14 @@ as a whole and takes no `threadId`.
   first row whose prefix its id contains. No `loadedFrom` means the agent is using its built-in
   fallback table. A missing cache rate defaults as described in the agent's pricing file docs: cache
   reads at the input rate, cache writes at 1.25× (5-minute TTL) and 2× (1-hour TTL) input.
+- **`usage`**: requests, tokens and estimated cost for today and the last 7 and 30 days; each day
+  of the last 30 that had usage (`days`, newest first); the last 30 days by model and by workload
+  (`kinds`: `session` for conversations and scheduled tasks, `subagent`, `worker`, `patrol` for the
+  agent's own background work); and the thread's totals. Every request the agent sends a provider
+  is counted, and a thread's totals include the subagents and workers it started. Days are in the
+  agent's home time zone; `since` is when the agent started counting (it keeps the totals in
+  `usage-ledger.json` on its volume, 90 days). `unpricedRequests` counts requests whose model no
+  pricing row matches, which are costed at $0.
 
 Nothing in the answer is a credential: there are no API keys, and endpoints are a host only. An agent
 older than this endpoint doesn't answer, so the proxy answers `504`.

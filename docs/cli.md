@@ -14,7 +14,7 @@ That one-shot form is how scripts and live tests drive the agent.
 | Command | What it does |
 |---|---|
 | `chat` (default) | Interactive chat, or one turn with `--message <TEXT>` (`-` reads stdin) |
-| `info` | The agent's name and version; with `--models`, `--pricing` or `--all`, what it is configured with. See [Agent info](#agent-info-rockbot-info) |
+| `info` | The agent's name and version; with `--models`, `--pricing`, `--usage` or `--all`, what it is configured with and what it has used. See [Agent info](#agent-info-rockbot-info) |
 | `status` | The agent's current activity (processing, subagents) |
 | `history` | Stored conversation history for a session |
 | `clear` | Reset the agent's in-memory conversation context for a session |
@@ -36,6 +36,7 @@ LLM is failing and cost no tokens.
 |---|---|
 | `--models` | Each tier (Low, Balanced, High) with its models in fallback order, the service and endpoint host of each, the pricing row it is costed with, the embedding model and the decision model |
 | `--pricing` | The pricing table the agent estimates cost with, in USD per million tokens, and whether it came from `llm-pricing.json` or the built-in fallback table |
+| `--usage` | Tokens and estimated cost today, over the last 7 and 30 days, per model and per workload, and for the session given with `--session` (default `cli-session`) |
 | `--all` | Every section |
 | `--json` | The agent's answer as JSON instead of text. With no section flag, every section |
 

@@ -47,18 +47,22 @@
             {
                 @ModelsTab(_info!.Models)
             }
-            else
+            else if (_tab == Tab.Pricing)
             {
                 @PricingTab(_info!.Pricing)
+            }
+            else
+            {
+                @UsageTab(_info!.Usage)
             }
         </div>
     </div>
 </div>
 
 @code {
-    private enum Tab { Agent, Models, Pricing }
+    private enum Tab { Agent, Models, Pricing, Usage }
 
-    private static readonly Tab[] Tabs = [Tab.Agent, Tab.Models, Tab.Pricing];
+    private static readonly Tab[] Tabs = [Tab.Agent, Tab.Models, Tab.Pricing, Tab.Usage];
 
     [Parameter] public string? AgentName { get; set; }
 
@@ -69,9 +73,12 @@
 
     [Parameter] public TimeZoneInfo DisplayZone { get; set; } = TimeZoneInfo.Utc;
 
+    /// <summary>The chat's thread (raw session id): the Usage tab shows its own totals.</summary>
+    [Parameter] public string? ThreadId { get; set; }
+
     [Parameter] public EventCallback OnClose { get; set; }
 
-    private readonly ElementReference[] _tabRefs = new ElementReference[3];
+    private readonly ElementReference[] _tabRefs = new ElementReference[Tabs.Length];
     private ElementReference _dialog;
     private Tab _tab = Tab.Agent;
     private Tab? _focusTab;
@@ -102,7 +109,7 @@
         try
         {
             _info = ProxyService.IsConnected
-                ? await ProxyService.GetIntrospectionAsync(timeout: TimeSpan.FromSeconds(10)) ?? _info
+                ? await ProxyService.GetIntrospectionAsync(timeout: TimeSpan.FromSeconds(10), threadId: ThreadId) ?? _info
                 : null;
         }
         catch
@@ -143,7 +150,8 @@
     {
         Tab.Agent => "Agent",
         Tab.Models => "Models",
-        _ => "Pricing",
+        Tab.Pricing => "Pricing",
+        _ => "Usage",
     };
 
     private RenderFragment AgentTab => __builder =>
@@ -167,6 +175,11 @@
             {
                 <dt>Models loaded</dt>
                 <dd>@AgentInfoFormat.When(models.LoadedAt, DisplayZone) <span class="info-muted">(a model change needs a restart)</span></dd>
+            }
+            @if (_info?.Usage is { } usage)
+            {
+                <dt>Used today</dt>
+                <dd>@AgentInfoFormat.Cost(usage.TodayTotals.CostUsd) <span class="info-muted">(@usage.TodayTotals.Requests.ToString("N0") requests, estimated)</span></dd>
             }
         </dl>
         if (_info is null)
@@ -303,6 +316,141 @@
                             <td class="num">@AgentInfoFormat.CacheRate(row.CachedInputPerM, "input")</td>
                             <td class="num">@AgentInfoFormat.CacheRate(row.CacheWrite5mPerM, "1.25×")</td>
                             <td class="num">@AgentInfoFormat.CacheRate(row.CacheWrite1hPerM, "2×")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    };
+
+    private RenderFragment UsageTab(UsageIntrospection? usage) => __builder =>
+    {
+        if (usage is null)
+        {
+            <p class="info-unavailable">The agent didn't report its usage.</p>
+            return;
+        }
+
+        <div class="usage-cards">
+            @UsageCard("Today", usage.TodayTotals)
+            @UsageCard("Last 7 days", usage.Last7Days)
+            @UsageCard("Last 30 days", usage.Last30Days)
+            @if (usage.Thread is { } thread)
+            {
+                @UsageCard("This chat", thread.Totals)
+            }
+        </div>
+
+        if (usage.Last30Days.UnpricedRequests > 0)
+        {
+            <p class="info-unavailable usage-unpriced">
+                @usage.Last30Days.UnpricedRequests.ToString("N0") request(s) in the last 30 days used a model no pricing row
+                matches, so they are counted at $0. The Models tab shows which.
+            </p>
+        }
+
+        if (usage.Days.Count > 0)
+        {
+            var max = Math.Max(usage.Days.Max(d => d.Totals.CostUsd), 1e-9);
+            <h3 class="activity-section-title">By day</h3>
+            <div class="info-table-wrap">
+                <table class="info-table usage-days">
+                    <thead>
+                        <tr>
+                            <th scope="col">Day</th>
+                            <th scope="col" class="num">Requests</th>
+                            <th scope="col" class="num narrow-hide">Input</th>
+                            <th scope="col" class="num narrow-hide">Output</th>
+                            <th scope="col" class="num">Cost</th>
+                            <th scope="col" class="usage-bar-col"><span class="visually-hidden">Share of the busiest day</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var day in usage.Days)
+                        {
+                            <tr>
+                                <th scope="row">@AgentInfoFormat.Day(day.Date)@(day.Date == usage.Today ? " (today)" : "")</th>
+                                <td class="num">@day.Totals.Requests.ToString("N0")</td>
+                                <td class="num narrow-hide">@AgentInfoFormat.Tokens(day.Totals.InputTokens)</td>
+                                <td class="num narrow-hide">@AgentInfoFormat.Tokens(day.Totals.OutputTokens)</td>
+                                <td class="num">@AgentInfoFormat.Cost(day.Totals.CostUsd)</td>
+                                <td class="usage-bar-col" aria-hidden="true">
+                                    <span class="usage-bar"><span style="width: @((int)Math.Round(100 * day.Totals.CostUsd / max))%"></span></span>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        if (usage.Models.Count > 0)
+        {
+            <h3 class="activity-section-title">By model, last 30 days</h3>
+            @TotalsTable("Model", usage.Models.Select(m => (m.ModelId, true, m.Totals)))
+        }
+
+        if (usage.Kinds.Count > 0)
+        {
+            <h3 class="activity-section-title">By workload, last 30 days</h3>
+            @TotalsTable("Workload", usage.Kinds.Select(k => (AgentInfoFormat.KindLabel(k.Kind), false, k.Totals)))
+        }
+
+        <p class="info-note">
+            Estimated from the agent's pricing table, counting every request it sends: conversations
+            (with the subagents and workers they start), scheduled tasks and its own background work.
+            Days are in @usage.TimeZone@(usage.Since is { } since ? $"; counted since {AgentInfoFormat.When(since, DisplayZone)}" : "").
+        </p>
+    };
+
+    private static RenderFragment UsageCard(string label, UsageTotalsIntrospection totals) => __builder =>
+    {
+        <div class="usage-card">
+            <div class="usage-card-label">@label</div>
+            <div class="usage-card-cost">@AgentInfoFormat.Cost(totals.CostUsd)</div>
+            <div class="usage-card-detail">
+                @totals.Requests.ToString("N0") requests · @AgentInfoFormat.Tokens(totals.InputTokens) in · @AgentInfoFormat.Tokens(totals.OutputTokens) out
+                @if (AgentInfoFormat.CacheShare(totals) is { } share)
+                {
+                    <span> · @share</span>
+                }
+            </div>
+        </div>
+    };
+
+    private static RenderFragment TotalsTable(string header, IEnumerable<(string Label, bool Code, UsageTotalsIntrospection Totals)> rows) => __builder =>
+    {
+        <div class="info-table-wrap">
+            <table class="info-table">
+                <thead>
+                    <tr>
+                        <th scope="col">@header</th>
+                        <th scope="col" class="num">Requests</th>
+                        <th scope="col" class="num narrow-hide">Input</th>
+                        <th scope="col" class="num narrow-hide">Cached</th>
+                        <th scope="col" class="num narrow-hide">Output</th>
+                        <th scope="col" class="num">Cost</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var (label, code, t) in rows)
+                    {
+                        <tr>
+                            <th scope="row">
+                                @if (code)
+                                {
+                                    <code>@label</code>
+                                }
+                                else
+                                {
+                                    @label
+                                }
+                            </th>
+                            <td class="num">@t.Requests.ToString("N0")</td>
+                            <td class="num narrow-hide">@AgentInfoFormat.Tokens(t.InputTokens)</td>
+                            <td class="num narrow-hide">@AgentInfoFormat.Tokens(t.CachedInputTokens)</td>
+                            <td class="num narrow-hide">@AgentInfoFormat.Tokens(t.OutputTokens)</td>
+                            <td class="num">@AgentInfoFormat.Cost(t.CostUsd)</td>
                         </tr>
                     }
                 </tbody>

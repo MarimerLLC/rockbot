@@ -2404,3 +2404,80 @@ body.dark-mode .info-table thead th { background: var(--rb-bg-dark-muted); color
     .info-facts { grid-template-columns: 1fr; gap: 0.1rem; }
     .info-facts dd + dt { margin-top: 0.4rem; }
 }
+
+/* Agent info dialog: the Usage tab (#834). Cost cards, then tables; the per-day bar is a plain
+   blue track (blue is interaction/data here, never a category tint). */
+
+.info-tabs { overflow-x: auto; }
+
+.usage-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.usage-card {
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--rb-border);
+    border-radius: 0.375rem;
+    box-shadow: var(--rb-shadow-hairline);
+}
+
+.usage-card-label {
+    font-size: 0.7rem;
+    font-weight: var(--rb-weight-semi);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--rb-fg-muted-on-tint);
+}
+
+.usage-card-cost {
+    margin-top: 0.1rem;
+    font-size: var(--rb-text-lg);
+    font-weight: var(--rb-weight-semi);
+    font-variant-numeric: tabular-nums;
+}
+
+.usage-card-detail {
+    margin-top: 0.15rem;
+    font-size: 0.75rem;
+    color: var(--rb-fg-muted-on-tint);
+    font-variant-numeric: tabular-nums;
+}
+
+.usage-unpriced { margin: 0 0 0.75rem; }
+
+.info-panel .activity-section-title + .info-table-wrap { margin-top: 0.4rem; }
+.info-table-wrap + .activity-section-title { margin-top: 0.9rem; }
+
+.usage-bar-col { width: 22%; min-width: 4rem; }
+
+.usage-bar {
+    display: block;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--rb-bg-subtle);
+    overflow: hidden;
+}
+
+.usage-bar > span {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--rb-primary);
+}
+
+body.dark-mode .usage-card { background: var(--rb-panel-dark); border-color: var(--rb-border-dark-muted); box-shadow: none; }
+body.dark-mode .usage-card-label,
+body.dark-mode .usage-card-detail { color: var(--rb-fg-dark-subtle); }
+body.dark-mode .usage-bar { background: var(--rb-bg-dark-muted); }
+body.dark-mode .usage-bar > span { background: var(--rb-link-dark); }
+
+@media (max-width: 576px) {
+    .usage-cards { grid-template-columns: 1fr 1fr; }
+    .usage-bar-col { display: none; }
+    /* Cost is what a phone needs; token detail stays on the cards and on wider screens. */
+    .info-table .narrow-hide { display: none; }
+    .info-table tbody th { white-space: normal; }
+}
