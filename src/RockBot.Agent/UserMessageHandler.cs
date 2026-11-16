@@ -105,9 +105,11 @@ internal sealed class UserMessageHandler(
         try
         {
             var turns = await conversationMemory.GetTurnsAsync(sessionId);
-            // The last turn is this message; the agent's reply is the latest one before it.
+            // The last turn is this message; the agent's reply is the latest one before it. A turn
+            // copied in from another session (#841) wasn't this session's reply.
             var previousAgentMessage = turns.Take(Math.Max(0, turns.Count - 1))
-                .LastOrDefault(t => !string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase))?.Content;
+                .LastOrDefault(t => !string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase)
+                    && t.ImportedFrom is null)?.Content;
 
             if (!await _correctionDetector.IsCorrectionAsync(content, previousAgentMessage))
                 return;

@@ -183,6 +183,24 @@ public class ConversationHistoryRequestHandlerTests
     }
 
     [TestMethod]
+    public async Task ReadTurns_KeepsAnImportWhoseOriginalPredatesAClear()
+    {
+        var memory = new DictionaryConversationMemory();
+        await memory.AddTurnAsync(WellKnownSessions.Scheduled, new ConversationTurn("assistant", "daily report", T0) { Id = "r1" });
+        await memory.AddTurnAsync(Thread, new ConversationTurn("assistant", "daily report", T0.AddMinutes(10))
+        {
+            Id = "copy",
+            ImportedFrom = new ConversationTurnReference(WellKnownSessions.Scheduled, "r1"),
+        });
+
+        var turns = await ConversationHistoryRequestHandler.ReadTurnsAsync(memory,
+            new ConversationHistoryRequest { SessionId = Thread, IncludeBroadcast = true }, CancellationToken.None,
+            clearedAt: T0.AddMinutes(5));
+
+        CollectionAssert.AreEqual(new[] { "copy" }, turns.Select(t => t.Id).ToArray());
+    }
+
+    [TestMethod]
     public async Task ReadTurns_WithTheFlag_KeepsAnImportFromAnotherThread()
     {
         var memory = new DictionaryConversationMemory();

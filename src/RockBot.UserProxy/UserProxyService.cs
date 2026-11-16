@@ -402,7 +402,7 @@ public sealed class UserProxyService(
 
         try
         {
-            var outgoing = Outgoing(message);
+            var (outgoing, position) = Outgoing(message);
             var envelope = outgoing.ToEnvelope<UserMessage>(
                 source: options.ProxyId,
                 correlationId: correlationId,
@@ -410,6 +410,7 @@ public sealed class UserProxyService(
                 destination: message.TargetAgent);
 
             await publisher.PublishAsync($"{UserProxyTopics.UserMessage}.{options.AgentName}", envelope, cancellationToken);
+            _relatedReplies.Commit(message.SessionId, position);
             UserProxyDiagnostics.MessagesSent.Add(1);
 
             logger.LogDebug("Published user message {CorrelationId} to {Topic}",
@@ -434,15 +435,16 @@ public sealed class UserProxyService(
 
     /// <summary>
     /// The message as sent: asking for agent events, and carrying the other sessions' replies the
-    /// frontend showed since the session last sent (#841).
+    /// frontend showed since the session last sent (#841). Commit the returned position with
+    /// <see cref="RelatedReplyTracker.Commit"/> once the message is published.
     /// </summary>
-    private UserMessage Outgoing(UserMessage message)
+    private (UserMessage Message, long Position) Outgoing(UserMessage message)
     {
-        var outgoing = _relatedReplies.Stamp(message, frontend.ShowsReplyIn);
-        if (outgoing.RelatedReplies is { Count: > 0 } related && !ReferenceEquals(outgoing, message))
+        var (outgoing, position) = _relatedReplies.Stamp(message, frontend.ShowsReplyIn);
+        if (!ReferenceEquals(outgoing, message))
             logger.LogDebug("Attaching {Count} related replies to the message for session {SessionId}",
-                related.Count, message.SessionId);
-        return outgoing with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents };
+                outgoing.RelatedReplies!.Count, message.SessionId);
+        return (outgoing with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents }, position);
     }
 
     private async Task<TurnResult> WaitForTurnAsync(
@@ -643,7 +645,7 @@ public sealed class UserProxyService(
     {
         var correlationId = Guid.NewGuid().ToString("N");
 
-        var outgoing = Outgoing(message);
+        var (outgoing, position) = Outgoing(message);
         var envelope = outgoing.ToEnvelope<UserMessage>(
             source: options.ProxyId,
             correlationId: correlationId,
@@ -651,6 +653,7 @@ public sealed class UserProxyService(
             destination: message.TargetAgent);
 
         await publisher.PublishAsync($"{UserProxyTopics.UserMessage}.{options.AgentName}", envelope, cancellationToken);
+        _relatedReplies.Commit(message.SessionId, position);
         UserProxyDiagnostics.MessagesSent.Add(1);
 
         logger.LogDebug("Published fire-and-forget user message {CorrelationId}", correlationId);

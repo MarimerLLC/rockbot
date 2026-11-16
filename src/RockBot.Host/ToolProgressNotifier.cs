@@ -44,11 +44,9 @@ public sealed class ToolProgressContext
 /// <summary>Helpers for the two forms a session id takes.</summary>
 public static class SessionIds
 {
-    private const string Prefix = "session/";
 
     /// <summary>The raw session id, with the working-memory <c>session/</c> prefix removed.</summary>
-    public static string Raw(string sessionId) =>
-        sessionId.StartsWith(Prefix, StringComparison.Ordinal) ? sessionId[Prefix.Length..] : sessionId;
+    public static string Raw(string sessionId) => UserProxy.SessionIdForms.Raw(sessionId);
 }
 
 /// <summary>

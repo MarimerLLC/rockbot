@@ -95,15 +95,16 @@ public class SessionOriginStoreTests
     [TestMethod]
     public void AtMostMaxEntries_OldestDropped()
     {
-        var store = Open();
-        for (var i = 0; i <= SessionOriginStore.MaxEntries; i++)
-            store.Set($"s{i}", Origin($"s{i}", at: Now.AddMinutes(-SessionOriginStore.MaxEntries - 1 + i)));
+        const int max = 3;
+        var store = new SessionOriginStore(_path, null, new FixedTime(Now), max);
+        for (var i = 0; i <= max; i++)
+            store.Set($"s{i}", Origin($"s{i}", at: Now.AddMinutes(-max - 1 + i)));
 
         var reloaded = Open();
 
         Assert.IsNull(reloaded.Get("s0"), "the oldest went");
         Assert.IsNotNull(reloaded.Get("s1"));
-        Assert.IsNotNull(reloaded.Get($"s{SessionOriginStore.MaxEntries}"));
+        Assert.IsNotNull(reloaded.Get($"s{max}"));
     }
 
     [TestMethod]

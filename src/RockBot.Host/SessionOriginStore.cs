@@ -46,7 +46,9 @@ public sealed class SessionOriginStore
 
     private readonly Dictionary<string, ReplyOrigin> _byId = new(StringComparer.OrdinalIgnoreCase);
     private readonly Lock _lock = new();
+    private readonly Lock _writeLock = new();
     private readonly string? _path;
+    private readonly int _maxEntries = MaxEntries;
     private readonly ILogger _logger;
     private readonly TimeProvider _time;
 
@@ -59,8 +61,14 @@ public sealed class SessionOriginStore
 
     /// <summary>A store kept in <paramref name="path"/>, loaded from it now.</summary>
     public SessionOriginStore(string path, ILogger<SessionOriginStore>? logger = null, TimeProvider? timeProvider = null)
+        : this(path, logger, timeProvider, MaxEntries)
+    {
+    }
+
+    internal SessionOriginStore(string path, ILogger<SessionOriginStore>? logger, TimeProvider? timeProvider, int maxEntries)
     {
         _path = path;
+        _maxEntries = maxEntries;
         _logger = logger ?? (ILogger)NullLogger.Instance;
         _time = timeProvider ?? TimeProvider.System;
         Load();
@@ -73,11 +81,11 @@ public sealed class SessionOriginStore
     /// </summary>
     public void Set(string sessionId, ReplyOrigin origin)
     {
+        bool added;
         lock (_lock)
-        {
-            if (_byId.TryAdd(sessionId, origin))
-                Save();
-        }
+            added = _byId.TryAdd(sessionId, origin);
+        if (added)
+            Save();
     }
 
     /// <summary>Returns the cached origin for <paramref name="sessionId"/>, or null.</summary>
@@ -90,11 +98,11 @@ public sealed class SessionOriginStore
     /// <summary>Removes any cached entry. Called when the user resets the conversation.</summary>
     public void Clear(string sessionId)
     {
+        bool removed;
         lock (_lock)
-        {
-            if (_byId.Remove(sessionId))
-                Save();
-        }
+            removed = _byId.Remove(sessionId);
+        if (removed)
+            Save();
     }
 
     /// <summary>The file's contents.</summary>
@@ -131,22 +139,34 @@ public sealed class SessionOriginStore
         }
     }
 
-    /// <summary>Writes the cache to the file. Called under <see cref="_lock"/>, so writes are in order.</summary>
+    /// <summary>
+    /// Writes the cache to the file. The snapshot is taken under <see cref="_lock"/> but written
+    /// outside it, so readers never wait on the disk; <see cref="_writeLock"/> keeps writes in
+    /// order, and each takes its snapshot inside it, so the last write has the latest state.
+    /// </summary>
     private void Save()
     {
         if (_path is null)
             return;
 
-        Prune();
-        try
+        lock (_writeLock)
         {
-            var json = JsonSerializer.Serialize(new OriginsFile { Origins = new(_byId, StringComparer.Ordinal) }, JsonOptions);
-            AtomicFile.WriteAllText(_path, json);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // The in-memory cache still answers; only a restart before the next write loses it.
-            _logger.LogWarning(ex, "Could not write session origins to {Path}", _path);
+            string json;
+            lock (_lock)
+            {
+                Prune();
+                json = JsonSerializer.Serialize(new OriginsFile { Origins = new(_byId, StringComparer.Ordinal) }, JsonOptions);
+            }
+
+            try
+            {
+                AtomicFile.WriteAllText(_path, json);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The in-memory cache still answers; only a restart before the next write loses it.
+                _logger.LogWarning(ex, "Could not write session origins to {Path}", _path);
+            }
         }
     }
 
@@ -156,9 +176,9 @@ public sealed class SessionOriginStore
         foreach (var (sessionId, _) in _byId.Where(e => e.Value.StartedAt < cutoff).ToList())
             _byId.Remove(sessionId);
 
-        if (_byId.Count > MaxEntries)
+        if (_byId.Count > _maxEntries)
         {
-            foreach (var (sessionId, _) in _byId.OrderBy(e => e.Value.StartedAt).Take(_byId.Count - MaxEntries).ToList())
+            foreach (var (sessionId, _) in _byId.OrderBy(e => e.Value.StartedAt).Take(_byId.Count - _maxEntries).ToList())
                 _byId.Remove(sessionId);
         }
     }

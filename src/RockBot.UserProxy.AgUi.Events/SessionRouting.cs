@@ -7,7 +7,7 @@ namespace RockBot.UserProxy.AgUi;
 public static class SessionRouting
 {
     /// <summary>The prefix the agent's <c>SessionIds.Raw</c> removes.</summary>
-    public const string NamespacedSessionPrefix = "session/";
+    public const string NamespacedSessionPrefix = SessionIdForms.NamespacedPrefix;
 
     /// <summary>The session a user's scheduled tasks reply in (<c>ScheduledTaskHandler</c>).</summary>
     public const string ScheduledSession = "scheduled";

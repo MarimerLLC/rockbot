@@ -101,6 +101,43 @@ public class RelatedReplyImporterTests
     }
 
     [TestMethod]
+    public async Task ImportedCopyInTheArchive_StillCountsAsImported()
+    {
+        await _memory.AddTurnAsync(There, new ConversationTurn("assistant", "the result", T0) { Id = "r1" });
+        _memory.Archive(Here, new ConversationTurn("assistant", "the result", T0)
+        {
+            Id = "old-copy",
+            ImportedFrom = new ConversationTurnReference(There, "r1"),
+        });
+
+        var count = await _importer.ImportAsync(Message(new ReplyReference(There, "r1")));
+
+        Assert.AreEqual(0, count);
+    }
+
+    [TestMethod]
+    public async Task ConcurrentMessages_ImportOnce()
+    {
+        await _memory.AddTurnAsync(There, new ConversationTurn("assistant", "the result", T0) { Id = "r1" });
+
+        var counts = await Task.WhenAll(
+            _importer.ImportAsync(Message(new ReplyReference(There, "r1"))),
+            _importer.ImportAsync(Message(new ReplyReference(There, "r1"))));
+
+        Assert.AreEqual(1, counts.Sum());
+    }
+
+    [TestMethod]
+    public void Cap_DoesNotSplitASurrogatePair()
+    {
+        var content = new string('x', RelatedReplyImporter.MaxContentChars - 1) + "😀" + new string('y', 100);
+
+        var capped = RelatedReplyImporter.Cap(content);
+
+        Assert.AreEqual(new string('x', RelatedReplyImporter.MaxContentChars - 1) + RelatedReplyImporter.TruncationNote, capped);
+    }
+
+    [TestMethod]
     public async Task LongContent_IsTruncated()
     {
         await _memory.AddTurnAsync(There, new ConversationTurn("assistant", new string('x', 20_000), T0) { Id = "r1" });

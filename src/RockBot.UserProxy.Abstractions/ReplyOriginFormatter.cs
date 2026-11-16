@@ -46,7 +46,7 @@ public static class ReplyOriginFormatter
         if (origin is not null)
             return RenderAnchor(origin, currentChannel, viewing, now);
 
-        if (string.IsNullOrEmpty(replySessionId) || IsSameSession(replySessionId, viewing))
+        if (string.IsNullOrEmpty(replySessionId) || SessionIdForms.AreSame(replySessionId, viewing))
             return null;
 
         return $"↳ From {DescribeSource(source?.Kind, source?.TaskId)} in another conversation\n" +
@@ -99,14 +99,6 @@ public static class ReplyOriginFormatter
             return content;
         var quoted = string.Join("\n", anchor.Split('\n').Select(line => "> " + line.TrimStart()));
         return quoted + "\n\n" + content;
-    }
-
-    /// <summary>Equal session ids, ignoring the agent's working-memory <c>session/</c> prefix.</summary>
-    private static bool IsSameSession(string a, string? b)
-    {
-        const string prefix = "session/";
-        static string Raw(string s) => s.StartsWith(prefix, StringComparison.Ordinal) ? s[prefix.Length..] : s;
-        return b is not null && string.Equals(Raw(a), Raw(b), StringComparison.Ordinal);
     }
 
     /// <summary>Formats the gap between <paramref name="then"/> and <paramref name="now"/> as a coarse "ago" string.</summary>

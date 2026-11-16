@@ -193,6 +193,76 @@ public sealed class RelatedReplyTrackingTests
         Assert.IsNull(sent.RelatedReplies);
     }
 
+    [TestMethod]
+    public async Task FailedPublish_LeavesTheReferencesForTheRetry()
+    {
+        var publisher = new FailOncePublisher();
+        var subscriber = new StubSubscriber();
+        var service = new UserProxyService(publisher, subscriber, new StubUserFrontend(),
+            new UserProxyOptions { ProxyId = "p2" }, NullLogger<UserProxyService>.Instance);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await subscriber.CapturedHandler!(
+                TestEnvelopeHelper.CreateEnvelope(Reply("cli-session", "m1"), source: "RockBot"), CancellationToken.None);
+
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                () => service.SendFireAndForgetAsync(Message("blazor-session")));
+            await service.SendFireAndForgetAsync(Message("blazor-session"));
+
+            var sent = publisher.Published.Single().Envelope.GetPayload<UserMessage>()!;
+            Assert.AreEqual(new ReplyReference("cli-session", "m1"), sent.RelatedReplies!.Single());
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [TestMethod]
+    public void FirstSend_OnlyLooksBackTheWindow_LaterSendsSeeEverythingSinceTheCursor()
+    {
+        var time = new SettableTime { Now = new DateTimeOffset(2026, 11, 16, 8, 0, 0, TimeSpan.Zero) };
+        var tracker = new RelatedReplyTracker(time);
+        tracker.Record(Reply("scheduled", "old"));
+        time.Now += RelatedReplyTracker.FirstSendWindow + TimeSpan.FromMinutes(1);
+        tracker.Record(Reply("scheduled", "recent"));
+
+        var (first, position) = tracker.Stamp(Message("new-thread"), (_, _) => true);
+        tracker.Commit("new-thread", position);
+        time.Now += TimeSpan.FromHours(5);
+        tracker.Record(Reply("scheduled", "while-away"));
+        var (later, _) = tracker.Stamp(Message("new-thread"), (_, _) => true);
+
+        Assert.AreEqual(new ReplyReference("scheduled", "recent"), first.RelatedReplies!.Single());
+        Assert.AreEqual(new ReplyReference("scheduled", "while-away"), later.RelatedReplies!.Single());
+    }
+
+    private sealed class SettableTime : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; }
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class FailOncePublisher : IMessagePublisher
+    {
+        private bool _failed;
+        public List<(string Topic, MessageEnvelope Envelope)> Published { get; } = [];
+
+        public Task PublishAsync(string topic, MessageEnvelope envelope, CancellationToken cancellationToken = default)
+        {
+            if (!_failed)
+            {
+                _failed = true;
+                throw new InvalidOperationException("broker unavailable");
+            }
+            Published.Add((topic, envelope));
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     private static AgentReply Reply(string sessionId, string? messageId) => new()
     {
         Content = "result",

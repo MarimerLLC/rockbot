@@ -30,6 +30,8 @@ internal sealed class RelatedReplyImporter(
     internal const string TruncationNote = "\n\n…(truncated)";
 
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> _sessionGates =
+        new(StringComparer.Ordinal);
 
     /// <summary>
     /// Imports what <paramref name="message"/> refers to into its session. Skips a reference to the
@@ -43,7 +45,25 @@ internal sealed class RelatedReplyImporter(
             return 0;
 
         var sessionId = message.SessionId;
-        var existing = await conversationMemory.GetTurnsAsync(sessionId, ct);
+
+        // One import at a time per session, so two messages in flight can't both copy a reply.
+        var gate = _sessionGates.GetOrAdd(sessionId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            return await ImportLockedAsync(sessionId, references, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<int> ImportLockedAsync(string sessionId, IReadOnlyList<ReplyReference> references, CancellationToken ct)
+    {
+        // Copies evicted past retention still count as imported.
+        var existing = (await conversationMemory.GetTurnsAsync(sessionId, ct))
+            .Concat(await conversationMemory.GetArchivedTurnsAsync(sessionId, ct));
         var imported = new HashSet<(string, string)>(
             existing.Where(t => t.ImportedFrom is not null).Select(t => (t.ImportedFrom!.SessionId, t.ImportedFrom.Id)));
 
@@ -105,8 +125,12 @@ internal sealed class RelatedReplyImporter(
             ImportedFrom = new ConversationTurnReference(fromSession, original.Id!),
         };
 
-    private static string Cap(string content) =>
-        content.Length <= MaxContentChars
-            ? content
-            : content[..MaxContentChars].TrimEnd() + TruncationNote;
+    internal static string Cap(string content)
+    {
+        if (content.Length <= MaxContentChars)
+            return content;
+        // Don't leave half of a surrogate pair at the cut.
+        var cut = char.IsHighSurrogate(content[MaxContentChars - 1]) ? MaxContentChars - 1 : MaxContentChars;
+        return content[..cut].TrimEnd() + TruncationNote;
+    }
 }

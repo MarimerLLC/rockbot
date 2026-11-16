@@ -10,10 +10,13 @@ namespace RockBot.UserProxy;
 /// <remarks>
 /// Keeps the last <see cref="Capacity"/> replies, numbered in arrival order, and a cursor per
 /// sending session: the number of the newest reply when that session last sent. A send takes the
-/// replies after its session's cursor and moves the cursor on, so each reply is attached once per
-/// session, and a session that hasn't sent for a while still gets what arrived meanwhile.
+/// replies after its session's cursor (<see cref="Stamp"/>) and, once the message is published,
+/// moves the cursor on (<see cref="Commit"/>), so each reply is attached once per session and a
+/// send that fails leaves them for the retry. A session that hasn't sent for a while still gets
+/// what arrived meanwhile; one that has never sent only gets replies from the last
+/// <see cref="FirstSendWindow"/>, so a new conversation doesn't pick up old reports.
 /// </remarks>
-internal sealed class RelatedReplyTracker
+internal sealed class RelatedReplyTracker(TimeProvider? timeProvider = null)
 {
     /// <summary>How many recent replies are remembered.</summary>
     internal const int Capacity = 50;
@@ -21,10 +24,12 @@ internal sealed class RelatedReplyTracker
     /// <summary>At most this many references go on one message.</summary>
     internal const int MaxReferences = 5;
 
-    private const string NamespacedSessionPrefix = "session/";
+    /// <summary>How far back a session's first message looks.</summary>
+    internal static readonly TimeSpan FirstSendWindow = TimeSpan.FromHours(1);
 
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly Lock _lock = new();
-    private readonly Queue<(long Seq, AgentReply Reply)> _recent = new();
+    private readonly Queue<(long Seq, DateTimeOffset At, AgentReply Reply)> _recent = new();
     private readonly Dictionary<string, long> _cursors = new(StringComparer.Ordinal);
     private long _seq;
 
@@ -41,7 +46,7 @@ internal sealed class RelatedReplyTracker
 
         lock (_lock)
         {
-            _recent.Enqueue((++_seq, reply));
+            _recent.Enqueue((++_seq, _time.GetUtcNow(), reply));
             while (_recent.Count > Capacity)
                 _recent.Dequeue();
         }
@@ -50,40 +55,61 @@ internal sealed class RelatedReplyTracker
     /// <summary>
     /// <paramref name="message"/> with references to the replies from other sessions that arrived
     /// since its session last sent and that <paramref name="shows"/> says were visible in it, the
-    /// newest <see cref="MaxReferences"/>, after any the caller already set. Moves the session's
-    /// cursor on, whether or not any were added.
+    /// newest <see cref="MaxReferences"/>, after any the caller already set; and the position to
+    /// pass to <see cref="Commit"/> once the message is sent. Doesn't move the cursor.
     /// </summary>
-    public UserMessage Stamp(UserMessage message, Func<string, AgentReply, bool> shows)
+    public (UserMessage Message, long Position) Stamp(UserMessage message, Func<string, AgentReply, bool> shows)
     {
         var sessionId = message.SessionId;
         List<AgentReply> candidates;
+        long position;
         lock (_lock)
         {
-            var cursor = _cursors.GetValueOrDefault(sessionId);
-            candidates = [.. _recent.Where(r => r.Seq > cursor).Select(r => r.Reply)];
-            _cursors[sessionId] = _seq;
+            position = _seq;
+            if (_cursors.TryGetValue(sessionId, out var cursor))
+            {
+                candidates = [.. _recent.Where(r => r.Seq > cursor).Select(r => r.Reply)];
+            }
+            else
+            {
+                var since = _time.GetUtcNow() - FirstSendWindow;
+                candidates = [.. _recent.Where(r => r.At >= since).Select(r => r.Reply)];
+            }
         }
 
         var found = new List<ReplyReference>();
         for (var i = candidates.Count - 1; i >= 0 && found.Count < MaxReferences; i--)
         {
             var reply = candidates[i];
-            if (IsSameSession(reply.SessionId, sessionId))
+            if (SessionIdForms.AreSame(reply.SessionId, sessionId))
                 continue;
             if (!SafeShows(shows, sessionId, reply))
                 continue;
-            found.Add(new ReplyReference(Raw(reply.SessionId), reply.MessageId!));
+            found.Add(new ReplyReference(SessionIdForms.Raw(reply.SessionId), reply.MessageId!));
         }
 
         if (found.Count == 0)
-            return message;
+            return (message, position);
 
         // Oldest first, after what the caller set; one reference per turn.
         found.Reverse();
         var merged = (message.RelatedReplies ?? []).Concat(found)
             .DistinctBy(r => (r.SessionId, r.MessageId))
             .ToList();
-        return message with { RelatedReplies = merged };
+        return (message with { RelatedReplies = merged }, position);
+    }
+
+    /// <summary>
+    /// Moves <paramref name="sessionId"/>'s cursor to <paramref name="position"/> (from
+    /// <see cref="Stamp"/>), after its message was published. Never moves it back.
+    /// </summary>
+    public void Commit(string sessionId, long position)
+    {
+        lock (_lock)
+        {
+            if (!_cursors.TryGetValue(sessionId, out var cursor) || position > cursor)
+                _cursors[sessionId] = position;
+        }
     }
 
     private static bool SafeShows(Func<string, AgentReply, bool> shows, string sessionId, AgentReply reply)
@@ -98,13 +124,4 @@ internal sealed class RelatedReplyTracker
             return false;
         }
     }
-
-    private static bool IsSameSession(string replySessionId, string sessionId) =>
-        string.Equals(Raw(replySessionId), Raw(sessionId), StringComparison.Ordinal);
-
-    /// <summary>The session id without the agent's working-memory <c>session/</c> prefix.</summary>
-    private static string Raw(string sessionId) =>
-        sessionId.StartsWith(NamespacedSessionPrefix, StringComparison.Ordinal)
-            ? sessionId[NamespacedSessionPrefix.Length..]
-            : sessionId;
 }
