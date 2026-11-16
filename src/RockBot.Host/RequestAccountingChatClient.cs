@@ -19,7 +19,8 @@ namespace RockBot.Host;
 public sealed class RequestAccountingChatClient(
     IChatClient inner,
     ILogger<RequestAccountingChatClient> logger,
-    string tierLabel) : DelegatingChatClient(inner)
+    string tierLabel,
+    LlmUsageLedger? usageLedger = null) : DelegatingChatClient(inner)
 {
     private const int TopCategories = 6;
     private const int TopMessages = 10;
@@ -79,6 +80,11 @@ public sealed class RequestAccountingChatClient(
 
         var sessionId = RequestAccountingContext.Value?.SessionId ?? ToolCallSessionContext.SessionId;
         var kind = AgentLoopRunner.ClassifySessionKind(sessionId);
+
+        // #834: the running usage totals. Charged to the conversation the run belongs to, which
+        // for a subagent or worker is the thread that started it.
+        usageLedger?.Record(sessionId, ToolProgressNotifier.Current?.EffectiveThreadId,
+            modelId ?? InnerClient.GetService<ChatClientMetadata>()?.DefaultModelId ?? tierLabel, usage);
         var tierTag = new KeyValuePair<string, object?>("rockbot.llm.tier", tierLabel);
         var kindTag = new KeyValuePair<string, object?>("rockbot.session.kind", kind);
         if (input > 0)

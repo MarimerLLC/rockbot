@@ -147,6 +147,41 @@ public sealed class AgentIntrospectionRequestHandlerTests
     }
 
     [TestMethod]
+    public void Usage_ReportsTheLedger_WithTheAskingThreadsTotals()
+    {
+        using var estimator = Estimator();
+        var dir = Path.Combine(Path.GetTempPath(), $"rb-introspect-usage-{Guid.NewGuid():N}");
+        try
+        {
+            using var ledger = new LlmUsageLedger(estimator,
+                Options.Create(new LlmUsageOptions()),
+                Options.Create(new AgentProfileOptions { BasePath = dir }),
+                NullLogger<LlmUsageLedger>.Instance);
+            var usage = new Microsoft.Extensions.AI.UsageDetails { InputTokenCount = 1_000_000, OutputTokenCount = 1_000_000 };
+            ledger.Record("session/blazor-session", "blazor-session", "claude-haiku-5-5", usage);
+            ledger.Record("subagent-x", "blazor-session", "house-model-7", usage);
+            ledger.Record("patrol/dream", null, "claude-haiku-5-5", usage);
+
+            var report = AgentIntrospectionRequestHandler.Build(
+                new AgentIntrospectionRequest { Sections = ["usage"], ThreadId = "blazor-session" },
+                "Rocky", "0.18.4", LoadedAt, null, estimator, ledger).Usage!;
+
+            Assert.AreEqual(3, report.TodayTotals.Requests);
+            Assert.AreEqual(1.20, report.TodayTotals.CostUsd, 1e-9, "two priced requests at $0.60");
+            Assert.AreEqual(1, report.TodayTotals.UnpricedRequests);
+            Assert.AreEqual("blazor-session", report.Thread!.ThreadId);
+            Assert.AreEqual(2, report.Thread.Totals.Requests);
+            Assert.AreEqual("claude-haiku-5-5", report.Models[0].ModelId, "most expensive first");
+            Assert.AreEqual(3, report.Kinds.Count);
+            Assert.AreEqual(1, report.Days.Count);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [TestMethod]
     public void WithoutTheirSources_SectionsAreLeftOut()
     {
         var response = Build(new AgentIntrospectionRequest(), snapshot: null, estimator: null);

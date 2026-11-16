@@ -81,6 +81,43 @@ public sealed class IntrospectionTextTests
     }
 
     [TestMethod]
+    public void Usage_IsATableOfRangesModelsAndWorkloads()
+    {
+        var totals = new UsageTotalsIntrospection { Requests = 1234, InputTokens = 4_560_000, CachedInputTokens = 2_000_000, OutputTokens = 12_300, CostUsd = 1.5 };
+        var response = Response() with
+        {
+            Usage = new UsageIntrospection
+            {
+                TimeZone = "America/Chicago",
+                Today = "2026-11-15",
+                TodayTotals = totals,
+                Last7Days = totals,
+                Last30Days = totals with { UnpricedRequests = 3 },
+                Models = [new ModelUsageIntrospection { ModelId = "claude-haiku-5-5", Totals = totals }],
+                Kinds = [new KindUsageIntrospection { Kind = "patrol", Totals = totals }],
+                Thread = new ThreadUsageIntrospection { ThreadId = "cli-session", Totals = totals },
+            },
+        };
+
+        var text = Render(response, IntrospectionSections.Usage);
+
+        StringAssert.Contains(text, "Usage (estimated from the pricing table; days in America/Chicago)");
+        StringAssert.Contains(text, "  Today (2026-11-15)             1,234       4.56M       2.00M       12.3K       $1.50\n");
+        StringAssert.Contains(text, "  This session (cli-session)");
+        StringAssert.Contains(text, "  By model, last 30 days");
+        StringAssert.Contains(text, "    claude-haiku-5-5");
+        StringAssert.Contains(text, "    Scheduled tasks");
+        StringAssert.Contains(text, "3 request(s) in the last 30 days matched no pricing row");
+    }
+
+    [TestMethod]
+    [DataRow(0.0, "$0.00")]
+    [DataRow(0.0027, "<$0.01")]
+    [DataRow(1234.5, "$1,234.50")]
+    public void Cost_KeepsASliverVisible(double usd, string expected) =>
+        Assert.AreEqual(expected, IntrospectionText.Cost(usd));
+
+    [TestMethod]
     public void ASectionTheAgentLeftOut_IsSaidSo()
     {
         var text = Render(Response() with { Models = null, Pricing = null });

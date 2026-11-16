@@ -27,6 +27,9 @@ internal static class IntrospectionText
                 case IntrospectionSections.Pricing:
                     WritePricing(output, response.Pricing);
                     break;
+                case IntrospectionSections.Usage:
+                    WriteUsage(output, response.Usage);
+                    break;
             }
         }
     }
@@ -112,6 +115,80 @@ internal static class IntrospectionText
         }
         output.WriteLine("  A model is priced by the first row (longest prefix) its id contains. Cache writes default to 1.25x (5 min) and 2x (1 h) input.");
     }
+
+    private static void WriteUsage(TextWriter output, UsageIntrospection? usage)
+    {
+        if (usage is null)
+        {
+            output.WriteLine("Usage: (the agent did not report its usage)");
+            return;
+        }
+
+        output.WriteLine($"Usage (estimated from the pricing table; days in {usage.TimeZone}" +
+                         (usage.Since is { } since ? $"; counted since {Timestamp(since)})" : ")"));
+
+        var rows = new List<(string Label, UsageTotalsIntrospection Totals)>
+        {
+            ($"Today ({usage.Today})", usage.TodayTotals),
+            ("Last 7 days", usage.Last7Days),
+            ("Last 30 days", usage.Last30Days),
+        };
+        if (usage.Thread is { } thread)
+            rows.Add(($"This session ({thread.ThreadId})", thread.Totals));
+        WriteTotalsTable(output, "", rows);
+
+        if (usage.Models.Count > 0)
+        {
+            output.WriteLine();
+            output.WriteLine("  By model, last 30 days");
+            WriteTotalsTable(output, "  ", [.. usage.Models.Select(m => (m.ModelId, m.Totals))]);
+        }
+
+        if (usage.Kinds.Count > 0)
+        {
+            output.WriteLine();
+            output.WriteLine("  By workload, last 30 days");
+            WriteTotalsTable(output, "  ", [.. usage.Kinds.Select(k => (KindLabel(k.Kind), k.Totals))]);
+        }
+
+        var unpriced = usage.Last30Days.UnpricedRequests;
+        if (unpriced > 0)
+            output.WriteLine($"  {unpriced} request(s) in the last 30 days matched no pricing row and are counted at $0.");
+    }
+
+    private static void WriteTotalsTable(TextWriter output, string indent, IReadOnlyList<(string Label, UsageTotalsIntrospection Totals)> rows)
+    {
+        var width = Math.Max(5, rows.Max(r => r.Label.Length));
+        output.WriteLine($"  {indent}{"".PadRight(width)}  {"requests",8}  {"input",10}  {"cached",10}  {"output",10}  {"cost",10}");
+        foreach (var (label, t) in rows)
+        {
+            output.WriteLine($"  {indent}{label.PadRight(width)}  {t.Requests,8:N0}  {Tokens(t.InputTokens),10}  {Tokens(t.CachedInputTokens),10}  " +
+                             $"{Tokens(t.OutputTokens),10}  {Cost(t.CostUsd),10}");
+        }
+    }
+
+    /// <summary>An estimated cost: "$12.34", "<$0.01" for a sliver, "$0.00" for none.</summary>
+    internal static string Cost(double usd) =>
+        usd <= 0 ? "$0.00" : usd < 0.01 ? "<$0.01" : "$" + usd.ToString("#,##0.00", CultureInfo.InvariantCulture);
+
+    /// <summary>A workload kind in words.</summary>
+    internal static string KindLabel(string kind) => kind switch
+    {
+        "session" => "Conversations",
+        "subagent" => "Subagents",
+        "worker" => "Workers",
+        "patrol" => "Scheduled tasks",
+        "background" => "Background (dreams, memory audits)",
+        _ => "Other",
+    };
+
+    /// <summary>A token count, compact: 950, 12.3K, 4.56M.</summary>
+    internal static string Tokens(long count) => count switch
+    {
+        >= 1_000_000 => (count / 1_000_000d).ToString("0.00", CultureInfo.InvariantCulture) + "M",
+        >= 10_000 => (count / 1_000d).ToString("0.0", CultureInfo.InvariantCulture) + "K",
+        _ => count.ToString("N0", CultureInfo.InvariantCulture),
+    };
 
     private static string Money(double value) =>
         value.ToString(value < 0.1 && value != 0 ? "0.000" : "0.00", CultureInfo.InvariantCulture);

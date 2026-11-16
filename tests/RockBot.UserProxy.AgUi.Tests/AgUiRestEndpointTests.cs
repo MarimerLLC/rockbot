@@ -1344,6 +1344,31 @@ public sealed class AgUiRestEndpointTests
     }
 
     [TestMethod]
+    public async Task Introspection_AsksAboutTheThread_TheOneNamedOrTheOnlyOne()
+    {
+        AgentDescribesItself();
+
+        using var named = await _client.GetAsync($"/agent/introspection?sections=usage&threadId={Thread}");
+        using var implicitThread = await _client.GetAsync("/agent/introspection?sections=usage");
+
+        Assert.AreEqual(HttpStatusCode.OK, named.StatusCode);
+        Assert.AreEqual(HttpStatusCode.OK, implicitThread.StatusCode);
+        CollectionAssert.AreEqual(new[] { Thread, Thread },
+            _agent.Received<AgentIntrospectionRequest>().Select(r => r.ThreadId).ToArray());
+    }
+
+    [TestMethod]
+    public async Task Introspection_ForAThreadThatIsNotAllowed_Is403()
+    {
+        AgentDescribesItself();
+
+        using var response = await _client.GetAsync("/agent/introspection?threadId=blazor-session");
+
+        await AssertProblemAsync(response, HttpStatusCode.Forbidden);
+        Assert.AreEqual(0, _agent.Received<AgentIntrospectionRequest>().Count, "nothing is asked for a thread that isn't allowed");
+    }
+
+    [TestMethod]
     public async Task Introspection_WhenTheAgentDoesNotAnswer_Is504()
     {
         await RestartAsync(Impatient);
@@ -1367,6 +1392,7 @@ public sealed class AgUiRestEndpointTests
             (HttpMethod.Post, "/threads/nope/clear", null),
             (HttpMethod.Get, "/threads/nope/questions", null),
             (HttpMethod.Get, "/agent?threadId=nope", null),
+            (HttpMethod.Get, "/agent/introspection?threadId=nope", null),
         ];
 
         foreach (var (method, url, body) in requests)

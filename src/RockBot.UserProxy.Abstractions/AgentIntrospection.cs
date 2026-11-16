@@ -12,8 +12,11 @@ public static class IntrospectionSections
     /// <summary>The pricing table the agent estimates cost with.</summary>
     public const string Pricing = "pricing";
 
+    /// <summary>Tokens and estimated cost: today, the last 7 and 30 days, per model, and the asking thread.</summary>
+    public const string Usage = "usage";
+
     /// <summary>Every section this version knows, in display order.</summary>
-    public static IReadOnlyList<string> All { get; } = [Models, Pricing];
+    public static IReadOnlyList<string> All { get; } = [Models, Pricing, Usage];
 }
 
 /// <summary>
@@ -30,6 +33,12 @@ public sealed record AgentIntrospectionRequest
     /// agent knows.
     /// </summary>
     public IReadOnlyList<string>? Sections { get; init; }
+
+    /// <summary>
+    /// The conversation thread (raw session id) the asker is in. The <see cref="IntrospectionSections.Usage"/>
+    /// section then includes that thread's own totals. Optional.
+    /// </summary>
+    public string? ThreadId { get; init; }
 }
 
 /// <summary>
@@ -49,6 +58,106 @@ public sealed record AgentIntrospectionResponse
     public ModelsIntrospection? Models { get; init; }
 
     public PricingIntrospection? Pricing { get; init; }
+
+    public UsageIntrospection? Usage { get; init; }
+}
+
+/// <summary>
+/// The LLM tokens the agent has used and what they cost, by its own estimate from its pricing
+/// table. Every request the agent sends to a provider is counted: conversations, subagents,
+/// workers, scheduled tasks and the agent's own background work.
+/// </summary>
+public sealed record UsageIntrospection
+{
+    /// <summary>The IANA (or Windows) time zone days are counted in: the agent's home zone.</summary>
+    public string TimeZone { get; init; } = "UTC";
+
+    /// <summary>When the agent started keeping these totals. Older usage isn't counted.</summary>
+    public DateTimeOffset? Since { get; init; }
+
+    /// <summary>Today's date (<c>yyyy-MM-dd</c>) in <see cref="TimeZone"/>.</summary>
+    public string Today { get; init; } = "";
+
+    public UsageTotalsIntrospection TodayTotals { get; init; } = new();
+
+    /// <summary>Today and the six days before it.</summary>
+    public UsageTotalsIntrospection Last7Days { get; init; } = new();
+
+    /// <summary>Today and the 29 days before it.</summary>
+    public UsageTotalsIntrospection Last30Days { get; init; } = new();
+
+    /// <summary>Each day in the last 30 that had any usage, newest first.</summary>
+    public IReadOnlyList<DayUsageIntrospection> Days { get; init; } = [];
+
+    /// <summary>The last 30 days by the model that answered, most expensive first.</summary>
+    public IReadOnlyList<ModelUsageIntrospection> Models { get; init; } = [];
+
+    /// <summary>
+    /// The last 30 days by workload, most expensive first: <c>session</c> (conversations),
+    /// <c>patrol</c> (scheduled tasks), <c>subagent</c>, <c>worker</c>, or <c>background</c> (the
+    /// agent's own work outside any run: dreams, memory audits).
+    /// </summary>
+    public IReadOnlyList<KindUsageIntrospection> Kinds { get; init; } = [];
+
+    /// <summary>
+    /// The asking thread's totals since the agent started counting: its own turns plus the
+    /// subagents and workers it started. Null when the request named no thread, or the thread
+    /// has used nothing.
+    /// </summary>
+    public ThreadUsageIntrospection? Thread { get; init; }
+}
+
+/// <summary>Token and cost totals. <see cref="CostUsd"/> is an estimate from the agent's pricing table.</summary>
+public sealed record UsageTotalsIntrospection
+{
+    public long Requests { get; init; }
+
+    /// <summary>All input tokens, including the cached ones and cache writes.</summary>
+    public long InputTokens { get; init; }
+
+    public long CachedInputTokens { get; init; }
+
+    public long CacheWriteTokens { get; init; }
+
+    public long OutputTokens { get; init; }
+
+    public double CostUsd { get; init; }
+
+    /// <summary>Requests whose model matched no pricing row, so they are costed at $0 here.</summary>
+    public long UnpricedRequests { get; init; }
+}
+
+public sealed record DayUsageIntrospection
+{
+    /// <summary><c>yyyy-MM-dd</c>, in <see cref="UsageIntrospection.TimeZone"/>.</summary>
+    public string Date { get; init; } = "";
+
+    public UsageTotalsIntrospection Totals { get; init; } = new();
+}
+
+public sealed record ModelUsageIntrospection
+{
+    public string ModelId { get; init; } = "";
+
+    public UsageTotalsIntrospection Totals { get; init; } = new();
+}
+
+public sealed record KindUsageIntrospection
+{
+    public string Kind { get; init; } = "";
+
+    public UsageTotalsIntrospection Totals { get; init; } = new();
+}
+
+public sealed record ThreadUsageIntrospection
+{
+    public string ThreadId { get; init; } = "";
+
+    public DateTimeOffset FirstAt { get; init; }
+
+    public DateTimeOffset LastAt { get; init; }
+
+    public UsageTotalsIntrospection Totals { get; init; } = new();
 }
 
 /// <summary>
