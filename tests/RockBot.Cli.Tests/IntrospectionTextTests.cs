@@ -106,9 +106,16 @@ public sealed class IntrospectionTextTests
         StringAssert.Contains(text, "  This session (cli-session)");
         StringAssert.Contains(text, "  By model, last 30 days");
         StringAssert.Contains(text, "    claude-haiku-5-5");
-        StringAssert.Contains(text, "    Background (dreams, audits)");
+        StringAssert.Contains(text, "    Scheduled tasks");
         StringAssert.Contains(text, "3 request(s) in the last 30 days matched no pricing row");
     }
+
+    [TestMethod]
+    [DataRow(0.0, "$0.00")]
+    [DataRow(0.0027, "<$0.01")]
+    [DataRow(1234.5, "$1,234.50")]
+    public void Cost_KeepsASliverVisible(double usd, string expected) =>
+        Assert.AreEqual(expected, IntrospectionText.Cost(usd));
 
     [TestMethod]
     public void ASectionTheAgentLeftOut_IsSaidSo()

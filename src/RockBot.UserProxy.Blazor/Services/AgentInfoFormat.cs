@@ -70,10 +70,11 @@ public static class AgentInfoFormat
     /// <summary>A workload kind in words.</summary>
     public static string KindLabel(string kind) => kind switch
     {
-        "session" => "Conversations and scheduled tasks",
+        "session" => "Conversations",
         "subagent" => "Subagents",
         "worker" => "Workers",
-        "patrol" => "Background (dreams, audits)",
+        "patrol" => "Scheduled tasks",
+        "background" => "Background (dreams, memory audits)",
         _ => "Other",
     };
 

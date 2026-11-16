@@ -999,8 +999,9 @@ its own state without calling its LLM, so this works while the LLM is failing an
   reads at the input rate, cache writes at 1.25× (5-minute TTL) and 2× (1-hour TTL) input.
 - **`usage`**: requests, tokens and estimated cost for today and the last 7 and 30 days; each day
   of the last 30 that had usage (`days`, newest first); the last 30 days by model and by workload
-  (`kinds`: `session` for conversations and scheduled tasks, `subagent`, `worker`, `patrol` for the
-  agent's own background work); and the thread's totals. Every request the agent sends a provider
+  (`kinds`: `session` for conversations, `patrol` for scheduled tasks, `subagent`, `worker`, and
+  `background` for the agent's own work outside any run, such as dreams and memory audits); and the
+  thread's totals. Every request the agent sends a provider
   is counted, and a thread's totals include the subagents and workers it started. Days are in the
   agent's home time zone; `since` is when the agent started counting (it keeps the totals in
   `usage-ledger.json` on its volume, 90 days). `unpricedRequests` counts requests whose model no
