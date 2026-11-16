@@ -191,6 +191,44 @@ public class FileConversationMemoryTests
         CollectionAssert.AreEqual(new[] { "t0", "t1" }, Contents(await again.GetArchivedTurnsAsync("s")));
     }
 
+    // ── Restoring once ─────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task StartAsync_Twice_RestoresEachTurnOnce()
+    {
+        using (var memory = CreateMemory())
+            await AddTurnsAsync(memory, "scheduled", 0, 2);
+
+        using var restored = CreateMemory();
+        await restored.StartAsync(CancellationToken.None);
+        await restored.StartAsync(CancellationToken.None);
+        await AddTurnsAsync(restored, "scheduled", 2, 1);
+
+        CollectionAssert.AreEqual(new[] { "t0", "t1", "t2" }, Contents(await restored.GetTurnsAsync("scheduled")));
+    }
+
+    [TestMethod]
+    public async Task Restore_DropsTurnsRepeatedUnderOneId_AndRepairsTheFile()
+    {
+        // What a double restore left behind: the same turns saved again, ids and all.
+        using (var memory = CreateMemory())
+            await AddTurnsAsync(memory, "scheduled", 0, 2);
+        var path = Path.Combine(_tempDir, "conversations", "scheduled.json");
+        var options = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        var turns = System.Text.Json.JsonSerializer.Deserialize<List<ConversationTurn>>(await File.ReadAllTextAsync(path), options)!;
+        await File.WriteAllTextAsync(path, System.Text.Json.JsonSerializer.Serialize(turns.Concat(turns).Concat(turns.Take(1)), options));
+
+        using (var restored = CreateMemory())
+        {
+            await restored.StartAsync(CancellationToken.None);
+            CollectionAssert.AreEqual(new[] { "t0", "t1" }, Contents(await restored.GetTurnsAsync("scheduled")));
+        }
+
+        var onDisk = System.Text.Json.JsonSerializer.Deserialize<List<ConversationTurn>>(await File.ReadAllTextAsync(path), options)!;
+        CollectionAssert.AreEqual(new[] { "t0", "t1" }, Contents(onDisk));
+        CollectionAssert.AreEqual(turns.Select(t => t.Id).ToList(), onDisk.Select(t => t.Id).ToList(), "the ids are kept");
+    }
+
     [TestMethod]
     public async Task ClearAsync_DiscardsTheArchive()
     {

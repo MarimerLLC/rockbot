@@ -61,8 +61,17 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
 
     // ── IHostedService ────────────────────────────────────────────────────────
 
+    /// <summary>Set by the first <see cref="StartAsync"/>: a second restore would add every turn again.</summary>
+    private int _restored;
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (Interlocked.Exchange(ref _restored, 1) == 1)
+        {
+            _logger.LogWarning("Conversation sessions were already restored; ignoring a second start");
+            return;
+        }
+
         if (!Directory.Exists(_basePath)) return;
 
         var cutoff = DateTimeOffset.UtcNow - _options.SessionIdleTimeout;
@@ -78,8 +87,16 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
             try
             {
                 var json = await File.ReadAllTextAsync(file, cancellationToken);
-                var turns = JsonSerializer.Deserialize<List<ConversationTurn>>(json, JsonOptions);
-                if (turns is null || turns.Count == 0) continue;
+                var stored = JsonSerializer.Deserialize<List<ConversationTurn>>(json, JsonOptions);
+                if (stored is null || stored.Count == 0) continue;
+
+                // A turn repeated under the same id is a copy, not a new turn: a double restore
+                // (the agent registered this service twice) saved each turn again. Keep the first.
+                var turns = Distinct(stored);
+                var duplicatesDropped = stored.Count - turns.Count;
+                if (duplicatesDropped > 0)
+                    _logger.LogWarning("Dropped {Count} duplicate turn(s) restoring session {SessionId}",
+                        duplicatesDropped, sessionId);
 
                 // Skip sessions that have been idle longer than the configured timeout —
                 // they would be discarded in memory anyway and may hold stale context.
@@ -100,8 +117,9 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
                     evicted.AddRange(_inner.AddTurn(sessionId, turn).Evicted);
                 // Turns written before turns had ids (#809) were given one just now; rewrite the
                 // file so those ids hold across the next restart too.
+                // Dropped duplicates are rewritten the same way, so the file is repaired once.
                 var idsAssigned = turns.Any(t => string.IsNullOrEmpty(t.Id));
-                if (evicted.Count > 0 || idsAssigned)
+                if (evicted.Count > 0 || idsAssigned || duplicatesDropped > 0)
                     await WithSessionLockAsync(sessionId, async () =>
                     {
                         if (evicted.Count > 0)
@@ -125,6 +143,13 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <summary>The turns with each id kept once, at its first position; turns without an id all stay.</summary>
+    internal static List<ConversationTurn> Distinct(List<ConversationTurn> turns)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return turns.Where(t => string.IsNullOrEmpty(t.Id) || seen.Add(t.Id)).ToList();
+    }
 
     // ── IConversationMemory ───────────────────────────────────────────────────
 
