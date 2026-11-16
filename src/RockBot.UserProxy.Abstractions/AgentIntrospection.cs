@@ -15,8 +15,20 @@ public static class IntrospectionSections
     /// <summary>Tokens and estimated cost: today, the last 7 and 30 days, per model, and the asking thread.</summary>
     public const string Usage = "usage";
 
+    /// <summary>The MCP servers the agent is configured with and whether each is connected.</summary>
+    public const string Mcp = "mcp";
+
+    /// <summary>The skills the agent has: starter, learned and from MCP servers.</summary>
+    public const string Skills = "skills";
+
+    /// <summary>Memory health from the latest memory audit, and whether consolidation is paused.</summary>
+    public const string Memory = "memory";
+
+    /// <summary>How requests were routed across the model tiers over the last week.</summary>
+    public const string Routing = "routing";
+
     /// <summary>Every section this version knows, in display order.</summary>
-    public static IReadOnlyList<string> All { get; } = [Models, Pricing, Usage];
+    public static IReadOnlyList<string> All { get; } = [Models, Pricing, Usage, Mcp, Skills, Memory, Routing];
 }
 
 /// <summary>
@@ -60,6 +72,14 @@ public sealed record AgentIntrospectionResponse
     public PricingIntrospection? Pricing { get; init; }
 
     public UsageIntrospection? Usage { get; init; }
+
+    public McpIntrospection? Mcp { get; init; }
+
+    public SkillsIntrospection? Skills { get; init; }
+
+    public MemoryIntrospection? Memory { get; init; }
+
+    public RoutingIntrospection? Routing { get; init; }
 }
 
 /// <summary>

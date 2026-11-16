@@ -87,6 +87,10 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     /// </summary>
     private readonly McpServerConnections _connections = new();
 
+    // #834: why each server last failed to connect, for the info views. Cleared on connect.
+    private readonly ConcurrentDictionary<string, (string Message, DateTimeOffset At)> _lastConnectErrors =
+        new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>How long shutdown waits for in-flight calls before clients are dropped.</summary>
     private static readonly TimeSpan ShutdownGrace = TimeSpan.FromSeconds(5);
 
@@ -762,6 +766,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                 });
                 published = true;
                 _lastSurfaceCheck[name] = DateTimeOffset.UtcNow;
+                _lastConnectErrors.TryRemove(name, out _);
 
                 // Watches on this server move to the new connection.
                 OnWatchServerConnected(name, summary.Subscriptions);
@@ -809,6 +814,7 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
                     _logger.LogError(ex,
                         "Failed to connect to MCP server {Name} after {Max} attempt(s)",
                         name, maxAttempts);
+                    _lastConnectErrors[name] = (DescribeConnectError(ex), DateTimeOffset.UtcNow);
                 }
             }
         }

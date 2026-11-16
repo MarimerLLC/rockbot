@@ -83,6 +83,71 @@ public static class AgentInfoFormat
             ? d.ToString("ddd, MMM d", CultureInfo.InvariantCulture)
             : date;
 
+    /// <summary>
+    /// The colour class for a state, always shown beside its words: <c>ok</c> (connected, healthy),
+    /// <c>bad</c> (failed, sign-in required, alert), <c>warn</c> (pending, warning), else <c>idle</c>.
+    /// </summary>
+    public static string StateTone(string state) => state switch
+    {
+        "connected" or "healthy" => "ok",
+        "failed" or "sign-in required" or "alert" => "bad",
+        "sign-in pending" or "warning" => "warn",
+        _ => "idle",
+    };
+
+    /// <summary>An MCP server state in words.</summary>
+    public static string McpState(string state) => state switch
+    {
+        "connected" => "Connected",
+        "sign-in required" => "Needs sign-in",
+        "sign-in pending" => "Signing in",
+        "failed" => "Failed to connect",
+        "not connected" => "Not connected",
+        _ => state,
+    };
+
+    /// <summary>A connected server's tools, prompts and resources in words.</summary>
+    public static string McpCounts(McpServerIntrospection server)
+    {
+        var parts = new List<string> { Count(server.ToolCount, "tool") };
+        if (server.PromptCount > 0)
+            parts.Add(Count(server.PromptCount, "prompt"));
+        if (server.ResourceCount > 0)
+            parts.Add(Count(server.ResourceCount, "resource"));
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>A memory audit status in words.</summary>
+    public static string AuditStatus(string? status) => status switch
+    {
+        "healthy" => "Healthy",
+        "warning" => "Warning",
+        "alert" => "Alert",
+        null or "" => "Unknown",
+        _ => status,
+    };
+
+    /// <summary>A 0–1 share as a whole percentage: "73%".</summary>
+    public static string Percent(double share) =>
+        Math.Round(share * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    /// <summary>A signed daily change: "+2.5", "-1.0", "0".</summary>
+    public static string Growth(double perDay) => perDay.ToString("+0.0;-0.0;0", CultureInfo.InvariantCulture);
+
+    /// <summary>Milliseconds as seconds: "4.2s", "850ms" under a second.</summary>
+    public static string Seconds(long ms) =>
+        ms < 1000 ? $"{ms}ms" : (ms / 1000d).ToString("0.0", CultureInfo.InvariantCulture) + "s";
+
+    /// <summary>How long ago: "just now", "5m ago", "3h ago", "2d ago", "6w ago".</summary>
+    public static string Ago(TimeSpan elapsed) =>
+        elapsed < TimeSpan.FromMinutes(1) ? "just now"
+        : elapsed < TimeSpan.FromHours(1) ? $"{(int)elapsed.TotalMinutes}m ago"
+        : elapsed < TimeSpan.FromDays(1) ? $"{(int)elapsed.TotalHours}h ago"
+        : elapsed < TimeSpan.FromDays(14) ? $"{(int)elapsed.TotalDays}d ago"
+        : $"{(int)(elapsed.TotalDays / 7)}w ago";
+
+    private static string Count(int n, string noun) => $"{n:N0} {noun}{(n == 1 ? "" : "s")}";
+
     /// <summary>A timestamp in the viewer's time zone.</summary>
     public static string When(DateTimeOffset value, TimeZoneInfo zone) =>
         TimeZoneInfo.ConvertTime(value, zone).ToString("MMM d, yyyy h:mm tt", CultureInfo.InvariantCulture);

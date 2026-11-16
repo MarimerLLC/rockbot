@@ -161,6 +161,14 @@ without calling its LLM, so it works while the LLM is failing and costs no token
   subagents and workers it started), then by day, by model and by workload (conversations,
   subagents, workers, the agent's background work). Requests on a model no pricing row matches are
   called out, since they are counted at $0. The Agent tab also shows today's cost.
+- **MCP**: each configured MCP server, with its state in words (connected, needs sign-in, failed
+  to connect and why), host, OAuth, version and tool count.
+- **Skills**: how many skills the agent has (learned, starter, from MCP servers), then each, most
+  recently used first, with its summary.
+- **Memory**: the latest memory audit's status, counts and findings, the last eval's soundness,
+  and a prominent note when dream consolidation is paused.
+- **Routing**: the last week's routed requests per model tier, with share, average latency,
+  tokens and tool calls, and how many a fallback model answered.
 
 The refresh button asks again. An agent older than this UI doesn't answer; the Agent tab still
 shows what the page already knows, and the other tabs say the agent doesn't report it. The same

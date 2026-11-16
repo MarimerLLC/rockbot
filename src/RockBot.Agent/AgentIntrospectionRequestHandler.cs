@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RockBot.Agent.McpBridge;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.UserProxy;
@@ -8,7 +10,8 @@ namespace RockBot.Agent;
 
 /// <summary>
 /// Handles <see cref="AgentIntrospectionRequest"/> (#834): describes the agent's configuration
-/// (its models, its pricing table) from the process's own state, so a user interface can show it
+/// (its models, its pricing table), what it has used, and its health (MCP servers, skills,
+/// memory, tier routing) from the process's own state, so a user interface can show it
 /// without an LLM round trip. Deterministic, no LLM invocation; read-only.
 /// </summary>
 internal sealed class AgentIntrospectionRequestHandler(
@@ -17,7 +20,12 @@ internal sealed class AgentIntrospectionRequestHandler(
     ILogger<AgentIntrospectionRequestHandler> logger,
     LlmConfigSnapshot? llmConfig = null,
     LlmCostEstimator? costEstimator = null,
-    LlmUsageLedger? usageLedger = null) : IMessageHandler<AgentIntrospectionRequest>
+    LlmUsageLedger? usageLedger = null,
+    McpBridgeService? mcpBridge = null,
+    ISkillStore? skillStore = null,
+    TierRoutingLogger? routingLog = null,
+    IOptions<MemoryAuditOptions>? auditOptions = null,
+    IOptions<AgentProfileOptions>? profileOptions = null) : IMessageHandler<AgentIntrospectionRequest>
 {
     private static readonly DateTimeOffset ProcessStartedAt = GetProcessStart();
 
@@ -38,6 +46,7 @@ internal sealed class AgentIntrospectionRequestHandler(
             llmConfig,
             costEstimator,
             usageLedger);
+        response = await AddHealthAsync(response, message);
 
         var envelope = response.ToEnvelope<AgentIntrospectionResponse>(
             source: context.Agent.Name,
@@ -45,9 +54,53 @@ internal sealed class AgentIntrospectionRequestHandler(
 
         await publisher.PublishAsync(replyTo, envelope, context.CancellationToken);
 
-        logger.LogDebug("Published agent introspection: models={Models} pricing={Pricing} usage={Usage}",
-            response.Models is not null, response.Pricing is not null, response.Usage is not null);
+        logger.LogDebug("Published agent introspection: models={Models} pricing={Pricing} usage={Usage} mcp={Mcp} skills={Skills} memory={Memory} routing={Routing}",
+            response.Models is not null, response.Pricing is not null, response.Usage is not null,
+            response.Mcp is not null, response.Skills is not null, response.Memory is not null, response.Routing is not null);
     }
+
+    /// <summary>
+    /// Adds the agent-health sections (stage 4) that were asked for and whose source this agent
+    /// has. Each is built on its own: one that fails is left out and logged, the rest still go.
+    /// </summary>
+    private async Task<AgentIntrospectionResponse> AddHealthAsync(AgentIntrospectionResponse response, AgentIntrospectionRequest request)
+    {
+        var wanted = Wanted(request);
+
+        if (wanted.Contains(IntrospectionSections.Mcp) && mcpBridge is not null)
+            response = response with { Mcp = await TryAsync("mcp", () => Task.FromResult(AgentHealthSections.Mcp(mcpBridge))) };
+        if (wanted.Contains(IntrospectionSections.Skills) && skillStore is not null)
+            response = response with { Skills = await TryAsync("skills", () => AgentHealthSections.SkillsAsync(skillStore)) };
+        if (wanted.Contains(IntrospectionSections.Memory) && auditOptions is not null && profileOptions is not null)
+            response = response with
+            {
+                Memory = await TryAsync("memory", () => AgentHealthSections.MemoryAsync(
+                    AgentHealthSections.AuditRoot(auditOptions.Value, profileOptions.Value), logger)),
+            };
+        if (wanted.Contains(IntrospectionSections.Routing) && routingLog is not null)
+            response = response with { Routing = await TryAsync("routing", () => AgentHealthSections.RoutingAsync(routingLog, DateTimeOffset.UtcNow)) };
+
+        return response;
+    }
+
+    private async Task<T?> TryAsync<T>(string section, Func<Task<T>> build) where T : class
+    {
+        try
+        {
+            return await build();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Introspection section {Section} failed; leaving it out", section);
+            return null;
+        }
+    }
+
+    /// <summary>The sections <paramref name="request"/> asks for: the named ones, or every one.</summary>
+    internal static HashSet<string> Wanted(AgentIntrospectionRequest request) =>
+        request.Sections is { Count: > 0 } sections
+            ? new HashSet<string>(sections, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(IntrospectionSections.All, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The answer to <paramref name="request"/>, from the given state.</summary>
     internal static AgentIntrospectionResponse Build(
@@ -59,9 +112,8 @@ internal sealed class AgentIntrospectionRequestHandler(
         LlmCostEstimator? costEstimator,
         LlmUsageLedger? usageLedger = null)
     {
-        var wanted = request.Sections is { Count: > 0 } sections
-            ? new HashSet<string>(sections, StringComparer.OrdinalIgnoreCase)
-            : new HashSet<string>(IntrospectionSections.All, StringComparer.OrdinalIgnoreCase);
+        var wanted = Wanted(request);
+
 
         return new AgentIntrospectionResponse
         {

@@ -2481,3 +2481,91 @@ body.dark-mode .usage-bar > span { background: var(--rb-link-dark); }
     .info-table .narrow-hide { display: none; }
     .info-table tbody th { white-space: normal; }
 }
+
+/* Agent info dialog: the MCP, Skills, Memory and Routing tabs (#834). A state is always a dot
+   plus its words, never colour alone. */
+
+.info-lead { margin: 0 0 0.6rem; }
+
+.info-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.info-row-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.info-row-name {
+    padding: 0;
+    background: none;
+    color: inherit;
+    font-size: 0.85rem;
+    font-weight: var(--rb-weight-semi);
+    overflow-wrap: anywhere;
+}
+
+.info-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.05rem 0.5rem;
+    border: 1px solid var(--rb-border);
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: var(--rb-weight-medium);
+}
+
+.info-state-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--rb-fg-muted);
+}
+
+.info-state.ok .info-state-dot { background: var(--rb-success-fg); }
+.info-state.bad .info-state-dot { background: var(--rb-danger); }
+.info-state.warn .info-state-dot { background: var(--rb-warning); }
+.info-state.bad { color: var(--rb-danger-700); }
+
+.info-alert { border-color: var(--rb-danger); }
+
+.info-findings {
+    margin: 0.4rem 0 0;
+    padding-left: 1.2rem;
+}
+
+.info-findings li + li { margin-top: 0.25rem; }
+
+.info-table .nowrap { white-space: nowrap; }
+
+/* Long text (skill summaries) wraps and takes the spare width; the short columns stay tight. */
+.info-table td.wrap { white-space: normal; width: 60%; min-width: 14rem; }
+
+.share-col { width: 30%; min-width: 7rem; }
+
+.usage-share {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.usage-share .usage-bar { flex: 1; }
+.usage-share .num { min-width: 2.6rem; text-align: right; font-variant-numeric: tabular-nums; }
+
+body.dark-mode .info-state { border-color: var(--rb-border-dark-muted); }
+body.dark-mode .info-alert { border-color: var(--rb-danger-fg-dark); }
+body.dark-mode .info-state.ok .info-state-dot { background: var(--rb-success); }
+body.dark-mode .info-state.bad { color: var(--rb-danger-fg-dark); }
+body.dark-mode .info-state.bad .info-state-dot { background: var(--rb-danger-fg-dark); }
+
+@media (max-width: 576px) {
+    .info-table td.wrap { min-width: 0; }
+}

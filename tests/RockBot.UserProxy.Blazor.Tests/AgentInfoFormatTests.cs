@@ -77,6 +77,41 @@ public sealed class AgentInfoFormatTests
     }
 
     [TestMethod]
+    [DataRow("connected", "ok")]
+    [DataRow("healthy", "ok")]
+    [DataRow("failed", "bad")]
+    [DataRow("sign-in required", "bad")]
+    [DataRow("alert", "bad")]
+    [DataRow("sign-in pending", "warn")]
+    [DataRow("warning", "warn")]
+    [DataRow("not connected", "idle")]
+    public void StateTone(string state, string tone) => Assert.AreEqual(tone, AgentInfoFormat.StateTone(state));
+
+    [TestMethod]
+    public void McpWording()
+    {
+        Assert.AreEqual("Needs sign-in", AgentInfoFormat.McpState("sign-in required"));
+        Assert.AreEqual("Failed to connect", AgentInfoFormat.McpState("failed"));
+        Assert.AreEqual("1 tool", AgentInfoFormat.McpCounts(new McpServerIntrospection { ToolCount = 1 }));
+        Assert.AreEqual("12 tools · 2 prompts · 1 resource",
+            AgentInfoFormat.McpCounts(new McpServerIntrospection { ToolCount = 12, PromptCount = 2, ResourceCount = 1 }));
+    }
+
+    [TestMethod]
+    public void HealthNumbers()
+    {
+        Assert.AreEqual("73%", AgentInfoFormat.Percent(0.734));
+        Assert.AreEqual("+2.5", AgentInfoFormat.Growth(2.5));
+        Assert.AreEqual("-1.0", AgentInfoFormat.Growth(-1));
+        Assert.AreEqual("850ms", AgentInfoFormat.Seconds(850));
+        Assert.AreEqual("4.2s", AgentInfoFormat.Seconds(4200));
+        Assert.AreEqual("just now", AgentInfoFormat.Ago(TimeSpan.FromSeconds(20)));
+        Assert.AreEqual("3h ago", AgentInfoFormat.Ago(TimeSpan.FromHours(3.5)));
+        Assert.AreEqual("2d ago", AgentInfoFormat.Ago(TimeSpan.FromDays(2.2)));
+        Assert.AreEqual("6w ago", AgentInfoFormat.Ago(TimeSpan.FromDays(43)));
+    }
+
+    [TestMethod]
     [DataRow(30, "under a minute")]
     [DataRow(42 * 60, "42m")]
     [DataRow(5 * 3600 + 12 * 60, "5h 12m")]
