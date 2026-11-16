@@ -648,7 +648,9 @@ builder.Services.AddKeyedSingleton<RockBot.Tools.Mcp.Elicitation.IMcpElicitation
 builder.Services.AddSingleton<RockBot.Agent.McpBridge.Tasks.McpTaskRegistry>();
 builder.Services.AddSingleton<ISessionA2AAwaiter, RockBot.Agent.McpBridge.Tasks.McpTaskSessionAwaiter>();
 
-builder.Services.AddHostedService<McpBridgeService>();
+// A singleton as well as the hosted service, so introspection (#834) can read its server states.
+builder.Services.AddSingleton<McpBridgeService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<McpBridgeService>());
 
 // Remote script runner — delegates script execution to the Script Manager pod via RabbitMQ
 builder.Services.AddRemoteScriptRunner("RockBot");

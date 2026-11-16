@@ -111,6 +111,58 @@ public sealed class IntrospectionTextTests
     }
 
     [TestMethod]
+    public void HealthSections_ReadAsPlainLines()
+    {
+        var response = Response() with
+        {
+            Mcp = new McpIntrospection
+            {
+                Servers =
+                [
+                    new McpServerIntrospection { Name = "calendar", Transport = "http", Host = "calendar.example.com", State = "connected", ToolCount = 12, Version = "1.10.0", UsesOAuth = true },
+                    new McpServerIntrospection { Name = "todo", Transport = "stdio", State = "failed", LastError = "Connection refused" },
+                ],
+            },
+            Skills = new SkillsIntrospection
+            {
+                Count = 2, Learned = 1, Starter = 1,
+                Skills =
+                [
+                    new SkillIntrospection { Name = "getting-started", Source = "starter", Summary = "How to begin" },
+                    new SkillIntrospection { Name = "travel-booking", Source = "learned", LastUsedAt = new DateTimeOffset(2026, 11, 14, 0, 0, 0, TimeSpan.Zero) },
+                ],
+            },
+            Memory = new MemoryIntrospection
+            {
+                AuditedAt = new DateTimeOffset(2026, 11, 14, 4, 0, 0, TimeSpan.Zero), Status = "warning", Live = 120, Archived = 30,
+                CreatedSinceLast = 22, NetGrowthPerDay = 2.5, NearDuplicatePairs = 3, PurgeDueCount = 4, PurgeDueWithinDays = 7,
+                Findings = [new MemoryFindingIntrospection { Name = "chain-depth", Message = "2 chains too deep" }],
+                ConsolidationPaused = true, ConsolidationPausedReason = "entries were hard-deleted",
+            },
+            Routing = new RoutingIntrospection
+            {
+                WindowDays = 7, Total = 40, UserMessages = 30, Subagents = 10, Fallbacks = 2, FallbackPct = 5.0,
+                Tiers = [new TierRoutingIntrospection { Tier = "Balanced", Count = 30, Pct = 75.0, AvgLatencyMs = 4200, AvgInputTokens = 21_000, AvgOutputTokens = 900, AvgToolCalls = 2.5 }],
+            },
+        };
+
+        var text = Render(response, IntrospectionSections.Mcp, IntrospectionSections.Skills, IntrospectionSections.Memory, IntrospectionSections.Routing);
+
+        StringAssert.Contains(text, "MCP servers (1 of 2 connected)\n");
+        StringAssert.Contains(text, "  calendar  connected  calendar.example.com (OAuth)  12 tools, v1.10.0\n");
+        StringAssert.Contains(text, "  todo      failed     stdio  Connection refused\n");
+        StringAssert.Contains(text, "Skills (2: 1 learned, 1 starter, 0 from MCP servers)\n");
+        StringAssert.Contains(text, "  travel-booking  [learned, used 2026-11-14]\n");
+        StringAssert.Contains(text, "  getting-started  [starter, never used]  How to begin\n");
+        StringAssert.Contains(text, "Memory (warning; audited 2026-11-14 04:00:00Z)\n");
+        StringAssert.Contains(text, "  ! chain-depth: 2 chains too deep\n");
+        StringAssert.Contains(text, "  Consolidation is PAUSED: entries were hard-deleted\n");
+        StringAssert.Contains(text, "Routing (last 7 days: 40 requests, 30 user messages, 10 subagent runs)\n");
+        StringAssert.Contains(text, "  Balanced         30   75.0%      4.2s     21.0K       900     2.5\n");
+        StringAssert.Contains(text, "2 request(s) (5.0%) were answered by a fallback model.");
+    }
+
+    [TestMethod]
     [DataRow(0.0, "$0.00")]
     [DataRow(0.0027, "<$0.01")]
     [DataRow(1234.5, "$1,234.50")]

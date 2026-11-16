@@ -82,8 +82,12 @@ which focus returns to the info button.
 
 - **Modal**, like the saved-responses dialog: everything behind it is inert. Up to 720px wide and
   80vh tall; below 576px it is a full-width sheet from the bottom (90vh).
-- **Tabs** (`tablist`, arrow keys): Agent, Models, Pricing, Usage, in the activity panel's tab
-  style; the row scrolls sideways when it doesn't fit.
+- **Tabs** (`tablist`, arrow keys): Agent, Models, Pricing, Usage, MCP, Skills, Memory, Routing,
+  in the activity panel's tab style; the row scrolls sideways when it doesn't fit.
+- **States** (MCP servers, the memory audit) are a pill: a dot plus the state in words, never
+  colour alone. Green (`--rb-success-fg`) for connected or healthy, red (`--rb-danger`, the words in
+  `--rb-danger-700`) for failed, needs sign-in or alert, amber (`--rb-warning`) for pending or
+  warning, grey otherwise.
 - **Agent**: a definition list (versions, bus state, uptime, when the models were loaded).
 - **Models**: one section per tier. A fallback chain is a numbered list. Each model is a card
   with its id in monospace, its facts as small pills (service, host, reasoning effort, image

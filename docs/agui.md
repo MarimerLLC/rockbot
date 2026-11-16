@@ -985,8 +985,8 @@ With `sections=usage` (here for a thread named `agui-session`):
 What the agent is configured with and what it has used, for an info screen. The agent answers from
 its own state without calling its LLM, so this works while the LLM is failing and costs no tokens.
 
-- **`sections`** (optional) is a comma-separated list: `models`, `pricing`, `usage`. Without it,
-  every section. A section the agent doesn't know, or can't report, is left out of the answer.
+- **`sections`** (optional) is a comma-separated list: `models`, `pricing`, `usage`, `mcp`,
+  `skills`, `memory`, `routing`. Without it, every section. A section the agent doesn't know, or can't report, is left out of the answer.
 - **`threadId`** (optional) adds that thread's own totals to `usage` (`usage.thread`). It must be
   an allowed thread (`403` otherwise). Left out, it is the only thread when there is one, else none.
 - **`models`**: each tier's models in the order the agent tries them (more than one is a fallback
@@ -1006,6 +1006,21 @@ its own state without calling its LLM, so this works while the LLM is failing an
   agent's home time zone; `since` is when the agent started counting (it keeps the totals in
   `usage-ledger.json` on its volume, 90 days). `unpricedRequests` counts requests whose model no
   pricing row matches, which are costed at $0.
+- **`mcp`**: each configured MCP server (`servers`): `name`, `displayName`, `transport` (`http` or
+  `stdio`), `host`, `state` (`connected`, `sign-in required`, `sign-in pending`, `failed`,
+  `not connected`), `usesOAuth`, tool/prompt/resource counts and `version` while connected, and
+  `lastError`/`lastErrorAt` while not (URLs in the error are cut to scheme, host and path). Nothing
+  from a server's headers, environment or auth config is included.
+- **`skills`**: counts (`count`, `learned`, `starter`, `fromMcp`) and every skill's `name`,
+  `summary`, `source` and when it was created, updated and last used.
+- **`memory`**: from the latest memory audit (the agent's scheduled check of its long-term memory;
+  this never starts one): `status` (`healthy`, `warning`, `alert`), `live`/`archived` counts,
+  movement since the audit before, near-duplicate pairs, entries due for purge, `findings`
+  (name and message only), the last eval's `evalSoundRate`, and whether dream consolidation is
+  paused (`consolidationPaused`, with its reason). Without an audit yet, `auditedAt` is absent.
+- **`routing`**: the last 7 days of the tier-routing log: totals, user messages, subagent runs,
+  fallbacks, and per tier the count, share (`pct`, 0–100), and average latency, input and output
+  tokens and tool calls. The log's prompt previews are not included.
 
 Nothing in the answer is a credential: there are no API keys, and endpoints are a host only. An agent
 older than this endpoint doesn't answer, so the proxy answers `504`.

@@ -51,18 +51,34 @@
             {
                 @PricingTab(_info!.Pricing)
             }
-            else
+            else if (_tab == Tab.Usage)
             {
                 @UsageTab(_info!.Usage)
+            }
+            else if (_tab == Tab.Mcp)
+            {
+                @McpTab(_info!.Mcp)
+            }
+            else if (_tab == Tab.Skills)
+            {
+                @SkillsTab(_info!.Skills)
+            }
+            else if (_tab == Tab.Memory)
+            {
+                @MemoryTab(_info!.Memory)
+            }
+            else
+            {
+                @RoutingTab(_info!.Routing)
             }
         </div>
     </div>
 </div>
 
 @code {
-    private enum Tab { Agent, Models, Pricing, Usage }
+    private enum Tab { Agent, Models, Pricing, Usage, Mcp, Skills, Memory, Routing }
 
-    private static readonly Tab[] Tabs = [Tab.Agent, Tab.Models, Tab.Pricing, Tab.Usage];
+    private static readonly Tab[] Tabs = [Tab.Agent, Tab.Models, Tab.Pricing, Tab.Usage, Tab.Mcp, Tab.Skills, Tab.Memory, Tab.Routing];
 
     [Parameter] public string? AgentName { get; set; }
 
@@ -151,7 +167,11 @@
         Tab.Agent => "Agent",
         Tab.Models => "Models",
         Tab.Pricing => "Pricing",
-        _ => "Usage",
+        Tab.Usage => "Usage",
+        Tab.Mcp => "MCP",
+        Tab.Skills => "Skills",
+        Tab.Memory => "Memory",
+        _ => "Routing",
     };
 
     private RenderFragment AgentTab => __builder =>
@@ -455,6 +475,238 @@
                     }
                 </tbody>
             </table>
+        </div>
+    };
+
+    private RenderFragment McpTab(McpIntrospection? mcp) => __builder =>
+    {
+        if (mcp is null)
+        {
+            <p class="info-unavailable">The agent didn't report its MCP servers.</p>
+            return;
+        }
+
+        if (mcp.Servers.Count == 0)
+        {
+            <p class="info-unavailable">No MCP servers are configured.</p>
+            return;
+        }
+
+        <p class="info-note info-lead">
+            @mcp.Servers.Count(s => s.State == "connected") of @mcp.Servers.Count servers connected,
+            @mcp.Servers.Sum(s => s.ToolCount).ToString("N0") tools in all.
+        </p>
+        <ul class="info-list">
+            @foreach (var s in mcp.Servers)
+            {
+                <li class="info-model">
+                    <div class="info-row-head">
+                        <code class="info-row-name">@s.Name</code>
+                        <span class="info-state @AgentInfoFormat.StateTone(s.State)"><span class="info-state-dot" aria-hidden="true"></span>@AgentInfoFormat.McpState(s.State)</span>
+                    </div>
+                    <div class="info-model-tags">
+                        @if (s.DisplayName is { } display)
+                        {
+                            <span class="info-tag">@display</span>
+                        }
+                        <span class="info-tag">@(s.Host ?? s.Transport)</span>
+                        @if (s.UsesOAuth)
+                        {
+                            <span class="info-tag">OAuth sign-in</span>
+                        }
+                        @if (s.Version is { } version)
+                        {
+                            <span class="info-tag">v@(version)</span>
+                        }
+                    </div>
+                    @if (s.State == "connected")
+                    {
+                        <div class="info-model-price">@AgentInfoFormat.McpCounts(s)</div>
+                    }
+                    else if (s.LastError is { } error)
+                    {
+                        <div class="info-model-price unpriced">@error@(s.LastErrorAt is { } at ? $" ({AgentInfoFormat.When(at, DisplayZone)})" : "")</div>
+                    }
+                </li>
+            }
+        </ul>
+        if (mcp.Servers.Any(s => s.State == "sign-in required"))
+        {
+            <p class="info-note">A server waiting for sign-in is signed in from the banner above the chat.</p>
+        }
+    };
+
+    private RenderFragment SkillsTab(SkillsIntrospection? skills) => __builder =>
+    {
+        if (skills is null)
+        {
+            <p class="info-unavailable">The agent didn't report its skills.</p>
+            return;
+        }
+
+        <div class="usage-cards">
+            @CountCard("Skills", skills.Count)
+            @CountCard("Learned", skills.Learned)
+            @CountCard("Starter", skills.Starter)
+            @CountCard("From MCP", skills.FromMcp)
+        </div>
+        if (skills.Skills.Count == 0)
+        {
+            return;
+        }
+
+        <div class="info-table-wrap">
+            <table class="info-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Skill</th>
+                        <th scope="col">Source</th>
+                        <th scope="col">Last used</th>
+                        <th scope="col" class="narrow-hide">Summary</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in skills.Skills.OrderByDescending(s => s.LastUsedAt ?? DateTimeOffset.MinValue).ThenBy(s => s.Name, StringComparer.Ordinal))
+                    {
+                        <tr>
+                            <th scope="row"><code>@s.Name</code></th>
+                            <td>@s.Source</td>
+                            <td class="nowrap">@(s.LastUsedAt is { } used ? AgentInfoFormat.Ago(DateTimeOffset.UtcNow - used) : "never")</td>
+                            <td class="narrow-hide info-muted wrap">@s.Summary</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    };
+
+    private RenderFragment MemoryTab(MemoryIntrospection? memory) => __builder =>
+    {
+        if (memory is null)
+        {
+            <p class="info-unavailable">The agent didn't report its memory health.</p>
+            return;
+        }
+
+        if (memory.ConsolidationPaused)
+        {
+            <p class="info-unavailable usage-unpriced info-alert">
+                <strong>Memory consolidation is paused.</strong>
+                @(memory.ConsolidationPausedReason is { } reason ? $" {reason}." : "")
+                Dreams won't merge or archive memories until it's resumed (ask the agent to resume memory consolidation).
+            </p>
+        }
+
+        if (memory.AuditedAt is not { } audited)
+        {
+            <p class="info-unavailable">No memory audit has run yet. The agent audits its memory on a schedule.</p>
+            return;
+        }
+
+        <div class="info-row-head info-lead">
+            <span class="info-state @AgentInfoFormat.StateTone(memory.Status ?? "")"><span class="info-state-dot" aria-hidden="true"></span>@AgentInfoFormat.AuditStatus(memory.Status)</span>
+            <span class="info-muted">audited @AgentInfoFormat.When(audited, DisplayZone)</span>
+        </div>
+        <div class="usage-cards">
+            @CountCard("Live memories", memory.Live)
+            @CountCard("Archived", memory.Archived)
+            @CountCard("Near-duplicate pairs", memory.NearDuplicatePairs)
+            @CountCard($"Purge due ({memory.PurgeDueWithinDays}d)", memory.PurgeDueCount)
+        </div>
+        <dl class="info-facts">
+            <dt>Since the audit before</dt>
+            <dd>
+                +@memory.CreatedSinceLast created, @memory.ArchivedSinceLast archived, @memory.HardDeletedSinceLast deleted
+                @if (memory.NetGrowthPerDay is { } growth)
+                {
+                    <span class="info-muted"> (@AgentInfoFormat.Growth(growth) per day)</span>
+                }
+            </dd>
+            @if (memory.EvalSoundRate is { } rate)
+            {
+                <dt>Judged sound</dt>
+                <dd>@AgentInfoFormat.Percent(rate) of sampled memories @(memory.EvaluatedAt is { } e ? $"(evaluated {AgentInfoFormat.When(e, DisplayZone)})" : "")</dd>
+            }
+            @if (!memory.ConsolidationPaused && memory.ConsolidationLastRunAt is { } last)
+            {
+                <dt>Consolidation</dt>
+                <dd>last ran @AgentInfoFormat.When(last, DisplayZone)</dd>
+            }
+        </dl>
+        if (memory.Findings.Count > 0)
+        {
+            <h3 class="activity-section-title">Findings</h3>
+            <ul class="info-findings">
+                @foreach (var f in memory.Findings)
+                {
+                    <li><strong>@f.Name</strong>: @f.Message</li>
+                }
+            </ul>
+        }
+    };
+
+    private RenderFragment RoutingTab(RoutingIntrospection? routing) => __builder =>
+    {
+        if (routing is null)
+        {
+            <p class="info-unavailable">The agent didn't report its routing.</p>
+            return;
+        }
+
+        <p class="info-note info-lead">
+            Last @routing.WindowDays days: @routing.Total.ToString("N0") routed requests
+            (@routing.UserMessages.ToString("N0") user messages, @routing.Subagents.ToString("N0") subagent runs).
+        </p>
+        if (routing.Total == 0)
+        {
+            return;
+        }
+
+        <div class="info-table-wrap">
+            <table class="info-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Tier</th>
+                        <th scope="col" class="num">Requests</th>
+                        <th scope="col" class="share-col">Share</th>
+                        <th scope="col" class="num">Latency</th>
+                        <th scope="col" class="num narrow-hide">Input</th>
+                        <th scope="col" class="num narrow-hide">Output</th>
+                        <th scope="col" class="num narrow-hide">Tools</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var t in routing.Tiers)
+                    {
+                        <tr>
+                            <th scope="row">@t.Tier</th>
+                            <td class="num">@t.Count.ToString("N0")</td>
+                            <td class="share-col">
+                                <span class="usage-share">
+                                    <span class="usage-bar" aria-hidden="true"><span style="width: @((int)Math.Round(t.Pct))%"></span></span>
+                                    <span class="num">@AgentInfoFormat.Percent(t.Pct / 100)</span>
+                                </span>
+                            </td>
+                            <td class="num">@(t.AvgLatencyMs is { } ms ? AgentInfoFormat.Seconds(ms) : "–")</td>
+                            <td class="num narrow-hide">@(t.AvgInputTokens is { } i ? AgentInfoFormat.Tokens(i) : "–")</td>
+                            <td class="num narrow-hide">@(t.AvgOutputTokens is { } o ? AgentInfoFormat.Tokens(o) : "–")</td>
+                            <td class="num narrow-hide">@t.AvgToolCalls.ToString("0.0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <p class="info-note">
+            Averages per request. @routing.Fallbacks.ToString("N0") request(s) (@AgentInfoFormat.Percent(routing.FallbackPct / 100))
+            were answered by a fallback model because the tier's first model failed.
+        </p>
+    };
+
+    private static RenderFragment CountCard(string label, int value) => __builder =>
+    {
+        <div class="usage-card">
+            <div class="usage-card-label">@label</div>
+            <div class="usage-card-cost">@value.ToString("N0")</div>
         </div>
     };
 }

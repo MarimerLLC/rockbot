@@ -14,7 +14,7 @@ app.Configure(config =>
         .WithExample(["chat", "--rabbitmq-host", "localhost"]);
 
     config.AddCommand<InfoCommand>("info")
-        .WithDescription("Print the agent's name and version; with --models, --pricing or --all, what it is configured with.")
+        .WithDescription("Print the agent's name and version; with --models, --pricing, --usage, --mcp, --skills, --memory, --routing or --all, what it is configured with, what it has used, and its health.")
         .WithExample(["info", "--models"])
         .WithExample(["info", "--all", "--json"]);
 

@@ -26,6 +26,22 @@ internal sealed class InfoCommand : AsyncCommand<InfoCommand.Settings>
         [Description("Also show tokens and estimated cost: today, the last 7 and 30 days, per model, and this session (--session)")]
         public bool Usage { get; init; }
 
+        [CommandOption("--mcp")]
+        [Description("Also show the MCP servers and whether each is connected")]
+        public bool Mcp { get; init; }
+
+        [CommandOption("--skills")]
+        [Description("Also show the agent's skills")]
+        public bool Skills { get; init; }
+
+        [CommandOption("--memory")]
+        [Description("Also show memory health from the latest memory audit")]
+        public bool Memory { get; init; }
+
+        [CommandOption("--routing")]
+        [Description("Also show how requests were routed across the model tiers over the last week")]
+        public bool Routing { get; init; }
+
         [CommandOption("--all")]
         [Description("Show every section the agent reports")]
         public bool All { get; init; }
@@ -39,7 +55,11 @@ internal sealed class InfoCommand : AsyncCommand<InfoCommand.Settings>
             All ? IntrospectionSections.All
             : [.. (Models ? [IntrospectionSections.Models] : Array.Empty<string>()),
                .. (Pricing ? [IntrospectionSections.Pricing] : Array.Empty<string>()),
-               .. (Usage ? [IntrospectionSections.Usage] : Array.Empty<string>())];
+               .. (Usage ? [IntrospectionSections.Usage] : Array.Empty<string>()),
+               .. (Mcp ? [IntrospectionSections.Mcp] : Array.Empty<string>()),
+               .. (Skills ? [IntrospectionSections.Skills] : Array.Empty<string>()),
+               .. (Memory ? [IntrospectionSections.Memory] : Array.Empty<string>()),
+               .. (Routing ? [IntrospectionSections.Routing] : Array.Empty<string>())];
     }
 
     private static readonly JsonSerializerOptions JsonOutput = new(JsonSerializerDefaults.Web)

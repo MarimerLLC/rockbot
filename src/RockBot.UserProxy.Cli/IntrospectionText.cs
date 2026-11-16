@@ -30,6 +30,18 @@ internal static class IntrospectionText
                 case IntrospectionSections.Usage:
                     WriteUsage(output, response.Usage);
                     break;
+                case IntrospectionSections.Mcp:
+                    WriteMcp(output, response.Mcp);
+                    break;
+                case IntrospectionSections.Skills:
+                    WriteSkills(output, response.Skills);
+                    break;
+                case IntrospectionSections.Memory:
+                    WriteMemory(output, response.Memory);
+                    break;
+                case IntrospectionSections.Routing:
+                    WriteRouting(output, response.Routing);
+                    break;
             }
         }
     }
@@ -165,6 +177,107 @@ internal static class IntrospectionText
             output.WriteLine($"  {indent}{label.PadRight(width)}  {t.Requests,8:N0}  {Tokens(t.InputTokens),10}  {Tokens(t.CachedInputTokens),10}  " +
                              $"{Tokens(t.OutputTokens),10}  {Cost(t.CostUsd),10}");
         }
+    }
+
+    private static void WriteMcp(TextWriter output, McpIntrospection? mcp)
+    {
+        if (mcp is null)
+        {
+            output.WriteLine("MCP servers: (the agent did not report them)");
+            return;
+        }
+
+        var connected = mcp.Servers.Count(s => s.State == "connected");
+        output.WriteLine($"MCP servers ({connected} of {mcp.Servers.Count} connected)");
+        if (mcp.Servers.Count == 0)
+        {
+            output.WriteLine("  None configured.");
+            return;
+        }
+
+        var width = mcp.Servers.Max(s => s.Name.Length);
+        var stateWidth = mcp.Servers.Max(s => s.State.Length);
+        foreach (var s in mcp.Servers)
+        {
+            var where = s.Host ?? s.Transport;
+            var detail = s.State == "connected"
+                ? $"{s.ToolCount} tools" + (s.PromptCount > 0 ? $", {s.PromptCount} prompts" : "") + (s.Version is { } v ? $", v{v}" : "")
+                : s.LastError ?? "";
+            output.WriteLine($"  {s.Name.PadRight(width)}  {s.State.PadRight(stateWidth)}  {where}{(s.UsesOAuth ? " (OAuth)" : "")}{(detail.Length > 0 ? "  " + detail : "")}");
+        }
+    }
+
+    private static void WriteSkills(TextWriter output, SkillsIntrospection? skills)
+    {
+        if (skills is null)
+        {
+            output.WriteLine("Skills: (the agent did not report them)");
+            return;
+        }
+
+        output.WriteLine($"Skills ({skills.Count}: {skills.Learned} learned, {skills.Starter} starter, {skills.FromMcp} from MCP servers)");
+        foreach (var s in skills.Skills.OrderByDescending(s => s.LastUsedAt ?? DateTimeOffset.MinValue).ThenBy(s => s.Name, StringComparer.Ordinal))
+        {
+            var used = s.LastUsedAt is { } at ? $"used {at.ToUniversalTime():yyyy-MM-dd}" : "never used";
+            var summary = s.Summary.Length > 90 ? s.Summary[..87] + "..." : s.Summary;
+            output.WriteLine($"  {s.Name}  [{s.Source}, {used}]{(summary.Length > 0 ? "  " + summary : "")}");
+        }
+    }
+
+    private static void WriteMemory(TextWriter output, MemoryIntrospection? memory)
+    {
+        if (memory is null)
+        {
+            output.WriteLine("Memory: (the agent did not report its memory health)");
+            return;
+        }
+
+        if (memory.AuditedAt is not { } audited)
+        {
+            output.WriteLine("Memory: no audit has run yet.");
+        }
+        else
+        {
+            output.WriteLine($"Memory ({memory.Status ?? "unknown"}; audited {Timestamp(audited)})");
+            output.WriteLine($"  {memory.Live:N0} live, {memory.Archived:N0} archived; since the audit before: +{memory.CreatedSinceLast} created, {memory.ArchivedSinceLast} archived, {memory.HardDeletedSinceLast} deleted" +
+                             (memory.NetGrowthPerDay is { } g ? $" ({g.ToString("+0.0;-0.0;0", CultureInfo.InvariantCulture)}/day)" : ""));
+            output.WriteLine($"  {memory.NearDuplicatePairs} near-duplicate pair(s); {memory.PurgeDueCount} due for purge within {memory.PurgeDueWithinDays} day(s)");
+            if (memory.EvalSoundRate is { } rate)
+                output.WriteLine($"  Sampled memories judged sound: {rate:P0}" + (memory.EvaluatedAt is { } e ? $" (evaluated {Timestamp(e)})" : ""));
+            foreach (var f in memory.Findings)
+                output.WriteLine($"  ! {f.Name}: {f.Message}");
+        }
+
+        if (memory.ConsolidationPaused)
+            output.WriteLine($"  Consolidation is PAUSED{(memory.ConsolidationPausedReason is { } r ? ": " + r : "")}");
+        else if (memory.ConsolidationLastRunAt is { } last)
+            output.WriteLine($"  Consolidation last ran {Timestamp(last)}");
+    }
+
+    private static void WriteRouting(TextWriter output, RoutingIntrospection? routing)
+    {
+        if (routing is null)
+        {
+            output.WriteLine("Routing: (the agent did not report it)");
+            return;
+        }
+
+        output.WriteLine($"Routing (last {routing.WindowDays} days: {routing.Total:N0} requests, {routing.UserMessages:N0} user messages, {routing.Subagents:N0} subagent runs)");
+        if (routing.Total == 0)
+        {
+            output.WriteLine("  Nothing routed in the window.");
+            return;
+        }
+
+        output.WriteLine($"  {"tier",-9}  {"requests",8}  {"share",6}  {"latency",8}  {"in",8}  {"out",8}  {"tools",6}");
+        foreach (var t in routing.Tiers)
+        {
+            output.WriteLine($"  {t.Tier,-9}  {t.Count,8:N0}  {t.Pct.ToString("0.0", CultureInfo.InvariantCulture) + "%",6}  " +
+                             $"{(t.AvgLatencyMs is { } ms ? (ms / 1000d).ToString("0.0", CultureInfo.InvariantCulture) + "s" : "-"),8}  " +
+                             $"{(t.AvgInputTokens is { } i ? Tokens(i) : "-"),8}  {(t.AvgOutputTokens is { } o ? Tokens(o) : "-"),8}  " +
+                             $"{t.AvgToolCalls.ToString("0.0", CultureInfo.InvariantCulture),6}");
+        }
+        output.WriteLine($"  Averages per request. {routing.Fallbacks:N0} request(s) ({routing.FallbackPct.ToString("0.0", CultureInfo.InvariantCulture)}%) were answered by a fallback model.");
     }
 
     /// <summary>An estimated cost: "$12.34", "<$0.01" for a sliver, "$0.00" for none.</summary>
