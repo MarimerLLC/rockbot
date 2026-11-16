@@ -46,4 +46,12 @@ public sealed record ConversationHistoryTurn
     /// <see cref="AgentName"/>.
     /// </summary>
     public ReplySource? Source { get; init; }
+
+    /// <summary>
+    /// Set on a copy of a reply from another session, made because the user replied to it from
+    /// this one (#841): the session the original was in. <see cref="SessionId"/> stays the session
+    /// the copy is stored in; a frontend renders the anchor as for a reply from this session. Null
+    /// on every other turn.
+    /// </summary>
+    public string? ImportedFromSessionId { get; init; }
 }

@@ -28,25 +28,54 @@ internal static class AtomicFile
         string content,
         CancellationToken cancellationToken = default)
     {
-        var directory = Path.GetDirectoryName(path);
-        if (string.IsNullOrEmpty(directory))
-            directory = ".";
-        else
-            Directory.CreateDirectory(directory);
-
-        var tempPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
-
+        var tempPath = TempPathFor(path);
         try
         {
             await File.WriteAllTextAsync(tempPath, content, cancellationToken);
-            CopyUnixFileMode(path, tempPath);
-            File.Move(tempPath, path, overwrite: true);
+            Replace(tempPath, path);
         }
         catch
         {
             TryDelete(tempPath);
             throw;
         }
+    }
+
+    /// <summary>
+    /// The synchronous form of <see cref="WriteAllTextAsync"/>, for small files written from a
+    /// synchronous caller.
+    /// </summary>
+    internal static void WriteAllText(string path, string content)
+    {
+        var tempPath = TempPathFor(path);
+        try
+        {
+            File.WriteAllText(tempPath, content);
+            Replace(tempPath, path);
+        }
+        catch
+        {
+            TryDelete(tempPath);
+            throw;
+        }
+    }
+
+    /// <summary>A sibling temporary path for <paramref name="path"/>, creating its parent directories.</summary>
+    private static string TempPathFor(string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(directory))
+            directory = ".";
+        else
+            Directory.CreateDirectory(directory);
+        return Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+    }
+
+    /// <summary>Moves the written <paramref name="tempPath"/> over <paramref name="path"/>, keeping its mode.</summary>
+    private static void Replace(string tempPath, string path)
+    {
+        CopyUnixFileMode(path, tempPath);
+        File.Move(tempPath, path, overwrite: true);
     }
 
     /// <summary>

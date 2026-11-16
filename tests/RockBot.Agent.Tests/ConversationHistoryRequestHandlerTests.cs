@@ -162,6 +162,65 @@ public class ConversationHistoryRequestHandlerTests
         Assert.AreEqual("a2a-inbound/peer", turns[1].SessionId);
     }
 
+    [TestMethod]
+    public async Task ReadTurns_WithTheFlag_DropsAnImportFromABroadcastSession()
+    {
+        // #841: the copy is redundant when the broadcast original is merged in.
+        var memory = new DictionaryConversationMemory();
+        await memory.AddTurnAsync(WellKnownSessions.Scheduled, new ConversationTurn("assistant", "daily report", T0) { Id = "r1" });
+        await memory.AddTurnAsync(Thread, new ConversationTurn("assistant", "daily report", T0.AddMinutes(1))
+        {
+            Id = "copy",
+            ImportedFrom = new ConversationTurnReference(WellKnownSessions.Scheduled, "r1"),
+        });
+        await memory.AddTurnAsync(Thread, new ConversationTurn("user", "summarize that", T0.AddMinutes(1)));
+
+        var merged = await Read(memory, includeBroadcast: true);
+        var own = await Read(memory, includeBroadcast: false);
+
+        CollectionAssert.AreEqual(new[] { "r1", null }, merged.Select(t => t.Id).ToArray());
+        CollectionAssert.AreEqual(new[] { "copy", null }, own.Select(t => t.Id).ToArray());
+    }
+
+    [TestMethod]
+    public async Task ReadTurns_KeepsAnImportWhoseOriginalPredatesAClear()
+    {
+        var memory = new DictionaryConversationMemory();
+        await memory.AddTurnAsync(WellKnownSessions.Scheduled, new ConversationTurn("assistant", "daily report", T0) { Id = "r1" });
+        await memory.AddTurnAsync(Thread, new ConversationTurn("assistant", "daily report", T0.AddMinutes(10))
+        {
+            Id = "copy",
+            ImportedFrom = new ConversationTurnReference(WellKnownSessions.Scheduled, "r1"),
+        });
+
+        var turns = await ConversationHistoryRequestHandler.ReadTurnsAsync(memory,
+            new ConversationHistoryRequest { SessionId = Thread, IncludeBroadcast = true }, CancellationToken.None,
+            clearedAt: T0.AddMinutes(5));
+
+        CollectionAssert.AreEqual(new[] { "copy" }, turns.Select(t => t.Id).ToArray());
+    }
+
+    [TestMethod]
+    public async Task ReadTurns_WithTheFlag_KeepsAnImportFromAnotherThread()
+    {
+        var memory = new DictionaryConversationMemory();
+        var origin = new ConversationTurnOrigin("cli", "research it", T0, "cli-session");
+        await memory.AddTurnAsync(Thread, new ConversationTurn("assistant", "the result", T0)
+        {
+            Id = "copy",
+            Origin = origin,
+            Source = new ConversationTurnSource(ReplySourceKind.Primary),
+            ImportedFrom = new ConversationTurnReference("cli-session", "r1"),
+        });
+
+        var turn = (await Read(memory, includeBroadcast: true)).Single();
+
+        Assert.AreEqual("copy", turn.Id);
+        Assert.AreEqual(Thread, turn.SessionId, "the copy is stored in the thread");
+        Assert.AreEqual("cli-session", turn.ImportedFromSessionId);
+        Assert.AreEqual(new ReplyOrigin("cli", "research it", T0, "cli-session"), turn.Origin);
+    }
+
     private static Task<IReadOnlyList<ConversationHistoryTurn>> Read(IConversationMemory memory, bool includeBroadcast) =>
         ConversationHistoryRequestHandler.ReadTurnsAsync(memory,
             new ConversationHistoryRequest { SessionId = Thread, IncludeBroadcast = includeBroadcast },

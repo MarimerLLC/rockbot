@@ -42,6 +42,8 @@ internal static class AgUiHistoryMapper
                         turn.SessionId,
                         turn.Origin,
                         turn.Source,
+                        // A copy of another session's reply, made when the user replied to it (#841).
+                        turn.ImportedFromSessionId,
                     },
                 },
                 TurnEventMapper.PayloadJson);

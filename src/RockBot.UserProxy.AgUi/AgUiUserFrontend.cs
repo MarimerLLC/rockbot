@@ -40,6 +40,13 @@ internal sealed class AgUiUserFrontend(NotifyHub hub, McpQuestionRegistry questi
     public Task DisplayStatusAsync(AgentReply reply, CancellationToken cancellationToken = default) =>
         Publish(nameof(DisplayStatusAsync), () => hub.PublishToSession(reply.SessionId, m => NotifyEvents.Status(m, reply)));
 
+    /// <summary>
+    /// The rule <see cref="NotifyHub.PublishToSession"/> routes by: a thread sees its own replies
+    /// and those of the broadcast sessions.
+    /// </summary>
+    public bool ShowsReplyIn(string sessionId, AgentReply reply) =>
+        SessionRouting.IsBroadcastSession(reply.SessionId) || SessionRouting.IsSessionsReply(sessionId, reply.SessionId);
+
     public Task OnMcpQuestionStatusAsync(McpQuestionStatus status, CancellationToken cancellationToken = default) =>
         Publish(nameof(OnMcpQuestionStatusAsync), () =>
         {

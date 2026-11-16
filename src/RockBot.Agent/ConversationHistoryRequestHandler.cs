@@ -59,23 +59,39 @@ internal sealed class ConversationHistoryRequestHandler(
         IConversationMemory conversationMemory, ConversationHistoryRequest request, CancellationToken ct,
         DateTimeOffset? clearedAt = null)
     {
-        var turns = (await conversationMemory.GetTurnsAsync(request.SessionId, ct))
-            .Select(t => ToHistoryTurn(t, request.SessionId))
-            .ToList();
+        var own = await conversationMemory.GetTurnsAsync(request.SessionId, ct);
 
         if (!request.IncludeBroadcast || WellKnownSessions.IsBroadcast(request.SessionId))
-            return turns;
+            return [.. own.Select(t => ToHistoryTurn(t, request.SessionId))];
 
         // The fixed broadcast sessions, and any a2a-inbound/… ones, which are broadcast too.
         var sessions = WellKnownSessions.Broadcast.Concat(
             (await conversationMemory.ListSessionsAsync(ct)).Where(s => WellKnownSessions.IsBroadcast(s)))
             .Distinct(StringComparer.Ordinal);
 
-        var merged = new List<ConversationHistoryTurn>(turns);
+        var broadcast = new List<ConversationHistoryTurn>();
+        var mergedIds = new HashSet<(string, string)>();
         foreach (var session in sessions)
-            merged.AddRange((await conversationMemory.GetTurnsAsync(session, ct))
-                .Where(t => clearedAt is null || t.Timestamp > clearedAt)
-                .Select(t => ToHistoryTurn(t, session)));
+        {
+            foreach (var t in await conversationMemory.GetTurnsAsync(session, ct))
+            {
+                if (clearedAt is not null && t.Timestamp <= clearedAt)
+                    continue;
+                broadcast.Add(ToHistoryTurn(t, session));
+                if (t.Id is not null)
+                    mergedIds.Add((session, t.Id));
+            }
+        }
+
+        // #841: a copy of a broadcast reply, imported because the user replied to it, is left out
+        // when its original is merged in. One whose original is not (it predates a clear) stays.
+        var turns = own
+            .Where(t => t.ImportedFrom is not { } from || !mergedIds.Contains((from.SessionId, from.Id)))
+            .Select(t => ToHistoryTurn(t, request.SessionId))
+            .ToList();
+
+        var merged = new List<ConversationHistoryTurn>(turns);
+        merged.AddRange(broadcast);
 
         // A sort on the timestamp alone, but stable: OrderBy is, and the requested session's turns
         // were added first.
@@ -100,5 +116,6 @@ internal sealed class ConversationHistoryRequestHandler(
         SessionId = sessionId,
         Origin = t.Origin.ToReplyOrigin(),
         Source = t.Source.ToReplySource(),
+        ImportedFromSessionId = t.ImportedFrom?.SessionId,
     };
 }

@@ -25,6 +25,9 @@ public sealed class UserProxyService(
 
     private readonly ConcurrentDictionary<string, PendingTurn> _pending = new();
 
+    // #841: other sessions' results the frontend showed, attached to the next message sent.
+    private readonly RelatedReplyTracker _relatedReplies = new();
+
     // Correlation ids of turns that already ended, so a run event trailing the final reply
     // (RunFinished normally follows it) isn't passed to the frontend as a late event.
     private readonly ConcurrentDictionary<string, byte> _endedTurns = new();
@@ -399,7 +402,7 @@ public sealed class UserProxyService(
 
         try
         {
-            var outgoing = message with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents };
+            var (outgoing, position) = Outgoing(message);
             var envelope = outgoing.ToEnvelope<UserMessage>(
                 source: options.ProxyId,
                 correlationId: correlationId,
@@ -407,6 +410,7 @@ public sealed class UserProxyService(
                 destination: message.TargetAgent);
 
             await publisher.PublishAsync($"{UserProxyTopics.UserMessage}.{options.AgentName}", envelope, cancellationToken);
+            _relatedReplies.Commit(message.SessionId, position);
             UserProxyDiagnostics.MessagesSent.Add(1);
 
             logger.LogDebug("Published user message {CorrelationId} to {Topic}",
@@ -427,6 +431,20 @@ public sealed class UserProxyService(
         {
             _pending.TryRemove(correlationId, out _);
         }
+    }
+
+    /// <summary>
+    /// The message as sent: asking for agent events, and carrying the other sessions' replies the
+    /// frontend showed since the session last sent (#841). Commit the returned position with
+    /// <see cref="RelatedReplyTracker.Commit"/> once the message is published.
+    /// </summary>
+    private (UserMessage Message, long Position) Outgoing(UserMessage message)
+    {
+        var (outgoing, position) = _relatedReplies.Stamp(message, frontend.ShowsReplyIn);
+        if (!ReferenceEquals(outgoing, message))
+            logger.LogDebug("Attaching {Count} related replies to the message for session {SessionId}",
+                outgoing.RelatedReplies!.Count, message.SessionId);
+        return (outgoing with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents }, position);
     }
 
     private async Task<TurnResult> WaitForTurnAsync(
@@ -627,7 +645,7 @@ public sealed class UserProxyService(
     {
         var correlationId = Guid.NewGuid().ToString("N");
 
-        var outgoing = message with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents };
+        var (outgoing, position) = Outgoing(message);
         var envelope = outgoing.ToEnvelope<UserMessage>(
             source: options.ProxyId,
             correlationId: correlationId,
@@ -635,6 +653,7 @@ public sealed class UserProxyService(
             destination: message.TargetAgent);
 
         await publisher.PublishAsync($"{UserProxyTopics.UserMessage}.{options.AgentName}", envelope, cancellationToken);
+        _relatedReplies.Commit(message.SessionId, position);
         UserProxyDiagnostics.MessagesSent.Add(1);
 
         logger.LogDebug("Published fire-and-forget user message {CorrelationId}", correlationId);
@@ -660,6 +679,8 @@ public sealed class UserProxyService(
         var request = new ClearContextRequest { SessionId = sessionId };
         var envelope = request.ToEnvelope<ClearContextRequest>(source: options.ProxyId);
         await publisher.PublishAsync($"{UserProxyTopics.ClearContext}.{options.AgentName}", envelope, cancellationToken);
+        // Replies shown before the clear belong to the conversation it ended (#841).
+        _relatedReplies.SkipAll(sessionId);
         logger.LogInformation("Published clear context request for session {SessionId}", sessionId);
     }
 
@@ -821,6 +842,7 @@ public sealed class UserProxyService(
         {
             // Unsolicited final reply — display as a chat bubble
             logger.LogDebug("Unsolicited reply from {Agent}, displaying via frontend", reply.AgentName);
+            _relatedReplies.Record(reply);
             _ = frontend.DisplayReplyAsync(reply, ct);
         }
         else

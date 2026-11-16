@@ -91,6 +91,20 @@ public sealed class NotifyRoutingTests
         Assert.AreEqual(WellKnownSessions.ScheduledSystem, SessionRouting.ScheduledSystemSession);
     }
 
+    // ── #841: what a thread is shown, for related-reply references ───────────
+
+    [TestMethod]
+    [DataRow("scheduled", true, DisplayName = "a broadcast session")]
+    [DataRow("a2a-inbound/ctx-1", true, DisplayName = "an inbound A2A session")]
+    [DataRow("phone", true, DisplayName = "the thread's own")]
+    [DataRow("session/phone", true, DisplayName = "the thread's own, prefixed")]
+    [DataRow("laptop", false, DisplayName = "another thread")]
+    [DataRow("cli-session", false, DisplayName = "another client's session")]
+    public void ShowsReplyIn_MatchesTheNotifyRouting(string replySessionId, bool expected)
+    {
+        Assert.AreEqual(expected, ((IUserFrontend)_frontend).ShowsReplyIn(Phone, Reply(replySessionId)));
+    }
+
     // ── Which threads see what ───────────────────────────────────────────────
 
     [TestMethod]

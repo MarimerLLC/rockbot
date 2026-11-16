@@ -43,6 +43,13 @@ public sealed record ConversationTurn(string Role, string Content, DateTimeOffse
     public ConversationTurnSource? Source { get; init; }
 
     /// <summary>
+    /// Set on a copy of a turn from another session, made because the user was shown that turn in
+    /// the client they are now writing from (#841): the session and id of the original. Null on
+    /// every other turn. Additive, like <see cref="Attachments"/>.
+    /// </summary>
+    public ConversationTurnReference? ImportedFrom { get; init; }
+
+    /// <summary>
     /// A new value for <see cref="Id"/>. A writer that publishes the turn as a reply uses the same
     /// value for the reply's message id.
     /// </summary>
@@ -69,6 +76,11 @@ public sealed record ConversationTurnOrigin(
 /// <param name="Kind">One of the user-proxy <c>ReplySourceKind</c> values (primary, subagent, worker, a2a, scheduled, bridge).</param>
 /// <param name="TaskId">The subagent's or worker's task id, when there is one.</param>
 public sealed record ConversationTurnSource(string Kind, string? TaskId = null);
+
+/// <summary>A turn in another session: <see cref="ConversationTurn.ImportedFrom"/>.</summary>
+/// <param name="SessionId">The session the original turn is in.</param>
+/// <param name="Id">The original turn's <see cref="ConversationTurn.Id"/>.</param>
+public sealed record ConversationTurnReference(string SessionId, string Id);
 
 /// <summary>
 /// A file attached to a <see cref="ConversationTurn"/>, mirroring the user-proxy

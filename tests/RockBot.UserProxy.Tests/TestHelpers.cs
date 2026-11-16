@@ -94,6 +94,11 @@ internal sealed class StubUserFrontend : IUserFrontend
         return Task.CompletedTask;
     }
 
+    /// <summary>What <see cref="ShowsReplyIn"/> answers; null answers true, as the default does.</summary>
+    public Func<string, AgentReply, bool>? Shows { get; set; }
+
+    public bool ShowsReplyIn(string sessionId, AgentReply reply) => Shows?.Invoke(sessionId, reply) ?? true;
+
     public List<McpQuestionStatus> QuestionStatuses { get; } = [];
 
     public Task OnMcpQuestionStatusAsync(McpQuestionStatus status, CancellationToken cancellationToken = default)

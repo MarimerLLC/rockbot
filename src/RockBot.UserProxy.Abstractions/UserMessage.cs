@@ -36,4 +36,13 @@ public sealed record UserMessage
     /// message was sent, so nothing here is large. Null for text-only messages.
     /// </summary>
     public IReadOnlyList<AgentAttachment>? Attachments { get; init; }
+
+    /// <summary>
+    /// Replies from other sessions that the sending client showed the user since its last message
+    /// in this session (a subagent result, a scheduled task's output), so the user may be replying
+    /// to one of them. The agent copies each into this session before answering, so it has the
+    /// context. The user proxy fills this in (<c>UserProxyService</c>); a client may also set it.
+    /// Null when there are none, and from older proxies.
+    /// </summary>
+    public IReadOnlyList<ReplyReference>? RelatedReplies { get; init; }
 }

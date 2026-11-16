@@ -269,10 +269,12 @@ public sealed class AgUiEventMapper
         };
 
         // Where the work started, as a quoted line above the reply, as the Blazor UI shows it. A
-        // reply to something asked on this thread through this channel needs none.
+        // reply to something asked on this thread through this channel needs none. One from another
+        // session with no origin still names that session (#841).
         reply = reply with
         {
-            Content = ReplyOriginFormatter.WithQuotedAnchor(reply.Content, reply.Origin, _channel, sessionId, _clock.GetUtcNow()),
+            Content = ReplyOriginFormatter.WithQuotedAnchor(
+                reply.Content, reply.Origin, reply.Source, sessionId, _channel, _threadId, _clock.GetUtcNow()),
         };
 
         if (subagent is not null)
@@ -670,7 +672,10 @@ public sealed class AgUiEventMapper
             turns.Add(new ConversationHistoryTurn
             {
                 Role = message.Role ?? "assistant",
-                Content = ReplyOriginFormatter.WithQuotedAnchor(content, detail?.Origin, channel, sessionId, now),
+                Content = string.Equals(message.Role, "user", StringComparison.OrdinalIgnoreCase)
+                    ? content
+                    : ReplyOriginFormatter.WithQuotedAnchor(
+                        content, detail?.Origin, detail?.Source, detail?.ImportedFromSessionId ?? sessionId, channel, threadId, now),
                 Timestamp = detail?.Timestamp ?? default,
                 AgentName = detail?.AgentName ?? message.Name,
                 Attachments = detail?.Attachments is { Count: > 0 } attachments

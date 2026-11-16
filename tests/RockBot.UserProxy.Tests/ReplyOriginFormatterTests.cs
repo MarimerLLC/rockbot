@@ -62,6 +62,56 @@ public sealed class ReplyOriginFormatterTests
         Assert.IsNotNull(anchor);
     }
 
+    // ── #841: the viewing-session overload ───────────────────────────────────
+
+    [TestMethod]
+    [DataRow(ReplySourceKind.Subagent, "abcdef1234567890", "↳ From a subagent (task abcdef12) in another conversation")]
+    [DataRow(ReplySourceKind.Worker, "w1", "↳ From a worker (task w1) in another conversation")]
+    [DataRow(ReplySourceKind.Scheduled, null, "↳ From a scheduled task in another conversation")]
+    [DataRow(ReplySourceKind.A2A, null, "↳ From an A2A agent in another conversation")]
+    [DataRow(ReplySourceKind.Primary, null, "↳ From the agent in another conversation")]
+    [DataRow(null, null, "↳ From the agent in another conversation")]
+    public void RenderAnchor_NoOrigin_OtherSession_FallsBackPerSource(string? kind, string? taskId, string firstLine)
+    {
+        var source = kind is null ? null : new ReplySource { Kind = kind, TaskId = taskId };
+
+        var anchor = ReplyOriginFormatter.RenderAnchor(null, source, "cli-session", "blazor", "blazor-session", Now);
+
+        Assert.AreEqual(firstLine + "\n   session \"cli-session\"", anchor);
+    }
+
+    [TestMethod]
+    public void RenderAnchor_NoOrigin_ViewedSession_ReturnsNull()
+    {
+        Assert.IsNull(ReplyOriginFormatter.RenderAnchor(null, ReplySource.Subagent("t1"), "s1", "cli", "s1", Now));
+        Assert.IsNull(ReplyOriginFormatter.RenderAnchor(null, ReplySource.Subagent("t1"), "session/s1", "cli", "s1", Now));
+    }
+
+    [TestMethod]
+    public void RenderAnchor_NoOrigin_NoViewingSession_MeansTheRepliesOwn()
+    {
+        Assert.IsNull(ReplyOriginFormatter.RenderAnchor(null, ReplySource.Scheduled, "scheduled", "cli", null, Now));
+    }
+
+    [TestMethod]
+    public void RenderAnchor_WithOrigin_UsesOriginAnchor_SuppressedOnlyInViewedSession()
+    {
+        var shown = ReplyOriginFormatter.RenderAnchor(Origin("cli", "one-shot"), null, "one-shot", "cli", "cli-session", Now);
+        var suppressed = ReplyOriginFormatter.RenderAnchor(Origin("cli", "cli-session"), null, "cli-session", "cli", "cli-session", Now);
+
+        Assert.AreEqual(ReplyOriginFormatter.RenderAnchor(Origin("cli", "one-shot"), "cli", "cli-session", Now), shown);
+        Assert.IsNull(suppressed);
+    }
+
+    [TestMethod]
+    public void WithQuotedAnchor_Fallback_IsQuoted()
+    {
+        var content = ReplyOriginFormatter.WithQuotedAnchor(
+            "the result", null, ReplySource.Scheduled, "scheduled", "blazor", "blazor-session", Now);
+
+        Assert.AreEqual("> ↳ From a scheduled task in another conversation\n> session \"scheduled\"\n\nthe result", content);
+    }
+
     [TestMethod]
     public void ResolveChannelName_PrefersExplicit_ThenProxyIdPrefix()
     {

@@ -56,6 +56,13 @@ Each outbound message carries a `CorrelationId`. Incoming replies are matched by
 ID to a pending `TaskCompletionSource<AgentReply>`. Unmatched replies (unsolicited agent
 messages) are routed to `IUserFrontend.DisplayReplyAsync`.
 
+The Blazor UI shows every unsolicited result, whatever session it came from: a subagent started
+from the CLI, a scheduled task. When the user then writes in Blazor, the proxy attaches references
+to the results from other sessions shown since the last message (`UserMessage.RelatedReplies`, at
+most five), and the agent copies those results into `blazor-session` before answering. So "summarize
+that" after a CLI subagent's result has the result as context. A result whose origin the agent no
+longer knows (it restarted before the result landed) still shows an anchor naming its session.
+
 `IsConnected` and `OnConnectionChanged` are exposed so the UI can show a connection indicator.
 
 **Default reply timeout:** configurable via `UserProxyOptions.DefaultReplyTimeout`.

@@ -71,7 +71,8 @@ internal sealed class UserMessageHandler(
     CompletionCheckClassifier? completionCheck = null,
     ISavedResponseStore? savedResponseStore = null,
     ResultArchive? resultArchive = null,
-    RockBot.Tools.FileSystem.FileSystemOptions? fileSystemOptions = null) : IMessageHandler<UserMessage>
+    RockBot.Tools.FileSystem.FileSystemOptions? fileSystemOptions = null,
+    RelatedReplyImporter? relatedReplyImporter = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -104,9 +105,11 @@ internal sealed class UserMessageHandler(
         try
         {
             var turns = await conversationMemory.GetTurnsAsync(sessionId);
-            // The last turn is this message; the agent's reply is the latest one before it.
+            // The last turn is this message; the agent's reply is the latest one before it. A turn
+            // copied in from another session (#841) wasn't this session's reply.
             var previousAgentMessage = turns.Take(Math.Max(0, turns.Count - 1))
-                .LastOrDefault(t => !string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase))?.Content;
+                .LastOrDefault(t => !string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase)
+                    && t.ImportedFrom is null)?.Content;
 
             if (!await _correctionDetector.IsCorrectionAsync(content, previousAgentMessage))
                 return;
@@ -227,6 +230,11 @@ internal sealed class UserMessageHandler(
             await turn.StartAsync(ct);
 
             var turnAttachments = ToTurnAttachments(message.Attachments);
+
+            // #841: results from other sessions the user was shown in this client, copied in
+            // ahead of the message so a follow-up about one of them has its context.
+            if (relatedReplyImporter is not null && message.RelatedReplies is { Count: > 0 })
+                await relatedReplyImporter.ImportAsync(message, ct);
 
             await conversationMemory.AddTurnAsync(
                 message.SessionId,

@@ -53,6 +53,30 @@ public class BlazorUserFrontendTests
         Assert.AreEqual("Vendor B.", loaded.Turns[2].Content);
     }
 
+    [TestMethod]
+    public void HistoryEvent_ImportedCopyWithoutOrigin_NamesTheSessionItCameFrom()
+    {
+        // #841: the copy is stored in blazor-session, but the anchor is for where it came from.
+        var now = DateTimeOffset.Parse("2026-11-14T10:00:00Z");
+        var history = new ConversationHistoryResponse
+        {
+            Turns =
+            [
+                new ConversationHistoryTurn
+                {
+                    Role = "assistant", Content = "The result.", Timestamp = now, SessionId = "blazor-session",
+                    Source = ReplySource.Subagent("t1"), ImportedFromSessionId = "cli-session",
+                },
+            ],
+        };
+
+        var loaded = BlazorUserFrontend.HistoryEvent(history, "blazor-session", now);
+
+        Assert.AreEqual(
+            "> ↳ From a subagent (task t1) in another conversation\n> session \"cli-session\"\n\nThe result.",
+            loaded.Turns[0].Content);
+    }
+
     // ── session-based categorization ─────────────────────────────────────
 
     [TestMethod]

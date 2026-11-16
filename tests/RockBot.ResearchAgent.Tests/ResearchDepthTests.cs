@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Time.Testing;
 using RockBot.Host;
 
 namespace RockBot.ResearchAgent.Tests;
@@ -84,11 +85,14 @@ public class ResearchDepthTests
             await Task.Delay(TimeSpan.FromSeconds(30), ct); // a page that never answers
             return "page";
         }, "web_browse");
-        var budget = new ResearchToolBudget(maxCalls: 8, timeBox: TimeSpan.FromMilliseconds(300));
+        var time = new FakeTimeProvider();
+        var budget = new ResearchToolBudget(maxCalls: 8, timeBox: TimeSpan.FromMilliseconds(300), time);
         var tool = (AIFunction)budget.Wrap([hung]).Single();
 
         var started = DateTime.UtcNow;
-        var result = await tool.InvokeAsync(new AIFunctionArguments());
+        var call = tool.InvokeAsync(new AIFunctionArguments());
+        time.Advance(TimeSpan.FromMilliseconds(300));
+        var result = await call;
 
         Assert.AreEqual(ResearchToolBudget.CutOffNote, result);
         Assert.IsTrue(DateTime.UtcNow - started < TimeSpan.FromSeconds(10), "cut off at the box, not after the page");
@@ -105,10 +109,14 @@ public class ResearchDepthTests
             try { await Task.Delay(TimeSpan.FromSeconds(30), ct); return "page"; }
             catch (OperationCanceledException) { return "Error fetching page: A task was canceled."; }
         }, "web_browse");
-        var budget = new ResearchToolBudget(maxCalls: 8, timeBox: TimeSpan.FromMilliseconds(300));
+        var time = new FakeTimeProvider();
+        var budget = new ResearchToolBudget(maxCalls: 8, timeBox: TimeSpan.FromMilliseconds(300), time);
         var tool = (AIFunction)budget.Wrap([swallowing]).Single();
 
-        Assert.AreEqual(ResearchToolBudget.CutOffNote, await tool.InvokeAsync(new AIFunctionArguments()));
+        var call = tool.InvokeAsync(new AIFunctionArguments());
+        time.Advance(TimeSpan.FromMilliseconds(300));
+
+        Assert.AreEqual(ResearchToolBudget.CutOffNote, await call);
     }
 
     [TestMethod]

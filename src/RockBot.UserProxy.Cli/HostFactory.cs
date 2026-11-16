@@ -85,9 +85,9 @@ internal static class HostFactory
         if (frontend is not null)
             builder.Services.AddSingleton(frontend);
         else if (useRichFrontend)
-            builder.Services.AddSingleton<IUserFrontend, SpectreConsoleFrontend>();
+            builder.Services.AddSingleton<IUserFrontend>(new SpectreConsoleFrontend(settings.EffectiveSessionId));
         else
-            builder.Services.AddSingleton<IUserFrontend, PlainConsoleFrontend>();
+            builder.Services.AddSingleton<IUserFrontend>(new PlainConsoleFrontend(settings.EffectiveSessionId));
 
         configure?.Invoke(builder);
 

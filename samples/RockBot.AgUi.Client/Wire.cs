@@ -132,6 +132,9 @@ internal sealed record HistoryDetail
     public string? SessionId { get; init; }
     public ReplyOrigin? Origin { get; init; }
     public ReplySource? Source { get; init; }
+
+    /// <summary>The session the original was in, on a copy of another session's reply (#841).</summary>
+    public string? ImportedFromSessionId { get; init; }
 }
 
 internal sealed record QuestionsResponse

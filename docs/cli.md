@@ -117,6 +117,9 @@ a different queue from the turn's reply, so after the reply the CLI waits until 
 for 250 ms (2 s at most) before writing the last line. That lets an awaited worker's
 `SUBAGENT_FINISHED` land in the stream. The process exits after the turn, so a subagent that
 outlives it shows `SUBAGENT_STARTED` with no finish; its result arrives later, in other clients.
+Replying to that result from another client (the Blazor UI, or an interactive `rockbot chat` in
+another session) works: that client's proxy attaches a reference to the result to the next message,
+and the agent copies the result into the session the reply is written in before answering.
 
 For example, to check that a turn called `github__get_issue` and the call succeeded:
 
