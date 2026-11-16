@@ -113,9 +113,9 @@ public sealed record UsageIntrospection
     public IReadOnlyList<ModelUsageIntrospection> Models { get; init; } = [];
 
     /// <summary>
-    /// The last 30 days by workload, most expensive first: <c>session</c> (conversations and
-    /// scheduled tasks), <c>subagent</c>, <c>worker</c>, <c>patrol</c> (the agent's own background
-    /// work) or <c>unknown</c>.
+    /// The last 30 days by workload, most expensive first: <c>session</c> (conversations),
+    /// <c>patrol</c> (scheduled tasks), <c>subagent</c>, <c>worker</c>, or <c>background</c> (the
+    /// agent's own work outside any run: dreams, memory audits).
     /// </summary>
     public IReadOnlyList<KindUsageIntrospection> Kinds { get; init; } = [];
 

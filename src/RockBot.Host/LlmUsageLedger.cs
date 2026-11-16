@@ -63,7 +63,10 @@ public sealed class LlmUsageDay
     /// <summary>By the model that answered.</summary>
     public Dictionary<string, LlmUsageTotals> ByModel { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>By workload: <c>session</c>, <c>subagent</c>, <c>worker</c>, <c>patrol</c> or <c>unknown</c>.</summary>
+    /// <summary>
+    /// By workload: <c>session</c> (conversations), <c>patrol</c> (scheduled tasks), <c>subagent</c>,
+    /// <c>worker</c>, or <c>background</c> (requests outside any run: dreams, memory audits).
+    /// </summary>
     public Dictionary<string, LlmUsageTotals> ByKind { get; set; } = new(StringComparer.Ordinal);
 }
 
@@ -231,7 +234,8 @@ public sealed class LlmUsageLedger : IDisposable
 
         var now = _now();
         var day = DayKey(now);
-        var kind = AgentLoopRunner.ClassifySessionKind(runSessionId);
+        // A request outside any run (the dream pass, memory audits) is the agent's own background work.
+        var kind = runSessionId is null ? "background" : AgentLoopRunner.ClassifySessionKind(runSessionId);
         var thread = string.IsNullOrEmpty(threadId)
             ? (runSessionId is null ? null : SessionIds.Raw(runSessionId))
             : threadId;

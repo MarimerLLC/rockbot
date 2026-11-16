@@ -159,7 +159,7 @@ without calling its LLM, so it works while the LLM is failing and costs no token
   `llm-pricing.json` or the agent's built-in table.
 - **Usage**: estimated cost and tokens for today, the last 7 and 30 days and this chat (with the
   subagents and workers it started), then by day, by model and by workload (conversations,
-  subagents, workers, the agent's background work). Requests on a model no pricing row matches are
+  scheduled tasks, subagents, workers, the agent's background work). Requests on a model no pricing row matches are
   called out, since they are counted at $0. The Agent tab also shows today's cost.
 - **MCP**: each configured MCP server, with its state in words (connected, needs sign-in, failed
   to connect and why), host, OAuth, version and tool count.

@@ -96,13 +96,15 @@ public sealed class LlmUsageLedgerTests
         // The user's own turn, then a subagent it started (charged to the same thread), then a patrol.
         ledger.Record("session/blazor-session", "blazor-session", "claude-haiku-5-5", Usage(1000, 100));
         ledger.Record("subagent-abc", "blazor-session", "claude-haiku-5-5", Usage(2000, 200));
-        ledger.Record("patrol/dream", null, "gpt-5.6-luna", Usage(5000, 500));
+        ledger.Record("patrol/daily-brief", null, "gpt-5.6-luna", Usage(5000, 500));
+        // Outside any run (the dream pass, a memory audit): the agent's own background work.
+        ledger.Record(null, null, "gpt-5.6-luna", Usage(700, 70));
 
         var report = ledger.GetReport("blazor-session");
         Assert.AreEqual(2, report.Thread!.Totals.Requests, "the subagent counts toward the thread that started it");
         Assert.AreEqual(3000, report.Thread.Totals.InputTokens);
 
-        CollectionAssert.AreEquivalent(new[] { "session", "subagent", "patrol" }, report.Kinds30Days.Select(k => k.Kind).ToArray());
+        CollectionAssert.AreEquivalent(new[] { "session", "subagent", "patrol", "background" }, report.Kinds30Days.Select(k => k.Kind).ToArray());
         CollectionAssert.AreEquivalent(new[] { "claude-haiku-5-5", "gpt-5.6-luna" }, report.Models30Days.Select(m => m.ModelId).ToArray());
         Assert.IsNull(ledger.GetReport("someone-else").Thread);
     }

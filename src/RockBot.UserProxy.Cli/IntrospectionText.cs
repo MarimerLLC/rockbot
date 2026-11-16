@@ -175,7 +175,7 @@ internal static class IntrospectionText
         foreach (var (label, t) in rows)
         {
             output.WriteLine($"  {indent}{label.PadRight(width)}  {t.Requests,8:N0}  {Tokens(t.InputTokens),10}  {Tokens(t.CachedInputTokens),10}  " +
-                             $"{Tokens(t.OutputTokens),10}  {"$" + t.CostUsd.ToString("0.00", CultureInfo.InvariantCulture),10}");
+                             $"{Tokens(t.OutputTokens),10}  {Cost(t.CostUsd),10}");
         }
     }
 
@@ -280,13 +280,18 @@ internal static class IntrospectionText
         output.WriteLine($"  Averages per request. {routing.Fallbacks:N0} request(s) ({routing.FallbackPct.ToString("0.0", CultureInfo.InvariantCulture)}%) were answered by a fallback model.");
     }
 
+    /// <summary>An estimated cost: "$12.34", "<$0.01" for a sliver, "$0.00" for none.</summary>
+    internal static string Cost(double usd) =>
+        usd <= 0 ? "$0.00" : usd < 0.01 ? "<$0.01" : "$" + usd.ToString("#,##0.00", CultureInfo.InvariantCulture);
+
     /// <summary>A workload kind in words.</summary>
     internal static string KindLabel(string kind) => kind switch
     {
-        "session" => "Conversations and scheduled tasks",
+        "session" => "Conversations",
         "subagent" => "Subagents",
         "worker" => "Workers",
-        "patrol" => "Background (dreams, audits)",
+        "patrol" => "Scheduled tasks",
+        "background" => "Background (dreams, memory audits)",
         _ => "Other",
     };
 
