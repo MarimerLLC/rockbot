@@ -24,7 +24,7 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
         new([.. history.Turns.Select(t => string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase) ? t : t with
             {
                 Content = ReplyOriginFormatter.WithQuotedAnchor(
-                    t.Content, t.Origin, t.Source, t.SessionId ?? sessionId, Channel, sessionId, now),
+                    t.Content, t.Origin, t.Source, t.ImportedFromSessionId ?? t.SessionId ?? sessionId, Channel, sessionId, now),
             })],
             sessionId);
 

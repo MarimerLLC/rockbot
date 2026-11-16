@@ -641,6 +641,9 @@ RockBot's own detail is under `metadata.rockbot`:
   history includes them too, merged in by time.
 - `origin` and `source`, as the reply's `rockbot.origin` event had them live. Render the same
   anchor from `origin`. Both are absent for the user's own turns and from older agents.
+- `importedFromSessionId`: on a copy of another session's reply, made when the user replied to it
+  from this thread, the session the original was in. Render the anchor as for a reply from that
+  session (when there is no `origin`, name it). Absent on every other message.
 
 Two kinds of message are not what the user typed or the agent answered:
 

@@ -675,7 +675,7 @@ public sealed class AgUiEventMapper
                 Content = string.Equals(message.Role, "user", StringComparison.OrdinalIgnoreCase)
                     ? content
                     : ReplyOriginFormatter.WithQuotedAnchor(
-                        content, detail?.Origin, detail?.Source, sessionId, channel, threadId, now),
+                        content, detail?.Origin, detail?.Source, detail?.ImportedFromSessionId ?? sessionId, channel, threadId, now),
                 Timestamp = detail?.Timestamp ?? default,
                 AgentName = detail?.AgentName ?? message.Name,
                 Attachments = detail?.Attachments is { Count: > 0 } attachments

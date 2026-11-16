@@ -116,5 +116,6 @@ internal sealed class ConversationHistoryRequestHandler(
         SessionId = sessionId,
         Origin = t.Origin.ToReplyOrigin(),
         Source = t.Source.ToReplySource(),
+        ImportedFromSessionId = t.ImportedFrom?.SessionId,
     };
 }

@@ -151,7 +151,7 @@ public sealed class RelatedReplyTrackingTests
     }
 
     [TestMethod]
-    public async Task AtMostFive_NewestKept_MergedAfterCallersOwn()
+    public async Task AtMostFiveInAll_CallersFirst_NewestTrackedFillTheRest()
     {
         for (var i = 1; i <= 7; i++)
             await DeliverAsync(Reply("cli-session", $"m{i}"));
@@ -164,12 +164,36 @@ public sealed class RelatedReplyTrackingTests
             {
                 own,
                 new ReplyReference("cli-session", "m7"),
-                new ReplyReference("cli-session", "m3"),
                 new ReplyReference("cli-session", "m4"),
                 new ReplyReference("cli-session", "m5"),
                 new ReplyReference("cli-session", "m6"),
             },
             sent.RelatedReplies!.ToArray());
+    }
+
+    [TestMethod]
+    public async Task AtMostFive_WithoutCallersOwn_NewestKept()
+    {
+        for (var i = 1; i <= 7; i++)
+            await DeliverAsync(Reply("cli-session", $"m{i}"));
+
+        var sent = await SendAsync("blazor-session");
+
+        CollectionAssert.AreEqual(
+            new[] { "m3", "m4", "m5", "m6", "m7" },
+            sent.RelatedReplies!.Select(r => r.MessageId).ToArray());
+    }
+
+    [TestMethod]
+    public async Task ClearingTheContext_DropsWhatWasShownBeforeIt()
+    {
+        await DeliverAsync(Reply("scheduled", "before"));
+        await _service.ClearContextAsync("blazor-session");
+        await DeliverAsync(Reply("scheduled", "after"));
+
+        var sent = await SendAsync("blazor-session");
+
+        Assert.AreEqual(new ReplyReference("scheduled", "after"), sent.RelatedReplies!.Single());
     }
 
     [TestMethod]

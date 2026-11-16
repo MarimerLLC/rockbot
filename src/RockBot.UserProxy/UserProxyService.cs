@@ -679,6 +679,8 @@ public sealed class UserProxyService(
         var request = new ClearContextRequest { SessionId = sessionId };
         var envelope = request.ToEnvelope<ClearContextRequest>(source: options.ProxyId);
         await publisher.PublishAsync($"{UserProxyTopics.ClearContext}.{options.AgentName}", envelope, cancellationToken);
+        // Replies shown before the clear belong to the conversation it ended (#841).
+        _relatedReplies.SkipAll(sessionId);
         logger.LogInformation("Published clear context request for session {SessionId}", sessionId);
     }
 

@@ -21,7 +21,7 @@ internal sealed class RelatedReplyTracker(TimeProvider? timeProvider = null)
     /// <summary>How many recent replies are remembered.</summary>
     internal const int Capacity = 50;
 
-    /// <summary>At most this many references go on one message.</summary>
+    /// <summary>At most this many references go on one message, counting any the caller set.</summary>
     internal const int MaxReferences = 5;
 
     /// <summary>How far back a session's first message looks.</summary>
@@ -54,8 +54,8 @@ internal sealed class RelatedReplyTracker(TimeProvider? timeProvider = null)
 
     /// <summary>
     /// <paramref name="message"/> with references to the replies from other sessions that arrived
-    /// since its session last sent and that <paramref name="shows"/> says were visible in it, the
-    /// newest <see cref="MaxReferences"/>, after any the caller already set; and the position to
+    /// since its session last sent and that <paramref name="shows"/> says were visible in it: after
+    /// any the caller already set, the newest that fit in <see cref="MaxReferences"/>; and the position to
     /// pass to <see cref="Commit"/> once the message is sent. Doesn't move the cursor.
     /// </summary>
     public (UserMessage Message, long Position) Stamp(UserMessage message, Func<string, AgentReply, bool> shows)
@@ -77,26 +77,30 @@ internal sealed class RelatedReplyTracker(TimeProvider? timeProvider = null)
             }
         }
 
+        // The agent imports at most MaxReferences, so that is the budget for the whole list: what
+        // the caller set comes first, and the newest tracked replies fill the rest.
+        var own = (message.RelatedReplies ?? []).DistinctBy(r => (r.SessionId, r.MessageId)).ToList();
+        var seen = own.Select(r => (r.SessionId, r.MessageId)).ToHashSet();
         var found = new List<ReplyReference>();
-        for (var i = candidates.Count - 1; i >= 0 && found.Count < MaxReferences; i--)
+        for (var i = candidates.Count - 1; i >= 0 && own.Count + found.Count < MaxReferences; i--)
         {
             var reply = candidates[i];
             if (SessionIdForms.AreSame(reply.SessionId, sessionId))
                 continue;
+            var reference = new ReplyReference(SessionIdForms.Raw(reply.SessionId), reply.MessageId!);
+            if (!seen.Add((reference.SessionId, reference.MessageId)))
+                continue;
             if (!SafeShows(shows, sessionId, reply))
                 continue;
-            found.Add(new ReplyReference(SessionIdForms.Raw(reply.SessionId), reply.MessageId!));
+            found.Add(reference);
         }
 
         if (found.Count == 0)
             return (message, position);
 
-        // Oldest first, after what the caller set; one reference per turn.
+        // Oldest first, after what the caller set.
         found.Reverse();
-        var merged = (message.RelatedReplies ?? []).Concat(found)
-            .DistinctBy(r => (r.SessionId, r.MessageId))
-            .ToList();
-        return (message with { RelatedReplies = merged }, position);
+        return (message with { RelatedReplies = [.. own, .. found] }, position);
     }
 
     /// <summary>
@@ -110,6 +114,18 @@ internal sealed class RelatedReplyTracker(TimeProvider? timeProvider = null)
             if (!_cursors.TryGetValue(sessionId, out var cursor) || position > cursor)
                 _cursors[sessionId] = position;
         }
+    }
+
+    /// <summary>
+    /// Moves <paramref name="sessionId"/>'s cursor past every reply received so far, so none of them
+    /// is attached to its next message. Used when the session's context is cleared.
+    /// </summary>
+    public void SkipAll(string sessionId)
+    {
+        long position;
+        lock (_lock)
+            position = _seq;
+        Commit(sessionId, position);
     }
 
     private static bool SafeShows(Func<string, AgentReply, bool> shows, string sessionId, AgentReply reply)

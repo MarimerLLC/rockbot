@@ -216,6 +216,8 @@ public class ConversationHistoryRequestHandlerTests
         var turn = (await Read(memory, includeBroadcast: true)).Single();
 
         Assert.AreEqual("copy", turn.Id);
+        Assert.AreEqual(Thread, turn.SessionId, "the copy is stored in the thread");
+        Assert.AreEqual("cli-session", turn.ImportedFromSessionId);
         Assert.AreEqual(new ReplyOrigin("cli", "research it", T0, "cli-session"), turn.Origin);
     }
 
