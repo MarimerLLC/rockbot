@@ -113,6 +113,32 @@ public class AgentMemoryExtensionsTests
     }
 
     [TestMethod]
+    public void WithConversationMemory_AfterWithMemory_RestoresSessionsOnce()
+    {
+        // The agent calls WithMemory() and then WithConversationMemory(bind options). Two hosted
+        // services for the one store restored every session file twice.
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddRockBotHost(agent =>
+        {
+            agent.WithIdentity("test-agent");
+            agent.WithProfile();
+            agent.WithMemory();
+            agent.WithConversationMemory(o => o.MaxTurnsPerSession = 100);
+        });
+
+        var provider = services.BuildServiceProvider();
+        var store = provider.GetRequiredService<IConversationMemory>();
+
+        // Only the factory registrations: the other hosted services need more than this host has.
+        var startsTheStore = services
+            .Where(d => d.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService) && d.ImplementationFactory is not null)
+            .Count(d => { try { return ReferenceEquals(d.ImplementationFactory!(provider), store); } catch (InvalidOperationException) { return false; } });
+        Assert.AreEqual(1, startsTheStore);
+        Assert.AreEqual(100, provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<ConversationMemoryOptions>>().Value.MaxTurnsPerSession);
+    }
+
+    [TestMethod]
     public void WithLongTermMemory_RegistersCapabilityClaimWriter()
     {
         var services = new ServiceCollection();

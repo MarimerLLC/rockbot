@@ -41,6 +41,12 @@ public static class AgentMemoryExtensions
     /// Registers conversation memory with optional configuration.
     /// Sessions are persisted to disk so history survives agent restarts.
     /// </summary>
+    /// <remarks>
+    /// Safe to call again, e.g. after <see cref="WithMemory"/> to bind options: each call adds its
+    /// options, but the store and its restore-on-start hosted service are registered once. A second
+    /// hosted-service registration restored every session file twice, and the doubled turns were
+    /// written back on the next save, so each restart compounded them.
+    /// </remarks>
     public static AgentHostBuilder WithConversationMemory(
         this AgentHostBuilder builder,
         Action<ConversationMemoryOptions>? configure = null)
@@ -50,10 +56,11 @@ public static class AgentMemoryExtensions
         else
             builder.Services.Configure<ConversationMemoryOptions>(_ => { });
 
-        builder.Services.AddSingleton<InMemoryConversationMemory>();
-        builder.Services.AddSingleton<FileConversationMemory>();
+        builder.Services.TryAddSingleton<InMemoryConversationMemory>();
+        builder.Services.TryAddSingleton<FileConversationMemory>();
         builder.Services.AddSingleton<IConversationMemory>(sp => sp.GetRequiredService<FileConversationMemory>());
-        builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<FileConversationMemory>());
+        builder.Services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, FileConversationMemory>(
+            sp => sp.GetRequiredService<FileConversationMemory>()));
 
         return builder;
     }
