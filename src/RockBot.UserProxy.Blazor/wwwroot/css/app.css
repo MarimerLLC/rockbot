@@ -2160,7 +2160,11 @@ body.dark-mode .login-badge {
     outline-offset: 2px;
 }
 
+/* The head and the tab strip keep their height; only the panel below them scrolls. Without
+   flex-shrink: 0 a tall panel (Skills) squeezes the tab strip, whose overflow-x lets it shrink
+   to nothing, and the tabs can no longer be reached. */
 .info-modal-head {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -2179,6 +2183,7 @@ body.dark-mode .login-badge {
 }
 
 .info-tabs {
+    flex-shrink: 0;
     display: flex;
     gap: 0.25rem;
     padding: 0 var(--rb-space-4);
@@ -2408,7 +2413,7 @@ body.dark-mode .info-table thead th { background: var(--rb-bg-dark-muted); color
 /* Agent info dialog: the Usage tab (#834). Cost cards, then tables; the per-day bar is a plain
    blue track (blue is interaction/data here, never a category tint). */
 
-.info-tabs { overflow-x: auto; }
+.info-tabs { overflow-x: auto; overflow-y: hidden; }
 
 .usage-cards {
     display: grid;
