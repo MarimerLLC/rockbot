@@ -513,6 +513,9 @@ public sealed class AgentContextBuilder(
                 content = HistoryCompaction.RelayedSubagentTurn(content, relayTaskId, _hostOptions.RelayedSubagentTurnMaxChars);
             else if (i < fullFrom)
                 content = HistoryCompaction.OlderTurn(content, _hostOptions.HistoryOlderTurnMaxChars);
+            // #841: a copy of a reply from another session, which the user saw in this client.
+            if (turn.ImportedFrom is not null)
+                content = ImportedTurnPrefix(turn) + "\n" + content;
             // A turn that carried files keeps a note of where they went. The bytes are only
             // materialised for the turn being answered, so without this the path leaves the
             // conversation entirely the moment the next turn starts and "look at that image
@@ -1073,6 +1076,24 @@ public sealed class AgentContextBuilder(
         if (category is not null) meta.Append($", category: {category}");
         if (tags is { Count: > 0 }) meta.Append($", tags: {string.Join(", ", tags)}");
         return meta.ToString();
+    }
+
+    /// <summary>
+    /// The line that tells the model a history turn is a copy of a reply from another session
+    /// (<see cref="ConversationTurn.ImportedFrom"/>), which the user saw in the client they are
+    /// writing from, and what work produced it. Not stored: the turn's content stays as shown.
+    /// </summary>
+    internal static string ImportedTurnPrefix(ConversationTurn turn)
+    {
+        var from = turn.ImportedFrom!;
+        var who = ReplyOriginFormatter.DescribeSource(turn.Source?.Kind, turn.Source?.TaskId);
+        if (turn.Origin is { } origin)
+        {
+            var summary = string.IsNullOrWhiteSpace(origin.PromptSummary) ? "(no prompt)" : origin.PromptSummary;
+            return $"[Shown to the user earlier, from another conversation: {who}, for {origin.Channel} session " +
+                $"\"{origin.SessionId ?? from.SessionId}\": \"{summary}\"]";
+        }
+        return $"[Shown to the user earlier, from another conversation: {who}, in session \"{from.SessionId}\"]";
     }
 
     // ", source=inferred" etc., so the model can tell a fact the user stated from its own guess.

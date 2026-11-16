@@ -44,6 +44,33 @@ public sealed class UserMessageTests
     }
 
     [TestMethod]
+    public void UserMessage_RelatedReplies_RoundTrip()
+    {
+        var original = new UserMessage
+        {
+            Content = "summarize that",
+            SessionId = "blazor-session",
+            UserId = "user-1",
+            RelatedReplies = [new ReplyReference("cli-session", "m1"), new ReplyReference("scheduled", "m2")],
+        };
+
+        var deserialized = original.ToEnvelope<UserMessage>(source: "proxy").GetPayload<UserMessage>();
+
+        Assert.IsNotNull(deserialized?.RelatedReplies);
+        CollectionAssert.AreEqual(original.RelatedReplies.ToList(), deserialized.RelatedReplies.ToList());
+    }
+
+    [TestMethod]
+    public void UserMessage_WithoutRelatedReplies_IsNull()
+    {
+        var original = new UserMessage { Content = "Hello", SessionId = "s", UserId = "u" };
+
+        var deserialized = original.ToEnvelope<UserMessage>(source: "proxy").GetPayload<UserMessage>();
+
+        Assert.IsNull(deserialized?.RelatedReplies);
+    }
+
+    [TestMethod]
     public void AgentReply_RoundTrips_ThroughEnvelope()
     {
         var original = new AgentReply

@@ -235,6 +235,13 @@ sign-in statuses, active work and errors. Traffic for other clients' sessions, s
 
 A run's own events are only in the run's stream, never here as well.
 
+**Replying to what the stream showed.** A scheduled task's or inbound A2A notification's output is
+stored in its own session, not the thread's. When the thread next sends a message, the proxy
+attaches references to those replies the thread was shown since its last message (at most five, by
+`messageId`), and the agent copies them into the thread's session before answering, so "summarize
+that" has them as context. Nothing to do on the client. Each thread keeps its own place, so two
+threads that saw the same report each get it once.
+
 #### Reconnecting
 
 Every event has an `id`. Treat it as an opaque string. When the connection drops, reconnect and

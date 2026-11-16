@@ -541,6 +541,8 @@ builder.Services.AddRockBotHost(agent =>
     agent.AddA2ACaller();
     agent.AddServiceSearch();
     agent.HandleMessage<ScheduledTaskMessage, ScheduledTaskHandler>();
+    // #841: copies other sessions' results the user was shown into the session they reply in.
+    agent.Services.AddSingleton<RelatedReplyImporter>();
     agent.HandleMessage<UserMessage, UserMessageHandler>();
     agent.HandleMessage<UserFeedback, UserFeedbackHandler>();
     agent.HandleMessage<McpQuestionAnswer, McpQuestionAnswerHandler>();

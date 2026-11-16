@@ -24,6 +24,15 @@ public interface IUserFrontend
         DisplayReplyAsync(reply, cancellationToken);
 
     /// <summary>
+    /// Whether this frontend shows <paramref name="reply"/>, an unsolicited final reply, to someone
+    /// typing in <paramref name="sessionId"/>. The proxy attaches the replies this answers true for
+    /// to the next message sent in that session (<see cref="UserMessage.RelatedReplies"/>), so the
+    /// agent has the context of what the user saw. The default is true, for frontends that show
+    /// every reply whatever its session.
+    /// </summary>
+    bool ShowsReplyIn(string sessionId, AgentReply reply) => true;
+
+    /// <summary>
     /// Called when the agent's display name changes. Frontends should update
     /// their UI (titles, headers, etc.) accordingly.
     /// </summary>

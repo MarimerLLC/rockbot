@@ -59,11 +59,16 @@ internal sealed class ConversationHistoryRequestHandler(
         IConversationMemory conversationMemory, ConversationHistoryRequest request, CancellationToken ct,
         DateTimeOffset? clearedAt = null)
     {
+        var includeBroadcast = request.IncludeBroadcast && !WellKnownSessions.IsBroadcast(request.SessionId);
+
+        // #841: a copy of a broadcast session's reply, imported because the user replied to it, is
+        // left out when that session's turns are merged in: the original is already there.
         var turns = (await conversationMemory.GetTurnsAsync(request.SessionId, ct))
+            .Where(t => !(includeBroadcast && t.ImportedFrom is { } from && WellKnownSessions.IsBroadcast(from.SessionId)))
             .Select(t => ToHistoryTurn(t, request.SessionId))
             .ToList();
 
-        if (!request.IncludeBroadcast || WellKnownSessions.IsBroadcast(request.SessionId))
+        if (!includeBroadcast)
             return turns;
 
         // The fixed broadcast sessions, and any a2a-inbound/… ones, which are broadcast too.

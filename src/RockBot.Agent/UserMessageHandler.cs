@@ -71,7 +71,8 @@ internal sealed class UserMessageHandler(
     CompletionCheckClassifier? completionCheck = null,
     ISavedResponseStore? savedResponseStore = null,
     ResultArchive? resultArchive = null,
-    RockBot.Tools.FileSystem.FileSystemOptions? fileSystemOptions = null) : IMessageHandler<UserMessage>
+    RockBot.Tools.FileSystem.FileSystemOptions? fileSystemOptions = null,
+    RelatedReplyImporter? relatedReplyImporter = null) : IMessageHandler<UserMessage>
 {
     private static readonly TimeSpan ProgressMessageThreshold = TimeSpan.FromSeconds(5);
 
@@ -227,6 +228,11 @@ internal sealed class UserMessageHandler(
             await turn.StartAsync(ct);
 
             var turnAttachments = ToTurnAttachments(message.Attachments);
+
+            // #841: results from other sessions the user was shown in this client, copied in
+            // ahead of the message so a follow-up about one of them has its context.
+            if (relatedReplyImporter is not null && message.RelatedReplies is { Count: > 0 })
+                await relatedReplyImporter.ImportAsync(message, ct);
 
             await conversationMemory.AddTurnAsync(
                 message.SessionId,

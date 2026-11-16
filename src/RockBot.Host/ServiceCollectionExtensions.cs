@@ -71,7 +71,12 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<SessionStartTracker>();
         services.AddSingleton<SessionClientCapabilityStore>();
         services.AddSingleton<ReplyAttachmentBuffer>();
-        services.AddSingleton<SessionOriginStore>();
+        // #841: kept in the profile directory (not conversations/, which the conversation store
+        // reads as sessions), so a result that lands after a restart still has its anchor.
+        services.AddSingleton(sp => new SessionOriginStore(
+            Path.Combine(sp.GetRequiredService<IOptions<AgentProfileOptions>>().Value.BasePath, SessionOriginStore.FileName),
+            sp.GetService<ILogger<SessionOriginStore>>(),
+            sp.GetService<TimeProvider>()));
         services.AddSingleton<SessionClearTimes>();
         services.AddSingleton<SessionTierHistory>();
         // #665: per-conversation record of subagent results and artifacts.

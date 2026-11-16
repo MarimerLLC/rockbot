@@ -167,7 +167,8 @@ internal sealed class FileConversationMemory : IConversationMemory, IHostedServi
         }, cancellationToken);
         // Broadcast sessions only hold copies of replies kept for history (#809). The conversation
         // log is what the dream and observation passes learn from, and those replies never were.
-        if (_conversationLog is not null && !WellKnownSessions.IsBroadcast(sessionId))
+        // A turn imported from another session (#841) is a copy too.
+        if (_conversationLog is not null && !WellKnownSessions.IsBroadcast(sessionId) && turn.ImportedFrom is null)
             _ = _conversationLog.AppendAsync(new ConversationLogEntry(sessionId, turn.Role, turn.Content, turn.Timestamp));
     }
 

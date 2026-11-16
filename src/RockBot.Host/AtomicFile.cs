@@ -50,6 +50,33 @@ internal static class AtomicFile
     }
 
     /// <summary>
+    /// The synchronous form of <see cref="WriteAllTextAsync"/>, for small files a caller writes
+    /// while holding a lock.
+    /// </summary>
+    internal static void WriteAllText(string path, string content)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(directory))
+            directory = ".";
+        else
+            Directory.CreateDirectory(directory);
+
+        var tempPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            File.WriteAllText(tempPath, content);
+            CopyUnixFileMode(path, tempPath);
+            File.Move(tempPath, path, overwrite: true);
+        }
+        catch
+        {
+            TryDelete(tempPath);
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Gives the replacement the mode of the file it replaces, so rewriting a file does not
     /// change its permissions. Best-effort: no-ops when the target does not exist yet or the
     /// platform has no Unix modes.

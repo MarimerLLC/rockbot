@@ -249,6 +249,48 @@ public class AgentContextBuilderContextTurnsTests
         StringAssert.Contains(HistoryCompaction.HeadTail(longText, 100, "cut {0}"), "[cut 400]");
     }
 
+    // ── #841: turns imported from another session ────────────────────────────
+
+    [TestMethod]
+    public async Task ImportedTurn_IsPrefixedWithWhereItCameFrom()
+    {
+        var turns = new List<ConversationTurn>
+        {
+            new("user", "turn-hello", DateTimeOffset.UtcNow),
+            new("assistant", "turn-the result", DateTimeOffset.UtcNow)
+            {
+                Origin = new ConversationTurnOrigin("cli", "research X", DateTimeOffset.UtcNow, "cli-session"),
+                Source = new ConversationTurnSource("subagent", "abcdef123456"),
+                ImportedFrom = new ConversationTurnReference("cli-session", "r1"),
+            },
+        };
+        var builder = BuildBuilder(new ListConversationMemory(turns));
+
+        var messages = await builder.BuildAsync("blazor-session", "summarize that", CancellationToken.None);
+
+        var imported = messages.Single(m => m.Text.Contains("turn-the result", StringComparison.Ordinal));
+        Assert.AreEqual(ChatRole.Assistant, imported.Role);
+        Assert.AreEqual(
+            "[Shown to the user earlier, from another conversation: a subagent (task abcdef12), for cli session " +
+            "\"cli-session\": \"research X\"]\nturn-the result",
+            imported.Text);
+        Assert.IsTrue(messages.Any(m => m.Text == "turn-hello"), "turns that weren't imported are unchanged");
+    }
+
+    [TestMethod]
+    public void ImportedTurnPrefix_WithoutOrigin_NamesTheSession()
+    {
+        var turn = new ConversationTurn("assistant", "report", DateTimeOffset.UtcNow)
+        {
+            Source = new ConversationTurnSource("scheduled"),
+            ImportedFrom = new ConversationTurnReference("scheduled", "r1"),
+        };
+
+        Assert.AreEqual(
+            "[Shown to the user earlier, from another conversation: a scheduled task, in session \"scheduled\"]",
+            AgentContextBuilder.ImportedTurnPrefix(turn));
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /// <summary>Synthetic history turns are the only messages whose text starts with "turn-".</summary>

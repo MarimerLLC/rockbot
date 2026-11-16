@@ -6,12 +6,13 @@ namespace RockBot.UserProxy.Cli;
 /// Spectre.Console implementation of <see cref="IUserFrontend"/>.
 /// Renders agent replies as panels and errors as red markup.
 /// </summary>
-internal sealed class SpectreConsoleFrontend : IUserFrontend
+/// <param name="viewingSessionId">The CLI's <c>--session</c>; null treats each reply as in its own session.</param>
+internal sealed class SpectreConsoleFrontend(string? viewingSessionId = null) : IUserFrontend
 {
     public Task DisplayReplyAsync(AgentReply reply, CancellationToken cancellationToken = default)
     {
         var anchor = ReplyOriginFormatter.RenderAnchor(
-            reply.Origin, currentChannel: "cli", currentSessionId: reply.SessionId, DateTimeOffset.UtcNow);
+            reply.Origin, reply.Source, reply.SessionId, currentChannel: "cli", viewingSessionId, DateTimeOffset.UtcNow);
         if (anchor is not null)
             AnsiConsole.MarkupLine($"[dim]{Markup.Escape(anchor)}[/]");
 

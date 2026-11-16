@@ -25,6 +25,9 @@ public sealed class UserProxyService(
 
     private readonly ConcurrentDictionary<string, PendingTurn> _pending = new();
 
+    // #841: other sessions' results the frontend showed, attached to the next message sent.
+    private readonly RelatedReplyTracker _relatedReplies = new();
+
     // Correlation ids of turns that already ended, so a run event trailing the final reply
     // (RunFinished normally follows it) isn't passed to the frontend as a late event.
     private readonly ConcurrentDictionary<string, byte> _endedTurns = new();
@@ -399,7 +402,7 @@ public sealed class UserProxyService(
 
         try
         {
-            var outgoing = message with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents };
+            var outgoing = Outgoing(message);
             var envelope = outgoing.ToEnvelope<UserMessage>(
                 source: options.ProxyId,
                 correlationId: correlationId,
@@ -427,6 +430,19 @@ public sealed class UserProxyService(
         {
             _pending.TryRemove(correlationId, out _);
         }
+    }
+
+    /// <summary>
+    /// The message as sent: asking for agent events, and carrying the other sessions' replies the
+    /// frontend showed since the session last sent (#841).
+    /// </summary>
+    private UserMessage Outgoing(UserMessage message)
+    {
+        var outgoing = _relatedReplies.Stamp(message, frontend.ShowsReplyIn);
+        if (outgoing.RelatedReplies is { Count: > 0 } related && !ReferenceEquals(outgoing, message))
+            logger.LogDebug("Attaching {Count} related replies to the message for session {SessionId}",
+                related.Count, message.SessionId);
+        return outgoing with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents };
     }
 
     private async Task<TurnResult> WaitForTurnAsync(
@@ -627,7 +643,7 @@ public sealed class UserProxyService(
     {
         var correlationId = Guid.NewGuid().ToString("N");
 
-        var outgoing = message with { ClientCapabilities = message.ClientCapabilities | ClientCapabilities.AgentEvents };
+        var outgoing = Outgoing(message);
         var envelope = outgoing.ToEnvelope<UserMessage>(
             source: options.ProxyId,
             correlationId: correlationId,
@@ -821,6 +837,7 @@ public sealed class UserProxyService(
         {
             // Unsolicited final reply — display as a chat bubble
             logger.LogDebug("Unsolicited reply from {Agent}, displaying via frontend", reply.AgentName);
+            _relatedReplies.Record(reply);
             _ = frontend.DisplayReplyAsync(reply, ct);
         }
         else

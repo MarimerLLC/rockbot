@@ -31,6 +31,9 @@ internal sealed class JsonLinesFrontend(JsonLinesTurnWriter writer) : IUserFront
         return Task.CompletedTask;
     }
 
+    // Only this session's replies reach the stream, so no other session's reply was shown.
+    public bool ShowsReplyIn(string sessionId, AgentReply reply) => IsThisSessionsReply(reply.SessionId);
+
     // Errors the proxy reports outside a turn have no place in the run's stream; the run's own
     // failures end it with RUN_ERROR.
     public Task DisplayErrorAsync(string message, CancellationToken cancellationToken = default) => Task.CompletedTask;

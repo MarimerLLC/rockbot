@@ -12,14 +12,19 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
     /// <summary>This front end's channel, as a <see cref="ReplyOrigin.Channel"/> names it.</summary>
     internal const string Channel = "blazor";
 
+    /// <summary>The one session the Blazor UI shows and sends in.</summary>
+    internal const string ViewingSessionId = WellKnownSessions.Primary;
+
     /// <summary>
     /// The conversation as loaded from history, with the origin anchor a live copy of each
-    /// unsolicited reply had (#809), so a reloaded transcript reads as the live one did.
+    /// unsolicited reply had (#809), so a reloaded transcript reads as the live one did. A reply
+    /// from another session that has no origin gets the fallback anchor naming its session (#841).
     /// </summary>
     public static HistoryLoaded HistoryEvent(ConversationHistoryResponse history, string sessionId, DateTimeOffset now) =>
-        new([.. history.Turns.Select(t => t.Origin is null ? t : t with
+        new([.. history.Turns.Select(t => string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase) ? t : t with
             {
-                Content = ReplyOriginFormatter.WithQuotedAnchor(t.Content, t.Origin, Channel, t.SessionId ?? sessionId, now),
+                Content = ReplyOriginFormatter.WithQuotedAnchor(
+                    t.Content, t.Origin, t.Source, t.SessionId ?? sessionId, Channel, sessionId, now),
             })],
             sessionId);
 
@@ -49,11 +54,12 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
         // Prepend an origin anchor (as a markdown blockquote) for unsolicited replies whose
         // work started elsewhere, so the user can re-ground a message that arrived in this
         // client after the originating session is gone. Suppressed for replies delivered on
-        // their own blazor session (origin channel + session match).
+        // the blazor session (origin channel + session match). A reply from another session that
+        // has no origin still names its session (#841).
         var displayReply = reply with
         {
             Content = ReplyOriginFormatter.WithQuotedAnchor(
-                reply.Content, reply.Origin, Channel, reply.SessionId, DateTimeOffset.UtcNow),
+                reply.Content, reply.Origin, reply.Source, reply.SessionId, Channel, ViewingSessionId, DateTimeOffset.UtcNow),
         };
 
         // Final result — a permanent chat bubble; clears the progress indicator
