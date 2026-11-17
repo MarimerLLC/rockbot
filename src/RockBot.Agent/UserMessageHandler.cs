@@ -482,6 +482,7 @@ internal sealed class UserMessageHandler(
                             PostInjectionTokenEstimate = postInjectionTokenEstimate,
                             ModelId = firstResponse.ModelId ?? registry.GetModelId(tier),
                             InputTokens = firstResponse.Usage?.InputTokenCount,
+                            CachedInputTokens = firstResponse.Usage?.CachedInputTokenCount,
                             OutputTokens = firstResponse.Usage?.OutputTokenCount,
                             LatencyMs = routingSw.ElapsedMilliseconds,
                         });
@@ -683,6 +684,7 @@ internal sealed class UserMessageHandler(
                 PostInjectionTokenEstimate = postInjectionTokenEstimate,
                 ModelId = nativeDiag.ModelId ?? registry.GetModelId(classification.Tier),
                 InputTokens = nativeDiag.InputTokens > 0 ? nativeDiag.InputTokens : null,
+                CachedInputTokens = nativeDiag.CachedInputTokens > 0 ? nativeDiag.CachedInputTokens : null,
                 OutputTokens = nativeDiag.OutputTokens > 0 ? nativeDiag.OutputTokens : null,
                 ToolCallCount = nativeDiag.ToolCalls > 0 ? nativeDiag.ToolCalls : null,
             });
@@ -861,6 +863,7 @@ internal sealed class UserMessageHandler(
                 PostInjectionTokenEstimate = postInjectionTokenEstimate,
                 ModelId = bgDiag.ModelId ?? registry.GetModelId(tier),
                 InputTokens = bgDiag.InputTokens > 0 ? bgDiag.InputTokens : null,
+                CachedInputTokens = bgDiag.CachedInputTokens > 0 ? bgDiag.CachedInputTokens : null,
                 OutputTokens = bgDiag.OutputTokens > 0 ? bgDiag.OutputTokens : null,
                 ToolCallCount = bgDiag.ToolCalls > 0 ? bgDiag.ToolCalls : null,
             });

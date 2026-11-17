@@ -102,6 +102,12 @@ traffic to High) will show a **positive (unfavorable)** delta, and an **increase
 `balancedCeiling` is treated as a real future cost. When High routing share is already
 high, prefer **raising** `balancedCeiling` to pull verbose-but-simple tasks back to Balanced.
 
+**Measure every shift from the effective thresholds.** The message lists the thresholds in
+force after the analysis. A `null` in `tier-selector.json` means the **compiled default**,
+not "unset" and not the example values below. A `balancedCeiling` you return that is below
+the effective one is a **decrease**, whatever your notes call it. Write the effective
+baseline and the new value in `notes` (e.g. "balancedCeiling 0.55 → 0.60").
+
 Adjustments must be **small (±0.05)**. Hard bounds the code clamps to:
 - `lowCeiling` ∈ [0.15, 0.40]
 - `balancedCeiling` ∈ [0.40, 0.80]
@@ -171,8 +177,8 @@ Return ONLY a JSON object:
   "config": {
     "version": 1,
     "notes": "YYYY-MM-DD: <what changed and why — be specific>",
-    "lowCeiling": 0.20,
-    "balancedCeiling": 0.46,
+    "lowCeiling": <number | null>,
+    "balancedCeiling": <number | null>,
     "highSignalKeywords": ["additions only — merged with compiled defaults"],
     "lowSignalKeywords": ["additions only — merged with compiled defaults"],
     "balancedFloorKeywords": ["tool/topic words that floor Low→Balanced — additions only"]

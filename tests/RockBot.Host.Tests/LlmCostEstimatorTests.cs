@@ -112,12 +112,88 @@ public class LlmCostEstimatorTests
     [TestMethod]
     public void EstimateCost_WithoutCachedRate_PricesReadsAtFullInput()
     {
-        // gpt-5.4 has no cachedInputPerM: no discount is assumed, same as before cache pricing.
+        // gpt-5.5-pro has no cachedInputPerM: no discount is assumed.
         using var estimator = BuiltIn();
 
         Assert.AreEqual(
-            estimator.EstimateCost("gpt-5.4", 1_000_000, 0),
-            estimator.EstimateCost("gpt-5.4", 1_000_000, 0, 800_000, 0, 0), 0.0001);
+            estimator.EstimateCost("gpt-5.5-pro", 1_000_000, 0),
+            estimator.EstimateCost("gpt-5.5-pro", 1_000_000, 0, 800_000, 0, 0), 0.0001);
+    }
+
+    [TestMethod]
+    public void EstimateCost_GptCacheReads_AreDiscounted()
+    {
+        // #845: a scheduled subagent run on gpt-5.6-sol — 2,503,614 input of which 2,312,031
+        // cached, 7,073 output. Before CachedInputPerM it was ledgered at $12.73.
+        using var estimator = BuiltIn();
+
+        var cost = estimator.EstimateCost("gpt-5.6-sol-2026-07-09",
+            inputTokens: 2_503_614, outputTokens: 7_073,
+            cachedInputTokens: 2_312_031, cacheWriteTokens: 0, cacheWrite1hTokens: 0);
+
+        // 191,583 uncached × $5 + 2,312,031 cached × $0.50 + 7,073 out × $30, per million.
+        Assert.AreEqual((191_583 * 5.00 + 2_312_031 * 0.50 + 7_073 * 30.00) / 1_000_000.0, cost, 0.0001);
+        Assert.IsTrue(cost < 2.50, $"expected ~$2.33, got {cost:F2}");
+    }
+
+    [TestMethod]
+    [DataRow("gpt-5.6-sol")]
+    [DataRow("gpt-5.6-terra")]
+    [DataRow("gpt-5.6-luna")]
+    [DataRow("gpt-5.5")]
+    [DataRow("gpt-5.4")]
+    [DataRow("gpt-5.4-mini")]
+    public void BuiltInDefaults_GptModels_PriceCacheReadsAtTenPercent(string modelId)
+    {
+        using var estimator = BuiltIn();
+        var entry = estimator.FindEntry(modelId)!;
+
+        Assert.IsNotNull(entry.CachedInputPerM, $"{modelId} has no cachedInputPerM");
+        Assert.AreEqual(entry.InputPerM * 0.10, entry.CachedInputPerM.Value, 0.0001);
+    }
+
+    [TestMethod]
+    public void FileRowWithoutCachedRate_TakesTheBuiltInDiscount()
+    {
+        // An older PVC file (seeded no-clobber) has no cachedInputPerM. Same-prefix built-in
+        // discounts fill in, scaled to the file's input price; explicit values and rows the
+        // built-in table doesn't discount are left alone (#845).
+        var path = Path.Combine(Path.GetTempPath(), $"pricing-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, """
+            [
+              { "prefix": "gpt-5.6-sol",  "inputPerM": 4.00, "outputPerM": 20.00 },
+              { "prefix": "gpt-5.6-luna", "inputPerM": 0.20, "outputPerM": 1.20, "cachedInputPerM": 0.20 },
+              { "prefix": "gpt-5.5-pro",  "inputPerM": 30.00, "outputPerM": 180.00 }
+            ]
+            """);
+        try
+        {
+            using var estimator = NewEstimator(path);
+
+            Assert.AreEqual(0.40, estimator.FindEntry("gpt-5.6-sol")!.CachedInputPerM!.Value, 0.000001);
+            Assert.AreEqual(0.20, estimator.FindEntry("gpt-5.6-luna")!.CachedInputPerM!.Value, 0.000001);
+            Assert.IsNull(estimator.FindEntry("gpt-5.5-pro")!.CachedInputPerM);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void ShippedPricingFile_MatchesBuiltInDefaults()
+    {
+        // The image seeds the PVC with llm-pricing.json; the built-in table is the fallback when
+        // that file is missing. They must price every model the same, or estimates change with
+        // which one happens to be loaded (#845 had to be fixed in both).
+        var shippedPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "llm-pricing.json");
+        using var shipped = NewEstimator(shippedPath);
+        using var builtIn = BuiltIn();
+
+        Assert.AreEqual(shippedPath, shipped.LoadedFrom, "shipped pricing file did not load");
+        CollectionAssert.AreEquivalent(
+            builtIn.Entries.ToList(), shipped.Entries.ToList(),
+            "llm-pricing.json and LlmCostEstimator.BuiltInDefaults disagree");
     }
 
     [TestMethod]

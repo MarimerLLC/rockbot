@@ -69,6 +69,14 @@ public sealed record TierRoutingEntry
     public string? ModelId { get; init; }
 
     public long? InputTokens { get; init; }
+
+    /// <summary>
+    /// The part of <see cref="InputTokens"/> read from the provider's prompt cache, priced at the
+    /// pricing row's cached rate by the routing analyzer (#845). Null on older entries, which are
+    /// priced as if nothing was cached.
+    /// </summary>
+    public long? CachedInputTokens { get; init; }
+
     public long? OutputTokens { get; init; }
     public long? LatencyMs { get; init; }
 

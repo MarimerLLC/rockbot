@@ -226,12 +226,12 @@ public class TierRoutingAnalyzerTests
     [TestMethod]
     public void BuildThresholdScans_ShiftFlipsEntriesNearBoundary()
     {
-        // With defaults: lowCeiling=0.15, balancedCeiling=0.46.
-        // An entry with score 0.18 simulates Balanced at original, Low at lowCeiling+0.05 (=0.20).
+        // With the selector's compiled defaults: lowCeiling=0.25, balancedCeiling=0.55.
+        // An entry with score 0.28 simulates Balanced at original, Low at lowCeiling+0.05 (=0.30).
         var entries = new[]
         {
-            MakeEntry(tier: ModelTier.Balanced, score: 0.18),
-            MakeEntry(tier: ModelTier.Balanced, score: 0.19),
+            MakeEntry(tier: ModelTier.Balanced, score: 0.28),
+            MakeEntry(tier: ModelTier.Balanced, score: 0.29),
             MakeEntry(tier: ModelTier.Low, score: 0.10),  // unaffected
         };
 
@@ -255,9 +255,39 @@ public class TierRoutingAnalyzerTests
             MakeEntry(tier: ModelTier.Low, score: 0.11),  // above the new boundary — should flip
         };
 
-        var result = TierRoutingAnalyzer.Analyze(entries);
+        var result = TierRoutingAnalyzer.Analyze(entries, new TierSelectorConfig { LowCeiling = 0.15 });
         var lowCeilingDown = result.ThresholdScans.First(s => s.Threshold == "lowCeiling" && s.Delta < 0);
         Assert.AreEqual(1, lowCeilingDown.EntriesFlipped, "Only the score=0.11 entry should flip after rounding the shifted threshold");
+    }
+
+    [TestMethod]
+    public void BuildThresholdScans_NullConfig_SimulatesSelectorDefaults()
+    {
+        // #844: a null balancedCeiling is the selector's compiled 0.55, not 0.46. A 0.52 entry
+        // is Balanced today; only lowering the ceiling (to 0.50) would flip it to High.
+        var entries = new[] { MakeEntry(tier: ModelTier.Balanced, score: 0.52) };
+
+        foreach (var config in new TierSelectorConfig?[] { null, new TierSelectorConfig() })
+        {
+            var result = TierRoutingAnalyzer.Analyze(entries, config);
+            var up = result.ThresholdScans.Single(s => s.Threshold == "balancedCeiling" && s.Delta > 0);
+            var down = result.ThresholdScans.Single(s => s.Threshold == "balancedCeiling" && s.Delta < 0);
+            Assert.AreEqual(0, up.EntriesFlipped);
+            Assert.AreEqual(1, down.EntriesFlipped);
+            StringAssert.Contains(down.DirectionDescription, "Balanced->High");
+        }
+    }
+
+    [TestMethod]
+    public void BuildThresholdScans_OutOfRangeConfig_ClampsLikeTheSelector()
+    {
+        // The selector clamps balancedCeiling to [0.40, 0.80]; 0.95 behaves as 0.80, so a 0.85
+        // entry is High and a +0.05 shift (to 0.85) brings it back to Balanced.
+        var entries = new[] { MakeEntry(tier: ModelTier.High, score: 0.85) };
+
+        var result = TierRoutingAnalyzer.Analyze(entries, new TierSelectorConfig { BalancedCeiling = 0.95 });
+        var up = result.ThresholdScans.Single(s => s.Threshold == "balancedCeiling" && s.Delta > 0);
+        Assert.AreEqual(1, up.EntriesFlipped);
     }
 
     [TestMethod]
@@ -273,6 +303,20 @@ public class TierRoutingAnalyzerTests
     }
 
     // ── Projected cost ─────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public void ProjectedCost_PricesCacheReadsAtTheCachedRate()
+    {
+        // #845: 1M input of which 900k cached, at $5/M input and $0.50/M cached, no output.
+        var pricing = new[] { new LlmPricingRow("gpt-5.6-sol", 5.00m, 30.00m, CachedInputPerM: 0.50m) };
+        var entry = MakeEntry(inputTokens: 1_000_000, outputTokens: 0, modelId: "gpt-5.6-sol-2026-07-09")
+            with { CachedInputTokens = 900_000 };
+
+        var result = TierRoutingAnalyzer.Analyze([entry], pricing: pricing);
+
+        // 100k × $5/M + 900k × $0.50/M = $0.50 + $0.45.
+        Assert.AreEqual(0.95m, result.ProjectedCost.TotalUsd);
+    }
 
     [TestMethod]
     public void ProjectedCost_WithPricingAndModelId_ComputesPerCall()
@@ -373,12 +417,12 @@ public class TierRoutingAnalyzerTests
         var map = ModelMap(low: "mini", balanced: "gpt-5.5", high: "gpt-5.5");
 
         var entries = new List<TierRoutingEntry>();
-        // scores in (0.41, 0.46] flip Balanced→High on the -0.05 scan
+        // scores in (0.50, 0.55] flip Balanced→High on the -0.05 scan (compiled balancedCeiling 0.55)
         for (var i = 0; i < 3; i++)
-            entries.Add(MakeEntry(tier: ModelTier.Balanced, score: 0.44, promptPreview: $"balanced boundary {i}"));
-        // scores in (0.46, 0.51] flip High→Balanced on the +0.05 scan
+            entries.Add(MakeEntry(tier: ModelTier.Balanced, score: 0.53, promptPreview: $"balanced boundary {i}"));
+        // scores in (0.55, 0.60] flip High→Balanced on the +0.05 scan
         for (var i = 0; i < 3; i++)
-            entries.Add(MakeEntry(tier: ModelTier.High, score: 0.49, promptPreview: $"high boundary {i}"));
+            entries.Add(MakeEntry(tier: ModelTier.High, score: 0.58, promptPreview: $"high boundary {i}"));
 
         var result = TierRoutingAnalyzer.Analyze(
             entries, pricing: pricing, tierModelMap: map, highTierCostFloorMultiplier: 2.0);
@@ -403,7 +447,7 @@ public class TierRoutingAnalyzerTests
         var map = ModelMap(low: "gpt-5.5", balanced: "gpt-5.5", high: "gpt-5.5");
 
         var entries = Enumerable.Range(0, 3)
-            .Select(i => MakeEntry(tier: ModelTier.Balanced, score: 0.44, promptPreview: $"boundary {i}"))
+            .Select(i => MakeEntry(tier: ModelTier.Balanced, score: 0.53, promptPreview: $"boundary {i}"))
             .ToList();
 
         var result = TierRoutingAnalyzer.Analyze(
@@ -426,7 +470,7 @@ public class TierRoutingAnalyzerTests
         var map = ModelMap(low: "gpt-5.5", balanced: "gpt-5.5", high: "gpt-5.5-pro");
 
         var entries = Enumerable.Range(0, 3)
-            .Select(i => MakeEntry(tier: ModelTier.Balanced, score: 0.44,
+            .Select(i => MakeEntry(tier: ModelTier.Balanced, score: 0.53,
                 inputTokens: 1000, outputTokens: 500, promptPreview: $"boundary {i}"))
             .ToList();
 

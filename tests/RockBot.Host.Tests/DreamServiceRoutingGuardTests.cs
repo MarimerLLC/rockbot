@@ -47,11 +47,43 @@ public class DreamServiceRoutingGuardTests
     }
 
     [TestMethod]
-    public void Guard_NoCurrentConfig_PassesProposalThrough()
+    public void Guard_NullFileCeiling_ComparesAgainstCompiledDefault()
     {
-        // No prior config to compare against — cannot be a "decrease"; honor the proposal.
+        // #844: the file had balancedCeiling null (selector on its compiled 0.55) and the LLM
+        // "raised" it to 0.51. Against the effective ceiling that is a decrease, so over budget
+        // it is rejected — and the file keeps null rather than pinning 0.55.
         var result = DreamService.GuardBalancedCeilingDecrease(
-            proposed: 0.40, current: null, highPct: 66.7, targetPct: 20.0, NullLogger.Instance);
-        Assert.AreEqual(0.40, result);
+            proposed: 0.51, current: null, highPct: 66.7, targetPct: 20.0, NullLogger.Instance);
+        Assert.IsNull(result);
+    }
+
+    [TestMethod]
+    public void Guard_NullProposalOverTunedCeiling_IsADecrease()
+    {
+        // The proposal replaces the whole file, so null over a tuned 0.65 lowers the effective
+        // ceiling to the compiled 0.55. Over budget, keep 0.65.
+        var result = DreamService.GuardBalancedCeilingDecrease(
+            proposed: null, current: 0.65, highPct: 30.0, targetPct: 20.0, NullLogger.Instance);
+        Assert.AreEqual(0.65, result);
+    }
+
+    [TestMethod]
+    public void EffectiveThresholdsBlock_NullConfig_ShowsCompiledDefaults()
+    {
+        var block = DreamService.EffectiveThresholdsBlock(new TierSelectorConfig());
+
+        StringAssert.Contains(block, "lowCeiling = 0.25 (compiled default");
+        StringAssert.Contains(block, "balancedCeiling = 0.55 (compiled default");
+        StringAssert.Contains(block, "0.55 LOWERS it");
+    }
+
+    [TestMethod]
+    public void EffectiveThresholdsBlock_FileValues_AreClampedAndLabelled()
+    {
+        var block = DreamService.EffectiveThresholdsBlock(
+            new TierSelectorConfig { LowCeiling = 0.30, BalancedCeiling = 0.95 });
+
+        StringAssert.Contains(block, "lowCeiling = 0.30 (from tier-selector.json");
+        StringAssert.Contains(block, "balancedCeiling = 0.80 (from tier-selector.json");
     }
 }

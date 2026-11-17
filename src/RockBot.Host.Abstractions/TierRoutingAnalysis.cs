@@ -57,7 +57,10 @@ public sealed record TierRoutingCluster(
     int? AvgPostInjectionTokens,
     int FallbackCount,
     IReadOnlyList<string> MatchedHighKeywords,
-    IReadOnlyList<string> MatchedLowKeywords);
+    IReadOnlyList<string> MatchedLowKeywords,
+    // Average prompt-cache reads per entry (0 when none recorded), so cost projections price
+    // them at the cached rate (#845).
+    long? AvgCachedInputTokens = null);
 
 /// <summary>
 /// A cluster that tripped one of the deterministic detection rules. The LLM's job is to

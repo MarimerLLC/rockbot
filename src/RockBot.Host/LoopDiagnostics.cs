@@ -46,6 +46,12 @@ public sealed class LoopDiagnostics
     /// </summary>
     public long InputTokens { get; set; }
 
+    /// <summary>
+    /// The part of <see cref="InputTokens"/> served from the provider's prompt cache. Lets the
+    /// routing analyzer price cache reads at the cached rate (#845).
+    /// </summary>
+    public long CachedInputTokens { get; set; }
+
     /// <summary>Total output tokens produced across all loop iterations and passes.</summary>
     public long OutputTokens { get; set; }
 
