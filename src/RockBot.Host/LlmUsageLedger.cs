@@ -140,6 +140,8 @@ public sealed class LlmUsageLedger : IDisposable
     private readonly Timer? _flushTimer;
     private LlmUsageLedgerFile _file;
     private bool _dirty;
+    // In memory only: per-run costs are differences taken within one process lifetime (#846).
+    private readonly Dictionary<string, double> _scheduledTaskCost = new(StringComparer.Ordinal);
 
     public LlmUsageLedger(
         LlmCostEstimator costEstimator,
@@ -257,9 +259,27 @@ public sealed class LlmUsageLedger : IDisposable
                 t.Totals.Add(request);
             }
 
+            if ((ScheduledTaskOf(runSessionId) ?? ScheduledTaskOf(threadId)) is { } task)
+                _scheduledTaskCost[task] = _scheduledTaskCost.GetValueOrDefault(task) + cost;
+
             _dirty = true;
         }
     }
+
+    /// <summary>
+    /// The estimated cost charged to scheduled task <paramref name="taskName"/> since this process
+    /// started: its patrol turns and the subagents, wisps and workers they started. Only differences
+    /// mean anything; <see cref="ScheduledTaskRunCosts"/> takes one per run (#846).
+    /// </summary>
+    public double ScheduledTaskCostToDate(string taskName)
+    {
+        lock (_lock)
+            return _scheduledTaskCost.GetValueOrDefault(taskName);
+    }
+
+    /// <summary>The scheduled task a run or thread id belongs to (<c>patrol/{task}</c>), or null.</summary>
+    private static string? ScheduledTaskOf(string? sessionId) =>
+        WellKnownSessions.ScheduledTaskName(sessionId);
 
     /// <summary>The totals for today, the last 7 and 30 days, each day, each model, each workload, and <paramref name="threadId"/>.</summary>
     public LlmUsageReport GetReport(string? threadId)

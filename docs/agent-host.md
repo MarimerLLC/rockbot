@@ -250,6 +250,27 @@ rule that decided it (`TierClassification.Rule`, logged as `rule=` and stored as
 | `inherited-tier` | At least the highest tier the session's last three turns earned on their own (within 30 min) — kept in the in-memory `SessionTierHistory` |
 | `trivial-ack` | A pure acknowledgement/greeting ("thanks", "ok", "👍") skipped the floors and stayed Low |
 
+**Subagents** are scored the same way (without the thread-state rules) and their routing-log
+entries carry `routingRule` too, plus `parentSessionId` (the spawning session, e.g.
+`patrol/{task}`). Every routing-log entry also records the decision model's second opinion when
+it was asked (`refinement`: the keyword tier, the model's choice, confidence, threshold, and
+whether it was applied or capped). For **scheduled tasks** (#846):
+
+- A scheduled task's subagent can be moved up by the decision model to Balanced but not to High;
+  only the keyword score can send it to High (`refinement.capped` when the model wanted High).
+- A task's optional `maxTier` ceiling caps its patrol turn (normally Balanced) and every subagent
+  it spawns (rule `task-ceiling`). The dream's *scheduled-task tier* pass sets it to Balanced —
+  never Low, never lifted — when the task's recent runs show High runs costing at least
+  `ScheduledTaskCost:TierCeilingCostRatio` (2×) the median of at least
+  `TierCeilingMinBalancedRuns` (3) runs that finished on Balanced. It is deterministic (no LLM
+  call); `ScheduledTaskCost:AutoTierCeiling=false` turns it off. Rescheduling the task starts
+  it over without a ceiling.
+- Each run's cost (the patrol turn and everything it started, from the usage ledger) is kept
+  in `scheduled-task-runs.json`. A run costing at least `AnomalyMultiplier` (3×) the median of
+  the task's last `BaselineRuns` (8) runs — once it has `MinBaselineRuns` (3), and above
+  `MinAnomalyCostUsd` ($0.25) — gets a cost note on its saved response and a warning log line,
+  and is marked on the Usage tab.
+
 A turn routed Low that makes a side-effecting tool call (by verb in the tool name — see
 `ToolSideEffects`) or hits two tool errors finishes its loop on Balanced
 (`TierEscalationContext`; logged as `Tier escalated Low→Balanced mid-turn: …`). Pinned tiers

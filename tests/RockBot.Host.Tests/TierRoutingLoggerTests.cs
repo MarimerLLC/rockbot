@@ -131,6 +131,38 @@ public class TierRoutingLoggerTests
     }
 
     [TestMethod]
+    public async Task AppendAndRead_RoundTripsSubagentRoutingDetail()
+    {
+        // #846: subagent entries carry the rule, the refiner's answer and the spawning session.
+        var (logger, dir) = CreateLogger();
+        try
+        {
+            var refinement = new TierRefinement(ModelTier.Balanced, ModelTier.High, 0.83, 0.6, Applied: true);
+            await logger.AppendAsync(Entry(DateTimeOffset.UtcNow) with
+            {
+                Context = "subagent",
+                Tier = ModelTier.High,
+                RoutingRule = TierRoutingRules.DecisionModel,
+                Refinement = refinement,
+                ParentSessionId = "patrol/weekly-check",
+            });
+
+            var line = (await File.ReadAllLinesAsync(Path.Combine(dir, "tier-routing-log.jsonl"))).Single();
+            StringAssert.Contains(line, "\"parentSessionId\":\"patrol/weekly-check\"");
+            StringAssert.Contains(line, "\"keywordTier\"");
+
+            var entry = (await logger.ReadRecentAsync()).Single();
+            Assert.AreEqual(TierRoutingRules.DecisionModel, entry.RoutingRule);
+            Assert.AreEqual(refinement, entry.Refinement);
+            Assert.AreEqual("patrol/weekly-check", entry.ParentSessionId);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task AppendAsync_RespectsConfigurableCap_EvictsOldestEntries()
     {
         // With max=5, writing 7 entries should leave only the most recent 5.
@@ -176,6 +208,8 @@ public class TierRoutingLoggerTests
             var entries = await logger.ReadRecentAsync();
             Assert.AreEqual(1, entries.Count);
             Assert.IsNull(entries[0].ModelId);
+            Assert.IsNull(entries[0].Refinement);
+            Assert.IsNull(entries[0].ParentSessionId);
             Assert.AreEqual("legacy", entries[0].PromptPreview);
         }
         finally

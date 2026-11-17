@@ -86,6 +86,9 @@ internal sealed class DreamService : IHostedService, IDisposable
     private string? _repairTicketCreationDirective;
     private IReadOnlyList<LlmPricingRow>? _pricingRows;
     private DreamPassLedger? _passLedger;
+    private readonly IScheduledTaskStore? _scheduledTaskStore;
+    private readonly ScheduledTaskRunCosts? _scheduledTaskRunCosts;
+    private readonly ScheduledTaskCostOptions _scheduledTaskCostOptions;
     private int _contentionRetries;
 
     // Fires at StopAsync so an in-flight cycle unwinds through its existing
@@ -131,8 +134,14 @@ internal sealed class DreamService : IHostedService, IDisposable
         IMemoryDeduplicator? memoryDeduplicator = null,
         IOptions<MemoryAuditOptions>? memoryAuditOptions = null,
         IMcpSkillSurface? mcpSkillSurface = null,
-        IMcpToolDirectory? mcpToolDirectory = null)
+        IMcpToolDirectory? mcpToolDirectory = null,
+        IScheduledTaskStore? scheduledTaskStore = null,
+        ScheduledTaskRunCosts? scheduledTaskRunCosts = null,
+        IOptions<ScheduledTaskCostOptions>? scheduledTaskCostOptions = null)
     {
+        _scheduledTaskStore = scheduledTaskStore;
+        _scheduledTaskRunCosts = scheduledTaskRunCosts;
+        _scheduledTaskCostOptions = scheduledTaskCostOptions?.Value ?? new ScheduledTaskCostOptions();
         _memory = memory;
         _skillStore = skillStores.FirstOrDefault();
         _feedbackStore = feedbackStore;
@@ -816,6 +825,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunToolSuccessLearningPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunTierRoutingReviewPassAsync(ct);
+
+            ct.ThrowIfCancellationRequested(); await RunScheduledTaskTierPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunDlqReviewPassAsync(ct);
 
@@ -6348,6 +6359,33 @@ internal sealed class DreamService : IHostedService, IDisposable
 
             if (total > 0)
                 _logger.LogInformation("DreamService: log retention removed {Total} stale log file(s)/line(s)", total);
+        });
+    }
+
+    /// <summary>
+    /// #846: caps a recurring task at Balanced when its run history shows High runs costing far
+    /// more than the Balanced runs that did the same job (<see cref="ScheduledTaskTierAdvisor"/>).
+    /// Deterministic — no LLM call.
+    /// </summary>
+    internal async Task RunScheduledTaskTierPassAsync(CancellationToken ct)
+    {
+        if (!_scheduledTaskCostOptions.AutoTierCeiling || _scheduledTaskStore is null || _scheduledTaskRunCosts is null)
+            return;
+
+        await RunPassAsync("scheduled-task tier", async () =>
+        {
+            foreach (var task in await _scheduledTaskStore.ListAsync())
+            {
+                ct.ThrowIfCancellationRequested();
+                var runs = await _scheduledTaskRunCosts.GetRunsAsync(task.Name, ct);
+                if (ScheduledTaskTierAdvisor.Advise(task, runs, _scheduledTaskCostOptions, _clock.Now) is not { } advice)
+                    continue;
+
+                if (await _scheduledTaskStore.UpdateMaxTierAsync(task.Name, advice.MaxTier, advice.Reason))
+                    _logger.LogInformation(
+                        "DreamService: capped scheduled task '{Task}' at {MaxTier} — {Reason}",
+                        task.Name, advice.MaxTier, advice.Reason);
+            }
         });
     }
 

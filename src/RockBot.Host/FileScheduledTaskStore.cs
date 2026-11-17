@@ -128,6 +128,27 @@ internal sealed class FileScheduledTaskStore : IScheduledTaskStore
         }
     }
 
+    public async Task<bool> UpdateMaxTierAsync(string name, ModelTier? maxTier, string? reason)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var tasks = await ReadAllAsync();
+            if (!tasks.TryGetValue(name, out var existing))
+                return false;
+
+            tasks[name] = existing with { MaxTier = maxTier, MaxTierReason = maxTier is null ? null : reason };
+            await WriteAllAsync(tasks);
+            _logger.LogInformation("Scheduled task '{Name}' tier ceiling set to {MaxTier}: {Reason}",
+                name, maxTier?.ToString() ?? "(none)", reason);
+            return true;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     public async Task UpdateDirectiveAsync(string name, string directive)
     {
         await _lock.WaitAsync();

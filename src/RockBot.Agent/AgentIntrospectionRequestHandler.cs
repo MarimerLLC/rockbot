@@ -25,7 +25,9 @@ internal sealed class AgentIntrospectionRequestHandler(
     ISkillStore? skillStore = null,
     TierRoutingLogger? routingLog = null,
     IOptions<MemoryAuditOptions>? auditOptions = null,
-    IOptions<AgentProfileOptions>? profileOptions = null) : IMessageHandler<AgentIntrospectionRequest>
+    IOptions<AgentProfileOptions>? profileOptions = null,
+    ScheduledTaskRunCosts? runCosts = null,
+    IScheduledTaskStore? scheduledTaskStore = null) : IMessageHandler<AgentIntrospectionRequest>
 {
     private static readonly DateTimeOffset ProcessStartedAt = GetProcessStart();
 
@@ -66,6 +68,14 @@ internal sealed class AgentIntrospectionRequestHandler(
     private async Task<AgentIntrospectionResponse> AddHealthAsync(AgentIntrospectionResponse response, AgentIntrospectionRequest request)
     {
         var wanted = Wanted(request);
+
+        // #846: scheduled-task run costs ride with the usage section.
+        if (response.Usage is { } usage && runCosts is not null)
+        {
+            var tasks = await TryAsync("scheduled-task usage", () => ScheduledTaskUsageAsync(runCosts, scheduledTaskStore));
+            if (tasks is not null)
+                response = response with { Usage = usage with { ScheduledTasks = tasks } };
+        }
 
         if (wanted.Contains(IntrospectionSections.Mcp) && mcpBridge is not null)
             response = response with { Mcp = await TryAsync("mcp", () => Task.FromResult(AgentHealthSections.Mcp(mcpBridge))) };
@@ -191,6 +201,39 @@ internal sealed class AgentIntrospectionRequestHandler(
             ? new ThreadUsageIntrospection { ThreadId = id, FirstAt = t.FirstAt, LastAt = t.LastAt, Totals = Totals(t.Totals) }
             : null,
     };
+
+    /// <summary>Each scheduled task's latest run against its recent median, with its tier ceiling (#846).</summary>
+    internal static async Task<IReadOnlyList<ScheduledTaskUsageIntrospection>> ScheduledTaskUsageAsync(
+        ScheduledTaskRunCosts runCosts, IScheduledTaskStore? store)
+    {
+        var summaries = await runCosts.GetSummariesAsync();
+        if (summaries.Count == 0)
+            return [];
+
+        var tasks = store is null
+            ? new Dictionary<string, ScheduledTask>()
+            : (await store.ListAsync()).ToDictionary(t => t.Name, StringComparer.Ordinal);
+
+        return
+        [
+            .. summaries.Select(s =>
+            {
+                var task = tasks.GetValueOrDefault(s.TaskName);
+                return new ScheduledTaskUsageIntrospection
+                {
+                    TaskName = s.TaskName,
+                    Runs = s.Runs,
+                    LastRunAt = s.LastRun.EndedAt,
+                    LastCostUsd = s.LastRun.CostUsd,
+                    MedianCostUsd = s.MedianCostUsd,
+                    LastRunFlagged = s.LastRun.Anomalous,
+                    LastRunTier = s.LastRun.HighestTier?.ToString(),
+                    MaxTier = task?.MaxTier?.ToString(),
+                    MaxTierReason = task?.MaxTierReason,
+                };
+            }),
+        ];
+    }
 
     private static UsageTotalsIntrospection Totals(LlmUsageTotals t) => new()
     {

@@ -163,6 +163,21 @@ internal static class IntrospectionText
             WriteTotalsTable(output, "  ", [.. usage.Kinds.Select(k => (KindLabel(k.Kind), k.Totals))]);
         }
 
+        if (usage.ScheduledTasks.Count > 0)
+        {
+            output.WriteLine();
+            output.WriteLine("  Scheduled tasks, latest run (cost / usual / tier)");
+            foreach (var task in usage.ScheduledTasks)
+            {
+                var usual = task.MedianCostUsd is { } median ? $"${median:0.00}" : "—";
+                var flag = task.LastRunFlagged && task.MedianCostUsd is > 0
+                    ? $"  !! {task.LastCostUsd / task.MedianCostUsd.Value:0.#}x usual"
+                    : "";
+                var cap = task.MaxTier is { } maxTier ? $"  (capped at {maxTier})" : "";
+                output.WriteLine($"    {task.TaskName}  ${task.LastCostUsd:0.00} / {usual} / {task.LastRunTier ?? "—"}{cap}{flag}");
+            }
+        }
+
         var unpriced = usage.Last30Days.UnpricedRequests;
         if (unpriced > 0)
             output.WriteLine($"  {unpriced} request(s) in the last 30 days matched no pricing row and are counted at $0.");

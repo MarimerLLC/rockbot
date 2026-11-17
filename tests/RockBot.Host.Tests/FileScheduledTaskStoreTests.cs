@@ -30,6 +30,56 @@ public sealed class FileScheduledTaskStoreTests
     private static ScheduledTask MakeTask(string name, string cron = "0 8 * * *", string description = "Do something") =>
         new(name, cron, description, DateTimeOffset.UtcNow);
 
+    // ── UpdateMaxTierAsync (#846) ─────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task UpdateMaxTierAsync_SetsTheCeiling_KeepsOtherFields_WritesTheTierByName()
+    {
+        var store = CreateStore();
+        await store.SaveAsync(MakeTask("weekly-check") with { Directive = "checklist", TimeZone = "home" });
+
+        Assert.IsTrue(await store.UpdateMaxTierAsync("weekly-check", ModelTier.Balanced, "High runs cost 5x"));
+
+        var task = (await CreateStore().GetAsync("weekly-check"))!;
+        Assert.AreEqual(ModelTier.Balanced, task.MaxTier);
+        Assert.AreEqual("High runs cost 5x", task.MaxTierReason);
+        Assert.AreEqual("checklist", task.Directive);
+        Assert.AreEqual("home", task.TimeZone);
+        StringAssert.Contains(await File.ReadAllTextAsync(Path.Combine(_tempDir, "scheduled-tasks.json")),
+            "\"maxTier\": \"Balanced\"");
+
+        Assert.IsTrue(await store.UpdateMaxTierAsync("weekly-check", null, "ignored"));
+        task = (await store.GetAsync("weekly-check"))!;
+        Assert.IsNull(task.MaxTier);
+        Assert.IsNull(task.MaxTierReason, "clearing the ceiling clears its reason");
+    }
+
+    [TestMethod]
+    public async Task UpdateMaxTierAsync_UnknownTask_ReturnsFalse()
+    {
+        Assert.IsFalse(await CreateStore().UpdateMaxTierAsync("nope", ModelTier.Balanced, "x"));
+    }
+
+    [TestMethod]
+    public async Task Get_TaskWrittenBeforeMaxTier_HasNoCeiling()
+    {
+        await File.WriteAllTextAsync(Path.Combine(_tempDir, "scheduled-tasks.json"),
+            """[{"name":"old","cronExpression":"0 8 * * *","description":"d","createdAt":"2026-01-01T00:00:00+00:00"}]""");
+
+        var task = (await CreateStore().GetAsync("old"))!;
+        Assert.IsNull(task.MaxTier);
+        Assert.AreEqual(ModelTier.High, task.Cap(ModelTier.High));
+    }
+
+    [TestMethod]
+    public void Cap_LowersOnlyAboveTheCeiling()
+    {
+        var capped = MakeTask("t") with { MaxTier = ModelTier.Balanced };
+        Assert.AreEqual(ModelTier.Balanced, capped.Cap(ModelTier.High));
+        Assert.AreEqual(ModelTier.Balanced, capped.Cap(ModelTier.Balanced));
+        Assert.AreEqual(ModelTier.Low, capped.Cap(ModelTier.Low));
+    }
+
     // ── SaveAsync / GetAsync ──────────────────────────────────────────────────
 
     [TestMethod]

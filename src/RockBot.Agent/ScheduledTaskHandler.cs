@@ -35,7 +35,8 @@ internal sealed class ScheduledTaskHandler(
     IMcpSkillSurface? mcpSkillSurface = null,
     IOptions<WorkingMemoryOptions>? workingMemoryOptions = null,
     ResultArchive? resultArchive = null,
-    IConversationMemory? conversationMemory = null) : IMessageHandler<ScheduledTaskMessage>
+    IConversationMemory? conversationMemory = null,
+    ScheduledTaskRunCosts? runCosts = null) : IMessageHandler<ScheduledTaskMessage>
 {
     public async Task HandleAsync(ScheduledTaskMessage message, MessageHandlerContext context)
     {
@@ -80,6 +81,13 @@ internal sealed class ScheduledTaskHandler(
                 "Injected evolving task directive for '{Task}' ({Length} chars)",
                 message.TaskName, taskRecord.Directive.Length);
         }
+
+        // #846: the patrol turn runs on Balanced unless the task carries a lower ceiling.
+        var turnTier = taskRecord?.Cap(ModelTier.Balanced) ?? ModelTier.Balanced;
+        if (taskRecord?.MaxTier is { } maxTier)
+            logger.LogInformation("Scheduled task '{Task}' is capped at {MaxTier}: {Reason}",
+                message.TaskName, maxTier, taskRecord.MaxTierReason);
+        runCosts?.BeginRun(message.TaskName, turnTier);
 
         // Add the task description as the user turn (context builder doesn't add it;
         // the ephemeral session has no conversation history).
@@ -139,6 +147,7 @@ internal sealed class ScheduledTaskHandler(
 
             finalText = await agentLoopRunner.RunAsync(
                 chatMessages, chatOptions, sessionId: sessionId,
+                tier: turnTier,
                 enableFollowUp: false, cancellationToken: ct,
                 // #685: user-configured automation keeps acting without a fresh request.
                 actionGate: ActionGateScope.ForScheduledTask);
@@ -164,6 +173,12 @@ internal sealed class ScheduledTaskHandler(
             logger.LogInformation("Scheduled task '{TaskName}' completed", message.TaskName);
         else
             logger.LogInformation("Scheduled task '{TaskName}' finished with error reply", message.TaskName);
+
+        // #846: a run that delegated ends when its subagents' synthesis is saved
+        // (SubagentResultHandler); any other run ends here.
+        var costCheck = spawnedSubagent || runCosts is null
+            ? null
+            : await runCosts.EndRunAsync(message.TaskName, ct);
 
         // Patrol tasks may produce no output when there is nothing to report — that is correct.
         if (string.IsNullOrWhiteSpace(finalText))
@@ -206,9 +221,11 @@ internal sealed class ScheduledTaskHandler(
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
 
         // #418: keep the report after it scrolls out of every client. Labelled by task name, so the
-        // store keeps only a task's latest runs. An error reply is not a report.
+        // store keeps only a task's latest runs. An error reply is not a report. #846: an unusually
+        // expensive run says so in its saved copy.
         if (succeeded && resultArchive is not null)
             await resultArchive.ArchiveAsync(
-                SavedResponseSources.Scheduled, message.TaskName, finalText, agent.Name, replySessionId, ct);
+                SavedResponseSources.Scheduled, message.TaskName, costCheck?.Annotate(finalText) ?? finalText,
+                agent.Name, replySessionId, ct);
     }
 }

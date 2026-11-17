@@ -125,6 +125,41 @@ public sealed record UsageIntrospection
     /// has used nothing.
     /// </summary>
     public ThreadUsageIntrospection? Thread { get; init; }
+
+    /// <summary>
+    /// Each scheduled task's latest run cost against its recent median, most recently run first
+    /// (#846). Empty when the agent recorded no runs (or predates this field).
+    /// </summary>
+    public IReadOnlyList<ScheduledTaskUsageIntrospection> ScheduledTasks { get; init; } = [];
+}
+
+/// <summary>A scheduled task's latest run and how it compares with the task's recent runs (#846).</summary>
+public sealed record ScheduledTaskUsageIntrospection
+{
+    public string TaskName { get; init; } = "";
+
+    /// <summary>Runs on record (the history keeps the latest few).</summary>
+    public int Runs { get; init; }
+
+    public DateTimeOffset LastRunAt { get; init; }
+
+    /// <summary>The latest run's estimated cost.</summary>
+    public double LastCostUsd { get; init; }
+
+    /// <summary>The median cost of the task's recent runs; null when there are none.</summary>
+    public double? MedianCostUsd { get; init; }
+
+    /// <summary>True when the latest run cost far more than the runs before it.</summary>
+    public bool LastRunFlagged { get; init; }
+
+    /// <summary>The highest model tier the latest run used (<c>Low</c>, <c>Balanced</c>, <c>High</c>); null when unknown.</summary>
+    public string? LastRunTier { get; init; }
+
+    /// <summary>The task's tier ceiling, when it has one.</summary>
+    public string? MaxTier { get; init; }
+
+    /// <summary>Why the ceiling was set.</summary>
+    public string? MaxTierReason { get; init; }
 }
 
 /// <summary>Token and cost totals. <see cref="CostUsd"/> is an estimate from the agent's pricing table.</summary>

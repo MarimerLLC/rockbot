@@ -596,6 +596,9 @@ builder.Services.Configure<WorkingMemoryOptions>(builder.Configuration.GetSectio
 // without rebuilding the image. LlmPricing__ConfigPath in the ConfigMap overrides the default.
 builder.Services.Configure<LlmPricingOptions>(builder.Configuration.GetSection("LlmPricing"));
 
+// #846: scheduled-task run costs — the cost guard's multiplier and the dream's tier-ceiling thresholds.
+builder.Services.Configure<ScheduledTaskCostOptions>(builder.Configuration.GetSection("ScheduledTaskCost"));
+
 // Shared attachments storage — the filesystem facade over ${ROCKBOT_SHARED_PATH}/attachments.
 // Used by the attach_image reply tool to validate model-named files before referencing them.
 // McpBridgeService keeps its own Lazy instance; this registration limits blast radius.

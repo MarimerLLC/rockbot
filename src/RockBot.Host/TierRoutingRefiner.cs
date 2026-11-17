@@ -34,8 +34,14 @@ public sealed class TierRoutingRefiner(
     /// <paramref name="classification"/>, or a copy with the decision model's tier and rule
     /// <see cref="TierRoutingRules.DecisionModel"/>.
     /// </summary>
+    /// <param name="promotionCeiling">
+    /// The highest tier the model may move a request <em>up</em> to. A keyword tier already above
+    /// it stands. Subagents of scheduled tasks pass <see cref="ModelTier.Balanced"/>: recurring work
+    /// whose needs are known should not reach High on a near-tie (#846).
+    /// </param>
     public async Task<TierClassification> RefineAsync(
-        string prompt, string origin, TierClassification classification, CancellationToken cancellationToken = default)
+        string prompt, string origin, TierClassification classification, CancellationToken cancellationToken = default,
+        ModelTier promotionCeiling = ModelTier.High)
     {
         if (!ShouldAsk(classification, Margin) || !_decisions.IsEnabled(DecisionPurposes.TierRouting))
             return classification;
@@ -49,17 +55,31 @@ public sealed class TierRoutingRefiner(
         var threshold = _decisions.ThresholdFor(DecisionPurposes.TierRouting, DefaultConfidence);
         // One step at most: the model breaks a near-tie, it does not overrule the score outright.
         var refined = (ModelTier)Math.Clamp((int)modelTier, (int)classification.Tier - 1, (int)classification.Tier + 1);
+        // #846: an upward move stops at the ceiling; it never pulls a keyword tier down.
+        var capped = refined > classification.Tier && refined > promotionCeiling;
+        if (capped)
+            refined = (ModelTier)Math.Max((int)classification.Tier, (int)promotionCeiling);
+
+        var applied = confidence >= threshold && refined != classification.Tier;
 
         _logger.LogInformation(
             "Decision model: tier for {Origin} near a boundary (score={Score:F3}, distance={Distance:F3}) — keyword={Keyword}, " +
-            "model={Model} p={Confidence:0.000} threshold={Threshold:0.00} → {Outcome}",
+            "model={Model} p={Confidence:0.000} threshold={Threshold:0.00}{Capped} → {Outcome}",
             origin, classification.ComplexityScore, classification.BoundaryDistance, classification.Tier, modelTier,
-            confidence, threshold, confidence >= threshold && refined != classification.Tier ? refined : classification.Tier);
+            confidence, threshold, capped ? $" (capped at {promotionCeiling})" : "",
+            applied ? refined : classification.Tier);
 
-        if (confidence < threshold || refined == classification.Tier)
-            return classification;
+        // #846: record the answer either way, so the routing log shows a bump — or a declined one —
+        // after the ILogger line above is gone with the pod.
+        var refinement = new TierRefinement(classification.Tier, modelTier, confidence, threshold, applied, capped);
 
-        return classification with { Tier = refined, IntrinsicTier = refined, Rule = TierRoutingRules.DecisionModel };
+        if (!applied)
+            return classification with { Refinement = refinement };
+
+        return classification with
+        {
+            Tier = refined, IntrinsicTier = refined, Rule = TierRoutingRules.DecisionModel, Refinement = refinement,
+        };
     }
 
     /// <summary>True when the keyword score decided the tier and sat within <paramref name="margin"/> of a ceiling.</summary>

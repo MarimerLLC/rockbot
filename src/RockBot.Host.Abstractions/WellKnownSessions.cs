@@ -43,4 +43,18 @@ public static class WellKnownSessions
     /// Prefix of the session a scheduled task's agent loop runs in (<c>patrol/{task name}</c>).
     /// </summary>
     public const string ScheduledTaskPrefix = "patrol/";
+
+    /// <summary>
+    /// The scheduled task <paramref name="sessionId"/> belongs to (<c>patrol/{task}</c>, in either
+    /// session-id form), or null when it is not a scheduled task's session.
+    /// </summary>
+    public static string? ScheduledTaskName(string? sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId))
+            return null;
+        var raw = UserProxy.SessionIdForms.Raw(sessionId);
+        return raw.Length > ScheduledTaskPrefix.Length && raw.StartsWith(ScheduledTaskPrefix, StringComparison.Ordinal)
+            ? raw[ScheduledTaskPrefix.Length..]
+            : null;
+    }
 }
