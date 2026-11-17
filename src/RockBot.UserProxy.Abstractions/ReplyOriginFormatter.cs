@@ -26,19 +26,50 @@ public static class ReplyOriginFormatter
     public static string? RenderAnchor(
         ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now, TimeZoneInfo zone)
     {
-        if (origin is null)
-            return null;
-
-        if (currentChannel is not null
-            && string.Equals(origin.Channel, currentChannel, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(origin.SessionId, currentSessionId, StringComparison.Ordinal))
+        if (IsSuppressed(origin, currentChannel, currentSessionId))
             return null;
 
         var localTime = TimeZoneInfo.ConvertTime(origin.StartedAt, zone).ToString("HH:mm", CultureInfo.InvariantCulture);
         var ago = RelativeTime(origin.StartedAt, now, zone);
-        var summary = string.IsNullOrWhiteSpace(origin.PromptSummary) ? "(no prompt)" : origin.PromptSummary;
-        return $"↳ Re: \"{summary}\"\n   started {localTime} from {origin.Channel} · {ago}";
+        return $"{ReLine(origin)}\n   started {localTime} from {origin.Channel} · {ago}";
     }
+
+    /// <summary>
+    /// The anchor for a copy of the reply kept for later (a saved response): the start as a date and
+    /// time in <paramref name="zone"/>, with no "ago", which would be wrong once the copy is read
+    /// again. Suppressed as <see cref="RenderAnchor(ReplyOrigin?, string?, string?, DateTimeOffset, TimeZoneInfo)"/> is.
+    /// </summary>
+    public static string? RenderDatedAnchor(
+        ReplyOrigin? origin, string? currentChannel, string? currentSessionId, TimeZoneInfo zone)
+    {
+        if (IsSuppressed(origin, currentChannel, currentSessionId))
+            return null;
+
+        var started = TimeZoneInfo.ConvertTime(origin.StartedAt, zone).ToString("MMM d HH:mm", CultureInfo.InvariantCulture);
+        return $"{ReLine(origin)}\n   started {started} from {origin.Channel}";
+    }
+
+    /// <summary>
+    /// <paramref name="content"/> with <see cref="RenderDatedAnchor"/>'s anchor above it as a markdown
+    /// blockquote; <paramref name="content"/> alone when it gives none.
+    /// </summary>
+    public static string WithQuotedDatedAnchor(
+        string content, ReplyOrigin? origin, string? currentChannel, string? currentSessionId, TimeZoneInfo zone) =>
+        Quote(content, RenderDatedAnchor(origin, currentChannel, currentSessionId, zone));
+
+    /// <summary>
+    /// True when there is no origin, or it is <paramref name="currentChannel"/> and
+    /// <paramref name="currentSessionId"/>: the reply started where the user is looking.
+    /// </summary>
+    private static bool IsSuppressed(
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] ReplyOrigin? origin, string? currentChannel, string? currentSessionId) =>
+        origin is null
+        || currentChannel is not null
+            && string.Equals(origin.Channel, currentChannel, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(origin.SessionId, currentSessionId, StringComparison.Ordinal);
+
+    private static string ReLine(ReplyOrigin origin) =>
+        $"↳ Re: \"{(string.IsNullOrWhiteSpace(origin.PromptSummary) ? "(no prompt)" : origin.PromptSummary)}\"";
 
     /// <summary>
     /// The anchor for a reply seen in <paramref name="viewingSessionId"/>, so a background result

@@ -82,6 +82,36 @@ public class BlazorUserFrontendTests
     }
 
     [TestMethod]
+    public async Task SavedCopy_KeepsTheAnchor_DatedInsteadOfAgo()
+    {
+        var chicago = TimeZoneInfo.FindSystemTimeZoneById("America/Chicago");
+        await _frontend.DisplayReplyAsync(new AgentReply
+        {
+            Content = "High-tier routing was 8.3%.",
+            SessionId = "scheduled",
+            AgentName = "RockBot",
+            IsFinal = true,
+            Source = ReplySource.Scheduled,
+            Origin = new ReplyOrigin("scheduled", "llm-high-tier-cost-guard", DateTimeOffset.Parse("2026-11-16T15:55:11Z"), "scheduled"),
+        });
+        await _frontend.DisplayReplyAsync(new AgentReply
+        {
+            // Started here: no anchor live, none saved.
+            Content = "Vendor B.",
+            SessionId = "blazor-session",
+            AgentName = "RockBot",
+            IsFinal = true,
+            Origin = new ReplyOrigin("blazor", "research vendors", DateTimeOffset.Parse("2026-11-16T15:00:00Z"), "blazor-session"),
+        });
+
+        var messages = _chatState.State.Messages;
+        Assert.AreEqual(
+            "> ↳ Re: \"llm-high-tier-cost-guard\"\n> started Nov 16 09:55 from scheduled\n\nHigh-tier routing was 8.3%.",
+            MessageDisplay.ForSaving(messages[^2], "blazor-session", chicago));
+        Assert.AreEqual("Vendor B.", MessageDisplay.ForSaving(messages[^1], "blazor-session", chicago));
+    }
+
+    [TestMethod]
     public void MessageTime_DatedUnlessFromTodayInTheViewersZone()
     {
         var chicago = TimeZoneInfo.FindSystemTimeZoneById("America/Chicago");

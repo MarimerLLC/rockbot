@@ -1116,7 +1116,8 @@
         var request = new SaveResponseRequest
         {
             Label = _saveLabel.Trim(),
-            Content = message.Content,
+            // With its origin anchor, dated, so the saved copy still says what it answered.
+            Content = MessageDisplay.ForSaving(message, SessionId, _displayZone),
             AgentName = message.AgentName ?? "unknown",
             SessionId = message.SessionId ?? SessionId
         };

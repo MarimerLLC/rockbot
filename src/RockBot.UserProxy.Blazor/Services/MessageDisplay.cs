@@ -23,6 +23,17 @@ public static class MessageDisplay
                 message.Content, message.Origin, BlazorUserFrontend.Channel, viewingSessionId, now, zone);
 
     /// <summary>
+    /// <paramref name="message"/>'s content as a saved response keeps it: with the origin anchor
+    /// <see cref="Content"/> would draw, but dated ("started Nov 16 09:55 from scheduled") rather
+    /// than "· 10h ago", which would be wrong when the saved copy is read later.
+    /// </summary>
+    public static string ForSaving(ChatMessage message, string viewingSessionId, TimeZoneInfo zone) =>
+        message.IsFromUser
+            ? message.Content
+            : ReplyOriginFormatter.WithQuotedDatedAnchor(
+                message.Content, message.Origin, BlazorUserFrontend.Channel, viewingSessionId, zone);
+
+    /// <summary>
     /// A bubble's timestamp in <paramref name="zone"/>: the time alone for a message from today
     /// there, with the date otherwise, so two replies at the same time of day (a daily scheduled
     /// task, say) don't read as one shown twice.
