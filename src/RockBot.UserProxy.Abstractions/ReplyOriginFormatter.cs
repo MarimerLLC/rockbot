@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace RockBot.UserProxy;
 
 /// <summary>
@@ -13,21 +15,61 @@ public static class ReplyOriginFormatter
     /// user is currently viewing, so the anchor would just be noise).
     /// </summary>
     public static string? RenderAnchor(
-        ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now)
+        ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now) =>
+        RenderAnchor(origin, currentChannel, currentSessionId, now, TimeZoneInfo.Local);
+
+    /// <summary>
+    /// <see cref="RenderAnchor(ReplyOrigin?, string?, string?, DateTimeOffset)"/>, with the start time
+    /// in <paramref name="zone"/>: the viewer's zone, for a front end that renders on a server whose
+    /// own zone isn't the viewer's.
+    /// </summary>
+    public static string? RenderAnchor(
+        ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now, TimeZoneInfo zone)
     {
-        if (origin is null)
+        if (IsSuppressed(origin, currentChannel, currentSessionId))
             return null;
 
-        if (currentChannel is not null
-            && string.Equals(origin.Channel, currentChannel, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(origin.SessionId, currentSessionId, StringComparison.Ordinal))
-            return null;
-
-        var localTime = origin.StartedAt.ToLocalTime().ToString("HH:mm");
-        var ago = RelativeTime(origin.StartedAt, now);
-        var summary = string.IsNullOrWhiteSpace(origin.PromptSummary) ? "(no prompt)" : origin.PromptSummary;
-        return $"↳ Re: \"{summary}\"\n   started {localTime} from {origin.Channel} · {ago}";
+        var localTime = TimeZoneInfo.ConvertTime(origin.StartedAt, zone).ToString("HH:mm", CultureInfo.InvariantCulture);
+        var ago = RelativeTime(origin.StartedAt, now, zone);
+        return $"{ReLine(origin)}\n   started {localTime} from {origin.Channel} · {ago}";
     }
+
+    /// <summary>
+    /// The anchor for a copy of the reply kept for later (a saved response): the start as a date and
+    /// time in <paramref name="zone"/>, with no "ago", which would be wrong once the copy is read
+    /// again. Suppressed as <see cref="RenderAnchor(ReplyOrigin?, string?, string?, DateTimeOffset, TimeZoneInfo)"/> is.
+    /// </summary>
+    public static string? RenderDatedAnchor(
+        ReplyOrigin? origin, string? currentChannel, string? currentSessionId, TimeZoneInfo zone)
+    {
+        if (IsSuppressed(origin, currentChannel, currentSessionId))
+            return null;
+
+        var started = TimeZoneInfo.ConvertTime(origin.StartedAt, zone).ToString("MMM d HH:mm", CultureInfo.InvariantCulture);
+        return $"{ReLine(origin)}\n   started {started} from {origin.Channel}";
+    }
+
+    /// <summary>
+    /// <paramref name="content"/> with <see cref="RenderDatedAnchor"/>'s anchor above it as a markdown
+    /// blockquote; <paramref name="content"/> alone when it gives none.
+    /// </summary>
+    public static string WithQuotedDatedAnchor(
+        string content, ReplyOrigin? origin, string? currentChannel, string? currentSessionId, TimeZoneInfo zone) =>
+        Quote(content, RenderDatedAnchor(origin, currentChannel, currentSessionId, zone));
+
+    /// <summary>
+    /// True when there is no origin, or it is <paramref name="currentChannel"/> and
+    /// <paramref name="currentSessionId"/>: the reply started where the user is looking.
+    /// </summary>
+    private static bool IsSuppressed(
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(false)] ReplyOrigin? origin, string? currentChannel, string? currentSessionId) =>
+        origin is null
+        || currentChannel is not null
+            && string.Equals(origin.Channel, currentChannel, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(origin.SessionId, currentSessionId, StringComparison.Ordinal);
+
+    private static string ReLine(ReplyOrigin origin) =>
+        $"↳ Re: \"{(string.IsNullOrWhiteSpace(origin.PromptSummary) ? "(no prompt)" : origin.PromptSummary)}\"";
 
     /// <summary>
     /// The anchor for a reply seen in <paramref name="viewingSessionId"/>, so a background result
@@ -62,6 +104,15 @@ public static class ReplyOriginFormatter
     public static string WithQuotedAnchor(
         string content, ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now) =>
         Quote(content, RenderAnchor(origin, currentChannel, currentSessionId, now));
+
+    /// <summary>
+    /// <see cref="WithQuotedAnchor(string, ReplyOrigin?, string?, string?, DateTimeOffset)"/>, with the
+    /// start time in <paramref name="zone"/>.
+    /// </summary>
+    public static string WithQuotedAnchor(
+        string content, ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now,
+        TimeZoneInfo zone) =>
+        Quote(content, RenderAnchor(origin, currentChannel, currentSessionId, now, zone));
 
     /// <summary>
     /// <paramref name="content"/> with the anchor
@@ -102,7 +153,14 @@ public static class ReplyOriginFormatter
     }
 
     /// <summary>Formats the gap between <paramref name="then"/> and <paramref name="now"/> as a coarse "ago" string.</summary>
-    public static string RelativeTime(DateTimeOffset then, DateTimeOffset now)
+    public static string RelativeTime(DateTimeOffset then, DateTimeOffset now) =>
+        RelativeTime(then, now, TimeZoneInfo.Local);
+
+    /// <summary>
+    /// <see cref="RelativeTime(DateTimeOffset, DateTimeOffset)"/>, with a date more than a week back
+    /// in <paramref name="zone"/>.
+    /// </summary>
+    public static string RelativeTime(DateTimeOffset then, DateTimeOffset now, TimeZoneInfo zone)
     {
         var span = now - then;
         if (span < TimeSpan.Zero)
@@ -122,6 +180,6 @@ public static class ReplyOriginFormatter
             return "yesterday";
         if (span.TotalDays < 7)
             return $"{(int)span.TotalDays}d ago";
-        return then.ToLocalTime().ToString("MMM d");
+        return TimeZoneInfo.ConvertTime(then, zone).ToString("MMM d", CultureInfo.InvariantCulture);
     }
 }

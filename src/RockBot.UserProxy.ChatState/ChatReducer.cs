@@ -134,6 +134,7 @@ public static class ChatReducer
                 AgentName = effectiveName,
                 RunAgentName = RunAgentName(turn.Source),
                 Category = category,
+                Origin = turn.Origin,
                 Attachments = turn.Attachments,
                 IsExpanded = IsExpandedByDefault(category),
             });
@@ -367,6 +368,7 @@ public static class ChatReducer
                 TurnStartedAt = turnStartedAt,
                 SessionId = reply.SessionId,
                 ContentType = reply.ContentType,
+                Origin = reply.Origin,
                 Attachments = reply.Attachments,
                 IsInterim = !reply.IsFinal,
                 Category = category,

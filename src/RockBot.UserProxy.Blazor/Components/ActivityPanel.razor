@@ -181,7 +181,7 @@
                     {
                         <div class="activity-card-result">
                             <span class="tool-call-label">Result</span>
-                            <div class="message-content">@((MarkupString)SafeMarkdownRenderer.RenderSafe(result.Content))</div>
+                            <div class="message-content">@((MarkupString)SafeMarkdownRenderer.RenderSafe(MessageDisplay.Content(result, BlazorUserFrontend.ViewingSessionId, new DateTimeOffset(ChatState.UtcNow, TimeSpan.Zero), DisplayZone)))</div>
                         </div>
                     }
                 </div>
