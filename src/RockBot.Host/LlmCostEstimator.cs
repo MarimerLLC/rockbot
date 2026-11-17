@@ -18,14 +18,17 @@ public sealed class LlmCostEstimator : IDisposable
     [
         // Azure OpenAI / OpenAI gpt-5.x family — currently deployed via Azure.
         // gpt-5.6-sol is at list price; a $4/$20 promo runs through at least 2026-11-30.
-        new("gpt-5.6-sol",         5.00,  30.00),
-        new("gpt-5.6-terra",       2.00,  12.00),
-        new("gpt-5.6-luna",        0.20,   1.20),
+        // Cache reads bill at 10% of input. Without CachedInputPerM they were priced at the full
+        // input rate, overstating agentic GPT runs (mostly cache reads) about 5x (#845). The pro
+        // models get no cached-input discount, so they stay at the input rate.
+        new("gpt-5.6-sol",         5.00,  30.00, CachedInputPerM: 0.50),
+        new("gpt-5.6-terra",       2.00,  12.00, CachedInputPerM: 0.20),
+        new("gpt-5.6-luna",        0.20,   1.20, CachedInputPerM: 0.02),
         new("gpt-5.5-pro",        30.00, 180.00),
-        new("gpt-5.5",             5.00,  30.00),
+        new("gpt-5.5",             5.00,  30.00, CachedInputPerM: 0.50),
         new("gpt-5.4-pro",        30.00, 180.00),
-        new("gpt-5.4-mini",        0.75,   4.50),
-        new("gpt-5.4",             2.50,  15.00),
+        new("gpt-5.4-mini",        0.75,   4.50, CachedInputPerM: 0.075),
+        new("gpt-5.4",             2.50,  15.00, CachedInputPerM: 0.25),
 
         // Claude (Anthropic / OpenRouter). Cache reads are priced per model; cache writes
         // fall back to 1.25x input (5-minute TTL) and 2x input (1-hour TTL).
@@ -44,14 +47,14 @@ public sealed class LlmCostEstimator : IDisposable
         new("claude-3-5-haiku",    0.80,   4.00),
         new("claude-3-haiku",      0.25,   1.25),
 
-        // OpenAI legacy
-        new("gpt-5.3",             1.75,  14.00),
-        new("gpt-4o-mini",         0.15,   0.60),
-        new("gpt-4o",              2.50,  10.00),
+        // OpenAI legacy (gpt-5.3 caches at 10%; the 4o and o-series at 50%; 4-turbo has no cache)
+        new("gpt-5.3",             1.75,  14.00, CachedInputPerM: 0.175),
+        new("gpt-4o-mini",         0.15,   0.60, CachedInputPerM: 0.075),
+        new("gpt-4o",              2.50,  10.00, CachedInputPerM: 1.25),
         new("gpt-4-turbo",        10.00,  30.00),
-        new("o1-mini",             1.10,   4.40),
-        new("o1",                 15.00,  60.00),
-        new("o3-mini",             1.10,   4.40),
+        new("o1-mini",             1.10,   4.40, CachedInputPerM: 0.55),
+        new("o1",                 15.00,  60.00, CachedInputPerM: 7.50),
+        new("o3-mini",             1.10,   4.40, CachedInputPerM: 0.55),
 
         // Google
         new("gemini-3.1-pro",      2.00,  12.00),

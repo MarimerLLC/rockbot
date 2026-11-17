@@ -266,15 +266,18 @@ the compiled defaults; retired low signals (`what is`, `what's`, `tell me about`
 ```json
 {
   "version": 1,
-  "notes": "2026-02-24: tightened balancedCeiling after dream review",
-  "lowCeiling": 0.15,
-  "balancedCeiling": 0.46,
+  "notes": "2026-02-24: balancedCeiling 0.55 → 0.60 after dream review",
+  "lowCeiling": null,
+  "balancedCeiling": 0.60,
   "highSignalKeywords": ["analyze", "research", "distributed", "..."],
   "lowSignalKeywords":  ["define", "list the", "..."]
 }
 ```
 
-All fields are optional — omitted fields fall back to compiled defaults.
+All fields are optional — omitted or `null` fields fall back to compiled defaults. Those defaults
+(`lowCeiling` 0.25, `balancedCeiling` 0.55) and the guardrail ranges (`lowCeiling` 0.15–0.40,
+`balancedCeiling` 0.40–0.80) live in `TierSelectorDefaults`, shared by the selector, the
+`TierRoutingAnalyzer` and the dream pass, so every reader resolves a null the same way.
 
 ### Dream self-correction pass
 

@@ -25,21 +25,21 @@ namespace RockBot.Llm;
 /// </summary>
 public sealed class KeywordTierSelector : ILlmTierSelector
 {
-    // ── Compiled defaults ─────────────────────────────────────────────────────
-    private const double DefaultLowCeiling           = 0.25;
-    private const double DefaultBalancedCeiling      = 0.55;
-    private const double DefaultTrivialGuardCeiling  = 0.15;
-    private const double DefaultUserOriginBias       = 0.10;
+    // ── Compiled defaults (shared with TierRoutingAnalyzer and the dream pass, #844) ──
+    private const double DefaultLowCeiling           = TierSelectorDefaults.LowCeiling;
+    private const double DefaultBalancedCeiling      = TierSelectorDefaults.BalancedCeiling;
+    private const double DefaultTrivialGuardCeiling  = TierSelectorDefaults.TrivialGuardCeiling;
+    private const double DefaultUserOriginBias       = TierSelectorDefaults.UserOriginBias;
 
     // ── Guardrails: dream-tuned values are clamped to these ranges ────────────
-    private const double MinLowCeiling           = 0.15;
-    private const double MaxLowCeiling           = 0.40;
-    private const double MinBalancedCeiling      = 0.40;
-    private const double MaxBalancedCeiling      = 0.80;
-    private const double MinTrivialGuardCeiling  = 0.10;
-    private const double MaxTrivialGuardCeiling  = 0.25;
-    private const double MinUserOriginBias       = 0.0;
-    private const double MaxUserOriginBias       = 0.20;
+    private const double MinLowCeiling           = TierSelectorDefaults.MinLowCeiling;
+    private const double MaxLowCeiling           = TierSelectorDefaults.MaxLowCeiling;
+    private const double MinBalancedCeiling      = TierSelectorDefaults.MinBalancedCeiling;
+    private const double MaxBalancedCeiling      = TierSelectorDefaults.MaxBalancedCeiling;
+    private const double MinTrivialGuardCeiling  = TierSelectorDefaults.MinTrivialGuardCeiling;
+    private const double MaxTrivialGuardCeiling  = TierSelectorDefaults.MaxTrivialGuardCeiling;
+    private const double MinUserOriginBias       = TierSelectorDefaults.MinUserOriginBias;
+    private const double MaxUserOriginBias       = TierSelectorDefaults.MaxUserOriginBias;
 
     // ── Complexity signals → push toward High tier ───────────────────────────
     private static readonly string[] DefaultHighSignalKeywords =

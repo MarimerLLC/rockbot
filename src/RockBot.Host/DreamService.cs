@@ -4569,6 +4569,11 @@ internal sealed class DreamService : IHostedService, IDisposable
             }));
         }
 
+        // A null threshold means "compiled default", not "unset". Without the resolved values the
+        // LLM guessed a baseline (0.46) and wrote a "raise" that lowered the live ceiling (#844).
+        userMessage.AppendLine();
+        userMessage.AppendLine(EffectiveThresholdsBlock(currentConfig));
+
         var result = await InvokeDreamPassAsync<TierRoutingReviewResultDto>(
             "tier routing review",
             _tierRoutingDirective ?? BuiltInTierRoutingDirective,
@@ -4632,8 +4637,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         // DECREASE while the observed High-tier routing share already exceeds the target.
         var highPct = analysis.GlobalStats.ByTier
             .FirstOrDefault(t => t.Tier == ModelTier.High)?.Pct ?? 0.0;
+        // Compare against the ceiling in force, not the raw file value: a null there is the
+        // compiled default, and comparing against null let any decrease through (#844).
         result.Config.BalancedCeiling = GuardBalancedCeilingDecrease(
-            result.Config.BalancedCeiling, currentConfig?.BalancedCeiling,
+            result.Config.BalancedCeiling, TierSelectorDefaults.EffectiveBalancedCeiling(currentConfig),
             highPct, _options.TierRoutingHighTargetPct, _logger);
 
         var writeOptions = new JsonSerializerOptions
@@ -4651,24 +4658,48 @@ internal sealed class DreamService : IHostedService, IDisposable
     /// <summary>
     /// Deterministic ratchet-stop for the tier-routing review pass. Returns the balancedCeiling
     /// that should actually be written: the LLM's <paramref name="proposed"/> value, EXCEPT a
-    /// DECREASE is rejected (held at <paramref name="current"/>) while the observed High-tier
+    /// DECREASE is rejected (held at <paramref name="current"/>, the EFFECTIVE ceiling — the
+    /// compiled default when the file has null, #844) while the observed High-tier
     /// routing share exceeds <paramref name="targetPct"/>. A lower balancedCeiling pushes more
     /// traffic into High, so honoring such a proposal while already over budget is the exact
     /// drift this guard prevents. The cost floor makes the LLM unlikely to propose it; this
     /// enforces it in code regardless. Exposed as <c>internal static</c> for unit testing.
     /// </summary>
-    internal static double? GuardBalancedCeilingDecrease(
-        double? proposed, double? current, double highPct, double targetPct, ILogger logger)
+    internal static string EffectiveThresholdsBlock(TierSelectorConfig? currentConfig)
     {
-        if (highPct > targetPct
-            && proposed is double p && current is double c && p < c)
+        static string Source(double? raw) => raw is null ? "compiled default" : "from tier-selector.json";
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"""
+            Effective thresholds in force (the selector's values after resolving nulls to compiled
+            defaults and clamping to guardrails — compare any proposal against THESE, not against
+            the raw file, where null means "compiled default"):
+            - lowCeiling = {TierSelectorDefaults.EffectiveLowCeiling(currentConfig):0.00} ({Source(currentConfig?.LowCeiling)}; allowed [{TierSelectorDefaults.MinLowCeiling:0.00}, {TierSelectorDefaults.MaxLowCeiling:0.00}])
+            - balancedCeiling = {TierSelectorDefaults.EffectiveBalancedCeiling(currentConfig):0.00} ({Source(currentConfig?.BalancedCeiling)}; allowed [{TierSelectorDefaults.MinBalancedCeiling:0.00}, {TierSelectorDefaults.MaxBalancedCeiling:0.00}])
+            A value you return replaces the effective one: returning a balancedCeiling below
+            {TierSelectorDefaults.EffectiveBalancedCeiling(currentConfig):0.00} LOWERS it and routes more traffic to High.
+            To leave a threshold unchanged, return it exactly as the current tier-selector.json has
+            it (null stays null).
+            """);
+    }
+
+    internal static double? GuardBalancedCeilingDecrease(
+        double? proposed, double current, double highPct, double targetPct, ILogger logger)
+    {
+        if (proposed is not double p || p >= current)
+            return proposed;
+
+        if (highPct > targetPct)
         {
             logger.LogWarning(
                 "DreamService: tier routing review — rejecting balancedCeiling decrease {From}→{To}; " +
                 "High routing share {HighPct:F1}% exceeds target {Target:F1}% (held at current)",
-                c, p, highPct, targetPct);
-            return c;
+                current, p, highPct, targetPct);
+            return current;
         }
+
+        // Allowed, but say so plainly: the LLM's notes have called a decrease a raise (#844).
+        logger.LogInformation(
+            "DreamService: tier routing review — lowering balancedCeiling {From}→{To} (routes more traffic to High)",
+            current, p);
         return proposed;
     }
 
@@ -6972,8 +7003,9 @@ internal sealed class DreamService : IHostedService, IDisposable
            many entries would flip and the projected cost delta. Apply a shift only when:
            - At least ~5 entries would flip in the desired direction
            - The cost delta is favorable (or you have an explicit quality reason)
-           Adjustments must be small (±0.05). Bounds: lowCeiling in [0.05, 0.30],
-           balancedCeiling in [lowCeiling+0.10, 0.70].
+           Adjustments must be small (±0.05), measured from the EFFECTIVE thresholds listed after
+           the analysis (a null in tier-selector.json means the compiled default, not zero or
+           "unset"). Bounds: lowCeiling in [0.15, 0.40], balancedCeiling in [0.40, 0.80].
 
         Return ONLY a JSON object in this exact format:
         {
@@ -6992,7 +7024,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         }
 
         Rules:
-        - lowCeiling must be in [0.05, 0.30]; balancedCeiling must be in [lowCeiling+0.10, 0.70]
+        - lowCeiling must be in [0.15, 0.40]; balancedCeiling must be in [0.40, 0.80] and at least
+          lowCeiling+0.10
         - Return COMPLETE keyword lists — these replace the defaults entirely (no merging)
         - Never return empty keyword lists; include all sensible defaults plus any additions/removals
         - notes must state today's date and describe what changed; do not leave it blank

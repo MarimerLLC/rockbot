@@ -12,11 +12,6 @@ public static class TierRoutingAnalyzer
 {
     public const int CurrentSchemaVersion = 1;
 
-    // Defaults match the compiled defaults in KeywordTierSelector — used when the
-    // caller's TierSelectorConfig has nulls. Kept here so the analyzer never crashes
-    // on a fresh config that hasn't been tuned yet.
-    private const double DefaultLowCeiling = 0.15;
-    private const double DefaultBalancedCeiling = 0.46;
     private const double ThresholdScanDelta = 0.05;
 
     // Cluster flagging thresholds — must match the language in routing-dream.md.
@@ -50,8 +45,10 @@ public static class TierRoutingAnalyzer
         IReadOnlyDictionary<ModelTier, string?>? tierModelMap = null,
         double highTierCostFloorMultiplier = 1.0)
     {
-        var lowCeiling = currentConfig?.LowCeiling ?? DefaultLowCeiling;
-        var balancedCeiling = currentConfig?.BalancedCeiling ?? DefaultBalancedCeiling;
+        // Resolve nulls and out-of-range values exactly as KeywordTierSelector does, so the
+        // threshold scans simulate the ceilings actually in force (#844).
+        var lowCeiling = TierSelectorDefaults.EffectiveLowCeiling(currentConfig);
+        var balancedCeiling = TierSelectorDefaults.EffectiveBalancedCeiling(currentConfig);
 
         if (entries.Count == 0)
         {

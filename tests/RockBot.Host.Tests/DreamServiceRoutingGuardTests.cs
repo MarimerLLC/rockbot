@@ -47,11 +47,36 @@ public class DreamServiceRoutingGuardTests
     }
 
     [TestMethod]
-    public void Guard_NoCurrentConfig_PassesProposalThrough()
+    public void Guard_NullFileCeiling_ComparesAgainstCompiledDefault()
     {
-        // No prior config to compare against — cannot be a "decrease"; honor the proposal.
+        // #844: the file had balancedCeiling null (selector on its compiled 0.55) and the LLM
+        // "raised" it to 0.51. Against the effective ceiling that is a decrease, so over budget
+        // it is held at 0.55 instead of passing through as it did when null meant "no current".
+        var current = TierSelectorDefaults.EffectiveBalancedCeiling(new TierSelectorConfig());
+        Assert.AreEqual(0.55, current);
+
         var result = DreamService.GuardBalancedCeilingDecrease(
-            proposed: 0.40, current: null, highPct: 66.7, targetPct: 20.0, NullLogger.Instance);
-        Assert.AreEqual(0.40, result);
+            proposed: 0.51, current: current, highPct: 66.7, targetPct: 20.0, NullLogger.Instance);
+        Assert.AreEqual(0.55, result);
+    }
+
+    [TestMethod]
+    public void EffectiveThresholdsBlock_NullConfig_ShowsCompiledDefaults()
+    {
+        var block = DreamService.EffectiveThresholdsBlock(new TierSelectorConfig());
+
+        StringAssert.Contains(block, "lowCeiling = 0.25 (compiled default");
+        StringAssert.Contains(block, "balancedCeiling = 0.55 (compiled default");
+        StringAssert.Contains(block, "0.55 LOWERS it");
+    }
+
+    [TestMethod]
+    public void EffectiveThresholdsBlock_FileValues_AreClampedAndLabelled()
+    {
+        var block = DreamService.EffectiveThresholdsBlock(
+            new TierSelectorConfig { LowCeiling = 0.30, BalancedCeiling = 0.95 });
+
+        StringAssert.Contains(block, "lowCeiling = 0.30 (from tier-selector.json");
+        StringAssert.Contains(block, "balancedCeiling = 0.80 (from tier-selector.json");
     }
 }
