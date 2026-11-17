@@ -305,6 +305,20 @@ public class TierRoutingAnalyzerTests
     // ── Projected cost ─────────────────────────────────────────────────────────
 
     [TestMethod]
+    public void ProjectedCost_PricesCacheReadsAtTheCachedRate()
+    {
+        // #845: 1M input of which 900k cached, at $5/M input and $0.50/M cached, no output.
+        var pricing = new[] { new LlmPricingRow("gpt-5.6-sol", 5.00m, 30.00m, CachedInputPerM: 0.50m) };
+        var entry = MakeEntry(inputTokens: 1_000_000, outputTokens: 0, modelId: "gpt-5.6-sol-2026-07-09")
+            with { CachedInputTokens = 900_000 };
+
+        var result = TierRoutingAnalyzer.Analyze([entry], pricing: pricing);
+
+        // 100k × $5/M + 900k × $0.50/M = $0.50 + $0.45.
+        Assert.AreEqual(0.95m, result.ProjectedCost.TotalUsd);
+    }
+
+    [TestMethod]
     public void ProjectedCost_WithPricingAndModelId_ComputesPerCall()
     {
         var pricing = new[]

@@ -454,7 +454,16 @@ internal sealed class DreamService : IHostedService, IDisposable
                 try
                 {
                     var pricingJson = File.ReadAllText(pricingPath);
-                    _pricingRows = JsonSerializer.Deserialize<List<LlmPricingRow>>(pricingJson, JsonOptions);
+                    // Same cache-read fallback as LlmCostEstimator: an older PVC file without
+                    // cachedInputPerM still gets the built-in discount (#845).
+                    _pricingRows = JsonSerializer.Deserialize<List<LlmPricingRow>>(pricingJson, JsonOptions)?
+                        .Select(r => r with
+                        {
+                            CachedInputPerM = r.CachedInputPerM
+                                ?? (LlmCostEstimator.CachedRateOrBuiltIn(r.Prefix, (double)r.InputPerM, null) is { } c
+                                    ? (decimal)c : null),
+                        })
+                        .ToList();
                     if (initialLoad)
                         _logger.LogInformation(
                             "DreamService: loaded {Count} pricing rows from {Path}",
@@ -4637,10 +4646,10 @@ internal sealed class DreamService : IHostedService, IDisposable
         // DECREASE while the observed High-tier routing share already exceeds the target.
         var highPct = analysis.GlobalStats.ByTier
             .FirstOrDefault(t => t.Tier == ModelTier.High)?.Pct ?? 0.0;
-        // Compare against the ceiling in force, not the raw file value: a null there is the
-        // compiled default, and comparing against null let any decrease through (#844).
+        // The guard compares effective ceilings (null = compiled default) on both sides, since
+        // result.Config replaces the whole file: a null proposal can lower a tuned ceiling (#844).
         result.Config.BalancedCeiling = GuardBalancedCeilingDecrease(
-            result.Config.BalancedCeiling, TierSelectorDefaults.EffectiveBalancedCeiling(currentConfig),
+            result.Config.BalancedCeiling, currentConfig?.BalancedCeiling,
             highPct, _options.TierRoutingHighTargetPct, _logger);
 
         var writeOptions = new JsonSerializerOptions
@@ -4656,14 +4665,8 @@ internal sealed class DreamService : IHostedService, IDisposable
     }
 
     /// <summary>
-    /// Deterministic ratchet-stop for the tier-routing review pass. Returns the balancedCeiling
-    /// that should actually be written: the LLM's <paramref name="proposed"/> value, EXCEPT a
-    /// DECREASE is rejected (held at <paramref name="current"/>, the EFFECTIVE ceiling — the
-    /// compiled default when the file has null, #844) while the observed High-tier
-    /// routing share exceeds <paramref name="targetPct"/>. A lower balancedCeiling pushes more
-    /// traffic into High, so honoring such a proposal while already over budget is the exact
-    /// drift this guard prevents. The cost floor makes the LLM unlikely to propose it; this
-    /// enforces it in code regardless. Exposed as <c>internal static</c> for unit testing.
+    /// The tier-routing review's statement of the thresholds in force: each one resolved the way
+    /// the selector resolves it (null → compiled default, else clamped), with its source (#844).
     /// </summary>
     internal static string EffectiveThresholdsBlock(TierSelectorConfig? currentConfig)
     {
@@ -4681,10 +4684,27 @@ internal sealed class DreamService : IHostedService, IDisposable
             """);
     }
 
+    /// <summary>
+    /// Deterministic ratchet-stop for the tier-routing review pass. Returns the balancedCeiling
+    /// that should actually be written: the LLM's <paramref name="proposed"/> value, EXCEPT a
+    /// DECREASE is rejected (the file's <paramref name="current"/> value is kept, null included)
+    /// while the observed High-tier routing share exceeds <paramref name="targetPct"/>. A lower
+    /// balancedCeiling pushes more traffic into High, so honoring such a proposal while already
+    /// over budget is the exact drift this guard prevents. Both sides are compared as EFFECTIVE
+    /// ceilings — a null is the compiled default — because the proposal replaces the whole file:
+    /// a null proposal over a tuned 0.65 lowers it to the default (#844). The cost floor makes
+    /// the LLM unlikely to propose a decrease; this enforces it in code regardless. Exposed as
+    /// <c>internal static</c> for unit testing.
+    /// </summary>
     internal static double? GuardBalancedCeilingDecrease(
-        double? proposed, double current, double highPct, double targetPct, ILogger logger)
+        double? proposed, double? current, double highPct, double targetPct, ILogger logger)
     {
-        if (proposed is not double p || p >= current)
+        static double Effective(double? value) => TierSelectorDefaults.Resolve(value,
+            TierSelectorDefaults.BalancedCeiling, TierSelectorDefaults.MinBalancedCeiling, TierSelectorDefaults.MaxBalancedCeiling);
+
+        var from = Effective(current);
+        var to = Effective(proposed);
+        if (to >= from)
             return proposed;
 
         if (highPct > targetPct)
@@ -4692,14 +4712,14 @@ internal sealed class DreamService : IHostedService, IDisposable
             logger.LogWarning(
                 "DreamService: tier routing review — rejecting balancedCeiling decrease {From}→{To}; " +
                 "High routing share {HighPct:F1}% exceeds target {Target:F1}% (held at current)",
-                current, p, highPct, targetPct);
+                from, to, highPct, targetPct);
             return current;
         }
 
         // Allowed, but say so plainly: the LLM's notes have called a decrease a raise (#844).
         logger.LogInformation(
             "DreamService: tier routing review — lowering balancedCeiling {From}→{To} (routes more traffic to High)",
-            current, p);
+            from, to);
         return proposed;
     }
 
@@ -7015,8 +7035,8 @@ internal sealed class DreamService : IHostedService, IDisposable
             "notes": "YYYY-MM-DD: <what changed and why — be specific>",
             "lowCeiling": <number>,
             "balancedCeiling": <number>,
-            "highSignalKeywords": ["complete", "list"],
-            "lowSignalKeywords": ["complete", "list"]
+            "highSignalKeywords": ["additions only"],
+            "lowSignalKeywords": ["additions only"]
           },
           "antiPatterns": [
             { "content": "short description of systematic misroute pattern", "detail": "optional longer explanation" }
@@ -7026,8 +7046,8 @@ internal sealed class DreamService : IHostedService, IDisposable
         Rules:
         - lowCeiling must be in [0.15, 0.40]; balancedCeiling must be in [0.40, 0.80] and at least
           lowCeiling+0.10
-        - Return COMPLETE keyword lists — these replace the defaults entirely (no merging)
-        - Never return empty keyword lists; include all sensible defaults plus any additions/removals
+        - Keyword lists hold ADDITIONS only — they are merged with the compiled defaults, which
+          cannot be removed through config; return only the words you are adding
         - notes must state today's date and describe what changed; do not leave it blank
         - Only change what is clearly mis-routed; err on the side of no change
         - antiPatterns: include entries for any systematic misroute pattern detected, even when

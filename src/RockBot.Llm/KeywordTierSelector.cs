@@ -364,10 +364,11 @@ public sealed class KeywordTierSelector : ILlmTierSelector
             var floorKeywords = MergeKeywords(DefaultBalancedFloorKeywords, dto.BalancedFloorKeywords, "balancedFloorKeywords");
 
             // Clamp dream-tuned thresholds to guardrail ranges.
-            var lowCeiling = ClampThreshold(dto.LowCeiling, DefaultLowCeiling, MinLowCeiling, MaxLowCeiling, "lowCeiling");
-            var balancedCeiling = ClampThreshold(dto.BalancedCeiling, DefaultBalancedCeiling, MinBalancedCeiling, MaxBalancedCeiling, "balancedCeiling");
-            var trivialGuard = ClampThreshold(dto.TrivialGuardCeiling, DefaultTrivialGuardCeiling, MinTrivialGuardCeiling, MaxTrivialGuardCeiling, "trivialGuardCeiling");
-            var originBias = ClampThreshold(dto.UserOriginBias, DefaultUserOriginBias, MinUserOriginBias, MaxUserOriginBias, "userOriginBias");
+            // Resolved by TierSelectorDefaults, the same code the analyzer and dream pass use (#844).
+            var lowCeiling = WarnIfClamped(dto.LowCeiling, TierSelectorDefaults.EffectiveLowCeiling(dto), MinLowCeiling, MaxLowCeiling, "lowCeiling");
+            var balancedCeiling = WarnIfClamped(dto.BalancedCeiling, TierSelectorDefaults.EffectiveBalancedCeiling(dto), MinBalancedCeiling, MaxBalancedCeiling, "balancedCeiling");
+            var trivialGuard = WarnIfClamped(dto.TrivialGuardCeiling, TierSelectorDefaults.EffectiveTrivialGuardCeiling(dto), MinTrivialGuardCeiling, MaxTrivialGuardCeiling, "trivialGuardCeiling");
+            var originBias = WarnIfClamped(dto.UserOriginBias, TierSelectorDefaults.EffectiveUserOriginBias(dto), MinUserOriginBias, MaxUserOriginBias, "userOriginBias");
 
             var result = new EffectiveConfig(
                 LowCeiling:          lowCeiling,
@@ -586,21 +587,17 @@ public sealed class KeywordTierSelector : ILlmTierSelector
     }
 
     /// <summary>
-    /// Clamps a dream-tuned threshold to a guardrail range, logging if clamped.
-    /// Returns the compiled default when the value is null.
+    /// Returns <paramref name="resolved"/> (a threshold resolved by <see cref="TierSelectorDefaults"/>),
+    /// logging when it differs from the file's <paramref name="value"/> because it was clamped.
     /// </summary>
-    private double ClampThreshold(double? value, double compiledDefault, double min, double max, string name)
+    private double WarnIfClamped(double? value, double resolved, double min, double max, string name)
     {
-        if (value is null)
-            return compiledDefault;
-
-        var clamped = Math.Clamp(value.Value, min, max);
-        if (Math.Abs(clamped - value.Value) > 0.001)
+        if (value is { } original && Math.Abs(resolved - original) > 0.001)
             _logger?.LogWarning(
                 "KeywordTierSelector: clamped {Name} from {Original:F3} to {Clamped:F3} (allowed range [{Min:F2}, {Max:F2}])",
-                name, value.Value, clamped, min, max);
+                name, original, resolved, min, max);
 
-        return clamped;
+        return resolved;
     }
 
     // ── Word-boundary matching ─────────────────────────────────────────────────

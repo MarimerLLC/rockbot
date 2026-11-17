@@ -51,13 +51,20 @@ public class DreamServiceRoutingGuardTests
     {
         // #844: the file had balancedCeiling null (selector on its compiled 0.55) and the LLM
         // "raised" it to 0.51. Against the effective ceiling that is a decrease, so over budget
-        // it is held at 0.55 instead of passing through as it did when null meant "no current".
-        var current = TierSelectorDefaults.EffectiveBalancedCeiling(new TierSelectorConfig());
-        Assert.AreEqual(0.55, current);
-
+        // it is rejected — and the file keeps null rather than pinning 0.55.
         var result = DreamService.GuardBalancedCeilingDecrease(
-            proposed: 0.51, current: current, highPct: 66.7, targetPct: 20.0, NullLogger.Instance);
-        Assert.AreEqual(0.55, result);
+            proposed: 0.51, current: null, highPct: 66.7, targetPct: 20.0, NullLogger.Instance);
+        Assert.IsNull(result);
+    }
+
+    [TestMethod]
+    public void Guard_NullProposalOverTunedCeiling_IsADecrease()
+    {
+        // The proposal replaces the whole file, so null over a tuned 0.65 lowers the effective
+        // ceiling to the compiled 0.55. Over budget, keep 0.65.
+        var result = DreamService.GuardBalancedCeilingDecrease(
+            proposed: null, current: 0.65, highPct: 30.0, targetPct: 20.0, NullLogger.Instance);
+        Assert.AreEqual(0.65, result);
     }
 
     [TestMethod]

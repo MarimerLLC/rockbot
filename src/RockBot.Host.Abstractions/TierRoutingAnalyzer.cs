@@ -153,7 +153,10 @@ public static class TierRoutingAnalyzer
                     AvgPostInjectionTokens: postInj.Count > 0 ? (int?)Math.Round(postInj.Average()) : null,
                     FallbackCount: list.Count(e => e.IsFallbackTriggered),
                     MatchedHighKeywords: first.MatchedHighKeywords,
-                    MatchedLowKeywords: first.MatchedLowKeywords);
+                    MatchedLowKeywords: first.MatchedLowKeywords,
+                    AvgCachedInputTokens: input.Count > 0
+                        ? (long?)Math.Round(list.Where(e => e.InputTokens.HasValue).Average(e => (double)(e.CachedInputTokens ?? 0)))
+                        : null);
             })
             .OrderByDescending(c => c.Count)
             .ToList();
@@ -237,11 +240,12 @@ public static class TierRoutingAnalyzer
         if (pricing is not null && tierModelMap is not null
             && cluster.AvgInputTokens is long ai && cluster.AvgOutputTokens is long ao)
         {
-            var perCallCurrent = TryPriceCallForTier(cluster.Tier, ai, ao, tierModelMap, pricing, highTierCostFloorMultiplier);
+            var ac = cluster.AvgCachedInputTokens ?? 0;
+            var perCallCurrent = TryPriceCallForTier(cluster.Tier, ai, ac, ao, tierModelMap, pricing, highTierCostFloorMultiplier);
             currentCost = perCallCurrent * cluster.Count;
             if (alternateTier is ModelTier alt)
             {
-                var perCallAlt = TryPriceCallForTier(alt, ai, ao, tierModelMap, pricing, highTierCostFloorMultiplier);
+                var perCallAlt = TryPriceCallForTier(alt, ai, ac, ao, tierModelMap, pricing, highTierCostFloorMultiplier);
                 alternateCost = perCallAlt * cluster.Count;
             }
         }
@@ -380,8 +384,9 @@ public static class TierRoutingAnalyzer
             foreach (var (e, from, to) in flips)
             {
                 if (e.InputTokens is not long it || e.OutputTokens is not long ot) continue;
-                var fromCost = TryPriceCallForTier(from, it, ot, tierModelMap, pricing, highTierCostFloorMultiplier);
-                var toCost = TryPriceCallForTier(to, it, ot, tierModelMap, pricing, highTierCostFloorMultiplier);
+                var ct = e.CachedInputTokens ?? 0;
+                var fromCost = TryPriceCallForTier(from, it, ct, ot, tierModelMap, pricing, highTierCostFloorMultiplier);
+                var toCost = TryPriceCallForTier(to, it, ct, ot, tierModelMap, pricing, highTierCostFloorMultiplier);
                 if (fromCost is null || toCost is null) continue;
                 accum += toCost.Value - fromCost.Value;
                 any = true;
@@ -429,7 +434,7 @@ public static class TierRoutingAnalyzer
                 unpriced++;
                 continue;
             }
-            var cost = TryPriceCall(e.ModelId, it, ot, pricing);
+            var cost = TryPriceCall(e.ModelId, it, e.CachedInputTokens ?? 0, ot, pricing);
             if (cost is null)
             {
                 unpriced++;
@@ -456,11 +461,25 @@ public static class TierRoutingAnalyzer
     /// Prices a call by raw model ID at real pricing — no cost floor. Used for
     /// <see cref="BuildProjectedCost"/>, which reports actual spend.
     /// </summary>
-    private static decimal? TryPriceCall(string? modelId, long inputTokens, long outputTokens, IReadOnlyList<LlmPricingRow> pricing)
+    private static decimal? TryPriceCall(
+        string? modelId, long inputTokens, long cachedInputTokens, long outputTokens, IReadOnlyList<LlmPricingRow> pricing)
     {
         var row = MatchRow(modelId, pricing);
         if (row is null) return null;
-        return (inputTokens * row.InputPerM + outputTokens * row.OutputPerM) / 1_000_000m;
+        return Price(inputTokens, cachedInputTokens, outputTokens,
+            row.InputPerM, row.CachedInputPerM ?? row.InputPerM, row.OutputPerM);
+    }
+
+    /// <summary>
+    /// USD for one call: cache reads (part of <paramref name="inputTokens"/>) at
+    /// <paramref name="cachedPerM"/>, the rest of the input at <paramref name="inPerM"/> (#845).
+    /// </summary>
+    private static decimal Price(
+        long inputTokens, long cachedInputTokens, long outputTokens,
+        decimal inPerM, decimal cachedPerM, decimal outPerM)
+    {
+        var cached = Math.Clamp(cachedInputTokens, 0, inputTokens);
+        return ((inputTokens - cached) * inPerM + cached * cachedPerM + outputTokens * outPerM) / 1_000_000m;
     }
 
     /// <summary>
@@ -469,15 +488,15 @@ public static class TierRoutingAnalyzer
     /// projections that drive tuning decisions — NOT by real-spend reporting.
     /// </summary>
     private static decimal? TryPriceCallForTier(
-        ModelTier tier, long inputTokens, long outputTokens,
+        ModelTier tier, long inputTokens, long cachedInputTokens, long outputTokens,
         IReadOnlyDictionary<ModelTier, string?> tierModelMap,
         IReadOnlyList<LlmPricingRow> pricing,
         double highTierCostFloorMultiplier)
     {
         var rates = EffectiveTierRates(tier, tierModelMap, pricing, highTierCostFloorMultiplier);
         if (rates is null) return null;
-        var (inPerM, outPerM) = rates.Value;
-        return (inputTokens * inPerM + outputTokens * outPerM) / 1_000_000m;
+        var (inPerM, cachedPerM, outPerM) = rates.Value;
+        return Price(inputTokens, cachedInputTokens, outputTokens, inPerM, cachedPerM, outPerM);
     }
 
     /// <summary>
@@ -487,7 +506,7 @@ public static class TierRoutingAnalyzer
     /// <c>Math.Max</c> keeps a genuinely premium High model at its real (higher) price.
     /// Returns <c>null</c> when the tier's model has no pricing row.
     /// </summary>
-    private static (decimal InputPerM, decimal OutputPerM)? EffectiveTierRates(
+    private static (decimal InputPerM, decimal CachedInputPerM, decimal OutputPerM)? EffectiveTierRates(
         ModelTier tier,
         IReadOnlyDictionary<ModelTier, string?> tierModelMap,
         IReadOnlyList<LlmPricingRow> pricing,
@@ -495,6 +514,7 @@ public static class TierRoutingAnalyzer
     {
         var row = MatchRow(tierModelMap.GetValueOrDefault(tier), pricing);
         if (row is null) return null;
+        var rowCached = row.CachedInputPerM ?? row.InputPerM;
 
         if (tier == ModelTier.High && highTierCostFloorMultiplier > 1.0)
         {
@@ -503,11 +523,12 @@ public static class TierRoutingAnalyzer
             {
                 var m = (decimal)highTierCostFloorMultiplier;
                 return (Math.Max(row.InputPerM, balanced.InputPerM * m),
+                        Math.Max(rowCached, (balanced.CachedInputPerM ?? balanced.InputPerM) * m),
                         Math.Max(row.OutputPerM, balanced.OutputPerM * m));
             }
         }
 
-        return (row.InputPerM, row.OutputPerM);
+        return (row.InputPerM, rowCached, row.OutputPerM);
     }
 
     private static LlmPricingRow? MatchRow(string? modelId, IReadOnlyList<LlmPricingRow> pricing)

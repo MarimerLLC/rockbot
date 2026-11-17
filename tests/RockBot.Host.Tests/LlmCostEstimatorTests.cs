@@ -153,6 +153,34 @@ public class LlmCostEstimatorTests
     }
 
     [TestMethod]
+    public void FileRowWithoutCachedRate_TakesTheBuiltInDiscount()
+    {
+        // An older PVC file (seeded no-clobber) has no cachedInputPerM. Same-prefix built-in
+        // discounts fill in, scaled to the file's input price; explicit values and rows the
+        // built-in table doesn't discount are left alone (#845).
+        var path = Path.Combine(Path.GetTempPath(), $"pricing-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, """
+            [
+              { "prefix": "gpt-5.6-sol",  "inputPerM": 4.00, "outputPerM": 20.00 },
+              { "prefix": "gpt-5.6-luna", "inputPerM": 0.20, "outputPerM": 1.20, "cachedInputPerM": 0.20 },
+              { "prefix": "gpt-5.5-pro",  "inputPerM": 30.00, "outputPerM": 180.00 }
+            ]
+            """);
+        try
+        {
+            using var estimator = NewEstimator(path);
+
+            Assert.AreEqual(0.40, estimator.FindEntry("gpt-5.6-sol")!.CachedInputPerM!.Value, 0.000001);
+            Assert.AreEqual(0.20, estimator.FindEntry("gpt-5.6-luna")!.CachedInputPerM!.Value, 0.000001);
+            Assert.IsNull(estimator.FindEntry("gpt-5.5-pro")!.CachedInputPerM);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
     public void ShippedPricingFile_MatchesBuiltInDefaults()
     {
         // The image seeds the PVC with llm-pricing.json; the built-in table is the fallback when

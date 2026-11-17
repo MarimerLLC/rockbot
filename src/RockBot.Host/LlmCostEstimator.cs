@@ -171,8 +171,16 @@ public sealed class LlmCostEstimator : IDisposable
                 return;
             }
 
+            // The PVC file is seeded no-clobber, so a deployed agent keeps an older file. Fill a
+            // missing cache-read rate from the built-in row for the same prefix (#845) so price
+            // corrections made in code still reach it. A row that should get no discount says so
+            // explicitly with cachedInputPerM equal to inputPerM.
+            var filled = entries.Count(e => e.CachedInputPerM is null && BuiltInCachedRatio(e.Prefix) is not null);
+            entries = entries.Select(e => e with { CachedInputPerM = CachedRateOrBuiltIn(e.Prefix, e.InputPerM, e.CachedInputPerM) }).ToArray();
+
             _table = new(SortLongestFirst(entries), FromFile: true);
-            _logger.LogInformation("Loaded {Count} LLM pricing entries from {Path}", entries.Length, _options.ConfigPath);
+            _logger.LogInformation("Loaded {Count} LLM pricing entries from {Path} ({Filled} cache-read rates from built-in defaults)",
+                entries.Length, _options.ConfigPath, filled);
         }
         catch (Exception ex)
         {
@@ -212,6 +220,20 @@ public sealed class LlmCostEstimator : IDisposable
                 finally { Interlocked.Exchange(ref _reloadPending, 0); }
             }, null, TimeSpan.FromMilliseconds(500), Timeout.InfiniteTimeSpan);
         }
+    }
+
+    /// <summary>
+    /// <paramref name="cachedInputPerM"/> when set; otherwise the built-in row's cache-read
+    /// discount for the same prefix applied to <paramref name="inputPerM"/> (so an operator's
+    /// changed input price keeps the same ratio), or null when the built-in row has none.
+    /// </summary>
+    internal static double? CachedRateOrBuiltIn(string prefix, double inputPerM, double? cachedInputPerM) =>
+        cachedInputPerM ?? (BuiltInCachedRatio(prefix) is { } ratio ? Math.Round(inputPerM * ratio, 6) : null);
+
+    private static double? BuiltInCachedRatio(string prefix)
+    {
+        var builtIn = BuiltInDefaults.FirstOrDefault(e => string.Equals(e.Prefix, prefix, StringComparison.OrdinalIgnoreCase));
+        return builtIn is { CachedInputPerM: { } cached, InputPerM: > 0 } ? cached / builtIn.InputPerM : null;
     }
 
     private static LlmPricingEntry[] SortLongestFirst(IEnumerable<LlmPricingEntry> entries)
