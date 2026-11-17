@@ -196,6 +196,13 @@ public sealed record ChatMessage
     public string? ContentType { get; init; }
 
     /// <summary>
+    /// Where the work behind this reply started, when the agent said. A front end that draws the
+    /// origin anchor when it renders (in the viewer's zone, with an up-to-date "ago") reads it from
+    /// here; one that puts the anchor in <see cref="Content"/> can ignore it.
+    /// </summary>
+    public ReplyOrigin? Origin { get; init; }
+
+    /// <summary>
     /// Out-of-band attachments (images, etc.) carried on a final agent reply. Rendered natively
     /// (outside the markdown sanitizer) as &lt;img&gt; for image MIME types or a download link
     /// otherwise. Null for text-only replies.

@@ -16,15 +16,16 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
     internal const string ViewingSessionId = WellKnownSessions.Primary;
 
     /// <summary>
-    /// The conversation as loaded from history, with the origin anchor a live copy of each
-    /// unsolicited reply had (#809), so a reloaded transcript reads as the live one did. A reply
-    /// from another session that has no origin gets the fallback anchor naming its session (#841).
+    /// The conversation as loaded from history. A reply from another session that has no origin
+    /// gets the fallback anchor naming its session (#841) in its content. A reply with an origin
+    /// keeps its content as is: the page draws its anchor when it renders
+    /// (<see cref="MessageDisplay.Content"/>), as it does for the live copy (#809).
     /// </summary>
     public static HistoryLoaded HistoryEvent(ConversationHistoryResponse history, string sessionId, DateTimeOffset now) =>
-        new([.. history.Turns.Select(t => string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase) ? t : t with
+        new([.. history.Turns.Select(t => string.Equals(t.Role, "user", StringComparison.OrdinalIgnoreCase) || t.Origin is not null ? t : t with
             {
                 Content = ReplyOriginFormatter.WithQuotedAnchor(
-                    t.Content, t.Origin, t.Source, t.ImportedFromSessionId ?? t.SessionId ?? sessionId, Channel, sessionId, now),
+                    t.Content, null, t.Source, t.ImportedFromSessionId ?? t.SessionId ?? sessionId, Channel, sessionId, now),
             })],
             sessionId);
 
@@ -51,15 +52,16 @@ public sealed class BlazorUserFrontend(ChatStateService chatState, McpSignInStat
 
         var category = CategorizeReply(reply);
 
-        // Prepend an origin anchor (as a markdown blockquote) for unsolicited replies whose
-        // work started elsewhere, so the user can re-ground a message that arrived in this
-        // client after the originating session is gone. Suppressed for replies delivered on
-        // the blazor session (origin channel + session match). A reply from another session that
-        // has no origin still names its session (#841).
-        var displayReply = reply with
+        // An unsolicited reply whose work started elsewhere shows an origin anchor, so the user can
+        // re-ground a message that arrived after the originating session is gone. The page draws
+        // it when it renders, from the message's Origin, in the viewer's zone: this service runs
+        // on the server and is shared by every open page (MessageDisplay.Content). A reply from
+        // another session that has no origin gets the fallback anchor naming its session (#841)
+        // here; it has no time in it.
+        var displayReply = reply.Origin is not null ? reply : reply with
         {
             Content = ReplyOriginFormatter.WithQuotedAnchor(
-                reply.Content, reply.Origin, reply.Source, reply.SessionId, Channel, ViewingSessionId, DateTimeOffset.UtcNow),
+                reply.Content, null, reply.Source, reply.SessionId, Channel, ViewingSessionId, DateTimeOffset.UtcNow),
         };
 
         // Final result — a permanent chat bubble; clears the progress indicator

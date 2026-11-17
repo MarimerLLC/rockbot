@@ -22,6 +22,8 @@ public class BlazorUserFrontendTests
     [TestMethod]
     public void HistoryEvent_GivesUnsolicitedTurnsTheAnchorTheyHadLive()
     {
+        // The anchor is drawn when the page renders, from the message's origin, in the viewer's zone.
+        var chicago = TimeZoneInfo.FindSystemTimeZoneById("America/Chicago");
         var now = DateTimeOffset.Parse("2026-11-14T10:00:00Z");
         var history = new ConversationHistoryResponse
         {
@@ -44,13 +46,51 @@ public class BlazorUserFrontendTests
         };
 
         var loaded = BlazorUserFrontend.HistoryEvent(history, "blazor-session", now);
+        _chatState.Apply(loaded);
+        var shown = _chatState.State.Messages
+            .Select(m => MessageDisplay.Content(m, "blazor-session", now, chicago)).ToList();
 
         Assert.AreEqual("blazor-session", loaded.SessionId);
-        Assert.AreEqual("hello", loaded.Turns[0].Content);
-        StringAssert.StartsWith(loaded.Turns[1].Content, "> ↳ Re: \"daily-summary\"");
-        StringAssert.Contains(loaded.Turns[1].Content, "from scheduled · 6m ago");
-        StringAssert.EndsWith(loaded.Turns[1].Content, "\n\nNothing needs your attention.");
-        Assert.AreEqual("Vendor B.", loaded.Turns[2].Content);
+        Assert.AreEqual("hello", shown[0]);
+        Assert.AreEqual(
+            "> ↳ Re: \"daily-summary\"\n> started 03:54 from scheduled · 6m ago\n\nNothing needs your attention.",
+            shown[1]);
+        Assert.AreEqual("Vendor B.", shown[2]);
+    }
+
+    [TestMethod]
+    public async Task LiveReply_AnchorDrawnInTheViewersZone_NotBakedIntoTheContent()
+    {
+        // The server runs in UTC; a viewer in Chicago must not see the UTC start time.
+        var startedAt = DateTimeOffset.Parse("2026-11-16T15:55:11Z");
+        await _frontend.DisplayReplyAsync(new AgentReply
+        {
+            Content = "High-tier routing was 8.3%.",
+            SessionId = "scheduled",
+            AgentName = "RockBot",
+            IsFinal = true,
+            Source = ReplySource.Scheduled,
+            Origin = new ReplyOrigin("scheduled", "llm-high-tier-cost-guard", startedAt, "scheduled"),
+        });
+
+        var msg = GetLastMessage();
+        Assert.AreEqual("High-tier routing was 8.3%.", msg.Content);
+        Assert.AreEqual(
+            "> ↳ Re: \"llm-high-tier-cost-guard\"\n> started 09:55 from scheduled · 2h ago\n\nHigh-tier routing was 8.3%.",
+            MessageDisplay.Content(msg, "blazor-session", startedAt.AddHours(2),
+                TimeZoneInfo.FindSystemTimeZoneById("America/Chicago")));
+    }
+
+    [TestMethod]
+    public void MessageTime_DatedUnlessFromTodayInTheViewersZone()
+    {
+        var chicago = TimeZoneInfo.FindSystemTimeZoneById("America/Chicago");
+        var now = new DateTime(2026, 11, 17, 2, 24, 0, DateTimeKind.Utc); // 11-16 20:24 in Chicago
+
+        // 15:55 UTC on 11-16 is earlier the same day in Chicago; on 11-15 it's yesterday there.
+        Assert.AreEqual("09:55:11", MessageDisplay.Time(new DateTime(2026, 11, 16, 15, 55, 11, DateTimeKind.Utc), now, chicago));
+        Assert.AreEqual("Nov 15, 09:55:11", MessageDisplay.Time(new DateTime(2026, 11, 15, 15, 55, 11, DateTimeKind.Utc), now, chicago));
+        Assert.AreEqual("Dec 31, 2025, 18:00:00", MessageDisplay.Time(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc), now, chicago));
     }
 
     [TestMethod]

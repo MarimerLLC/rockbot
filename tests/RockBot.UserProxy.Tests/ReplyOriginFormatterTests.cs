@@ -26,6 +26,16 @@ public sealed class ReplyOriginFormatterTests
     }
 
     [TestMethod]
+    public void RenderAnchor_WithZone_ShowsTheStartInThatZone()
+    {
+        // 09:46 UTC is 04:46 in Chicago (CDT, UTC-5, in June) whatever this machine's own zone is.
+        var chicago = TimeZoneInfo.FindSystemTimeZoneById("America/Chicago");
+        var anchor = ReplyOriginFormatter.RenderAnchor(Origin("scheduled", "sched-1"), "blazor", "s1", Now, chicago);
+        Assert.AreEqual("↳ Re: \"deep research 8 topics\"\n   started 04:46 from scheduled · 2h 14m ago", anchor);
+        Assert.AreEqual("May 1", ReplyOriginFormatter.RelativeTime(new DateTimeOffset(2026, 5, 2, 3, 0, 0, TimeSpan.Zero), Now, chicago));
+    }
+
+    [TestMethod]
     public void RenderAnchor_NullOrigin_ReturnsNull()
     {
         Assert.IsNull(ReplyOriginFormatter.RenderAnchor(null, "cli", "s1", Now));

@@ -179,11 +179,11 @@
                         @if (message.IsExpanded)
                         {
                             <div class="message-content mt-2">
-                                @((MarkupString)SafeMarkdownRenderer.RenderSafe(message.Content))
+                                @((MarkupString)SafeMarkdownRenderer.RenderSafe(DisplayContent(message)))
                             </div>
                             <AttachmentList Attachments="message.Attachments" />
                             <div class="message-time">
-                                @TimeZoneInfo.ConvertTimeFromUtc(message.Timestamp, _displayZone).ToString("HH:mm:ss")
+                                @DisplayTime(message)
                             </div>
                         }
                     </div>
@@ -240,11 +240,11 @@
                             <div class="message-agent-name">@message.AgentName</div>
                         }
                         <div class="message-content">
-                            @((MarkupString)SafeMarkdownRenderer.RenderSafe(message.Content))
+                            @((MarkupString)SafeMarkdownRenderer.RenderSafe(DisplayContent(message)))
                         </div>
                         <AttachmentList Attachments="message.Attachments" />
                         <div class="message-time">
-                            @TimeZoneInfo.ConvertTimeFromUtc(message.Timestamp, _displayZone).ToString("HH:mm:ss")
+                            @DisplayTime(message)
                         </div>
                         @if (!message.IsFromUser && !message.IsError)
                         {
@@ -508,6 +508,15 @@
     private ElementReference messageInput;
     private bool IsDarkMode = false;
     private TimeZoneInfo _displayZone = TimeZoneInfo.Utc;
+
+    /// <summary>A bubble's markdown, with its origin anchor in this browser's zone.</summary>
+    private string DisplayContent(ChatMessage message) =>
+        MessageDisplay.Content(message, SessionId, new DateTimeOffset(ChatState.UtcNow, TimeSpan.Zero), _displayZone);
+
+    /// <summary>A bubble's timestamp in this browser's zone, dated when it isn't from today.</summary>
+    private string DisplayTime(ChatMessage message) =>
+        MessageDisplay.Time(message.Timestamp, ChatState.UtcNow, _displayZone);
+
     private Action? _stateChangedHandler;
     private Action? _connectionChangedHandler;
     private int _renderedMessageCount = 0;

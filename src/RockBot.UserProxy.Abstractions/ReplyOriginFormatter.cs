@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace RockBot.UserProxy;
 
 /// <summary>
@@ -13,7 +15,16 @@ public static class ReplyOriginFormatter
     /// user is currently viewing, so the anchor would just be noise).
     /// </summary>
     public static string? RenderAnchor(
-        ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now)
+        ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now) =>
+        RenderAnchor(origin, currentChannel, currentSessionId, now, TimeZoneInfo.Local);
+
+    /// <summary>
+    /// <see cref="RenderAnchor(ReplyOrigin?, string?, string?, DateTimeOffset)"/>, with the start time
+    /// in <paramref name="zone"/>: the viewer's zone, for a front end that renders on a server whose
+    /// own zone isn't the viewer's.
+    /// </summary>
+    public static string? RenderAnchor(
+        ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now, TimeZoneInfo zone)
     {
         if (origin is null)
             return null;
@@ -23,8 +34,8 @@ public static class ReplyOriginFormatter
             && string.Equals(origin.SessionId, currentSessionId, StringComparison.Ordinal))
             return null;
 
-        var localTime = origin.StartedAt.ToLocalTime().ToString("HH:mm");
-        var ago = RelativeTime(origin.StartedAt, now);
+        var localTime = TimeZoneInfo.ConvertTime(origin.StartedAt, zone).ToString("HH:mm", CultureInfo.InvariantCulture);
+        var ago = RelativeTime(origin.StartedAt, now, zone);
         var summary = string.IsNullOrWhiteSpace(origin.PromptSummary) ? "(no prompt)" : origin.PromptSummary;
         return $"↳ Re: \"{summary}\"\n   started {localTime} from {origin.Channel} · {ago}";
     }
@@ -62,6 +73,15 @@ public static class ReplyOriginFormatter
     public static string WithQuotedAnchor(
         string content, ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now) =>
         Quote(content, RenderAnchor(origin, currentChannel, currentSessionId, now));
+
+    /// <summary>
+    /// <see cref="WithQuotedAnchor(string, ReplyOrigin?, string?, string?, DateTimeOffset)"/>, with the
+    /// start time in <paramref name="zone"/>.
+    /// </summary>
+    public static string WithQuotedAnchor(
+        string content, ReplyOrigin? origin, string? currentChannel, string? currentSessionId, DateTimeOffset now,
+        TimeZoneInfo zone) =>
+        Quote(content, RenderAnchor(origin, currentChannel, currentSessionId, now, zone));
 
     /// <summary>
     /// <paramref name="content"/> with the anchor
@@ -102,7 +122,14 @@ public static class ReplyOriginFormatter
     }
 
     /// <summary>Formats the gap between <paramref name="then"/> and <paramref name="now"/> as a coarse "ago" string.</summary>
-    public static string RelativeTime(DateTimeOffset then, DateTimeOffset now)
+    public static string RelativeTime(DateTimeOffset then, DateTimeOffset now) =>
+        RelativeTime(then, now, TimeZoneInfo.Local);
+
+    /// <summary>
+    /// <see cref="RelativeTime(DateTimeOffset, DateTimeOffset)"/>, with a date more than a week back
+    /// in <paramref name="zone"/>.
+    /// </summary>
+    public static string RelativeTime(DateTimeOffset then, DateTimeOffset now, TimeZoneInfo zone)
     {
         var span = now - then;
         if (span < TimeSpan.Zero)
@@ -122,6 +149,6 @@ public static class ReplyOriginFormatter
             return "yesterday";
         if (span.TotalDays < 7)
             return $"{(int)span.TotalDays}d ago";
-        return then.ToLocalTime().ToString("MMM d");
+        return TimeZoneInfo.ConvertTime(then, zone).ToString("MMM d", CultureInfo.InvariantCulture);
     }
 }
