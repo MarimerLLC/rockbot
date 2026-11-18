@@ -53,6 +53,54 @@ public class SubagentResultHandlerDegradedReplyTests
         StringAssert.Contains(content, "(no output)");
     }
 
+    // ── Where a consolidated result is delivered ────────────────────────────
+
+    [TestMethod]
+    public void BuildFinalReply_PatrolSession_RepliesInTheScheduledBroadcastSession()
+    {
+        var now = DateTimeOffset.Parse("2026-11-18T15:02:57Z");
+
+        var reply = SubagentResultHandler.BuildFinalReply(
+            "patrol/daily-operational-brief", "the brief", "RockBot", sessionOrigin: null,
+            isSystemTask: false, now);
+
+        Assert.AreEqual(WellKnownSessions.Scheduled, reply.SessionId);
+        Assert.AreEqual(RockBot.UserProxy.ReplySourceKind.Scheduled, reply.Source?.Kind);
+        Assert.IsTrue(reply.IsFinal);
+        Assert.AreEqual("the brief", reply.Content);
+        Assert.IsFalse(string.IsNullOrEmpty(reply.MessageId));
+        Assert.IsNotNull(reply.Origin);
+        Assert.AreEqual("scheduled", reply.Origin.Channel);
+        Assert.AreEqual("daily-operational-brief", reply.Origin.PromptSummary);
+        Assert.AreEqual(now, reply.Origin.StartedAt);
+        Assert.AreEqual(WellKnownSessions.Scheduled, reply.Origin.SessionId);
+        Assert.IsTrue(WellKnownSessions.IsBroadcast(reply.SessionId));
+    }
+
+    [TestMethod]
+    public void BuildFinalReply_SystemPatrolSession_RepliesInTheSystemBroadcastSession()
+    {
+        var reply = SubagentResultHandler.BuildFinalReply(
+            "patrol/heartbeat-patrol", "findings", "RockBot", sessionOrigin: null,
+            isSystemTask: true, DateTimeOffset.UtcNow);
+
+        Assert.AreEqual(WellKnownSessions.ScheduledSystem, reply.SessionId);
+        Assert.AreEqual(WellKnownSessions.ScheduledSystem, reply.Origin?.SessionId);
+    }
+
+    [TestMethod]
+    public void BuildFinalReply_UserSession_StaysInItsSessionWithItsOrigin()
+    {
+        var origin = new RockBot.UserProxy.ReplyOrigin("blazor", "Compare the vendors", DateTimeOffset.UtcNow, "blazor-session");
+
+        var reply = SubagentResultHandler.BuildFinalReply(
+            "blazor-session", "comparison", "RockBot", origin, isSystemTask: false, DateTimeOffset.UtcNow);
+
+        Assert.AreEqual("blazor-session", reply.SessionId);
+        Assert.AreEqual(RockBot.UserProxy.ReplySourceKind.Primary, reply.Source?.Kind);
+        Assert.AreSame(origin, reply.Origin);
+    }
+
     // ── #418: how a consolidated result is saved ────────────────────────────
 
     [TestMethod]

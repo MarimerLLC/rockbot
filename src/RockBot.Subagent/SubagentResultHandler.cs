@@ -40,7 +40,8 @@ internal sealed class SubagentResultHandler(
     IOptions<AgentHostOptions>? hostOptions = null,
     IncompleteReplyCheck? incompleteCheck = null,
     ResultArchive? resultArchive = null,
-    ScheduledTaskRunCosts? runCosts = null) : IMessageHandler<SubagentResultMessage>
+    ScheduledTaskRunCosts? runCosts = null,
+    IScheduledTaskStore? scheduledTaskStore = null) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
     {
@@ -304,20 +305,7 @@ internal sealed class SubagentResultHandler(
             // reply and renders as a separate chat bubble in the UI — the user sees
             // the parent's "I'll delegate…" announcement followed by this consolidated
             // answer once all subagents complete.
-            var reply = new AgentReply
-            {
-                Source = UserProxy.ReplySource.Primary,
-                Content = finalContent,
-                SessionId = rawSessionId,
-                AgentName = agent.Name,
-                IsFinal = true,
-                Origin = originStore.Get(rawSessionId),
-                MessageId = ConversationTurn.NewId(),
-            };
-            await conversationMemory.AddTurnAsync(rawSessionId, AssistantTurn(reply), ct);
-
-            var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
-            await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
+            var reply = await PublishFinalReplyAsync(rawSessionId, finalContent, ct);
 
             await ArchiveSynthesisAsync(rawSessionId, reply, batchedResults, ct);
         }
@@ -352,20 +340,7 @@ internal sealed class SubagentResultHandler(
         {
             var content = BuildDegradedReplyContent(batchedResults, synthesisError);
 
-            var reply = new AgentReply
-            {
-                Source = UserProxy.ReplySource.Primary,
-                Content = content,
-                SessionId = rawSessionId,
-                AgentName = agent.Name,
-                IsFinal = true,
-                Origin = originStore.Get(rawSessionId),
-                MessageId = ConversationTurn.NewId(),
-            };
-            await conversationMemory.AddTurnAsync(rawSessionId, AssistantTurn(reply), ct);
-
-            var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
-            await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
+            var reply = await PublishFinalReplyAsync(rawSessionId, content, ct);
 
             // The stitched per-subagent outputs are still the work's result.
             await ArchiveSynthesisAsync(rawSessionId, reply, batchedResults, ct);
@@ -375,6 +350,82 @@ internal sealed class SubagentResultHandler(
             logger.LogError(ex,
                 "Degraded subagent consolidation reply also failed for session {SessionId}",
                 rawSessionId);
+        }
+    }
+
+    /// <summary>
+    /// Publishes the consolidated (or degraded) answer as the batch's final reply and stores it.
+    /// The work's own session keeps a copy as its assistant turn. A scheduled task's reply also goes
+    /// into the broadcast session it is addressed to, so a reloaded history still has it.
+    /// </summary>
+    private async Task<AgentReply> PublishFinalReplyAsync(string rawSessionId, string content, CancellationToken ct)
+    {
+        var taskName = WellKnownSessions.ScheduledTaskName(rawSessionId);
+        var isSystemTask = taskName is not null && await IsSystemTaskAsync(taskName);
+
+        var reply = BuildFinalReply(
+            rawSessionId, content, agent.Name, originStore.Get(rawSessionId), isSystemTask, DateTimeOffset.UtcNow);
+
+        await conversationMemory.AddTurnAsync(rawSessionId, AssistantTurn(reply), ct);
+        reply = await conversationMemory.RecordBroadcastReplyAsync(reply, logger, ct);
+
+        var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
+        await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
+        return reply;
+    }
+
+    /// <summary>
+    /// The final reply a synthesis publishes. Most go back to the session that spawned the work. A
+    /// scheduled task's run session (<c>patrol/{task}</c>) belongs to no conversation, and no client
+    /// shows it. So a task that delegated replies in the session it would have replied in without
+    /// delegating: <see cref="WellKnownSessions.Scheduled"/>, or
+    /// <see cref="WellKnownSessions.ScheduledSystem"/> for a system task. Its source and origin also
+    /// match that direct reply's (<c>ScheduledTaskHandler</c>).
+    /// </summary>
+    internal static AgentReply BuildFinalReply(
+        string rawSessionId, string content, string agentName, ReplyOrigin? sessionOrigin,
+        bool isSystemTask, DateTimeOffset now)
+    {
+        var reply = new AgentReply
+        {
+            Source = UserProxy.ReplySource.Primary,
+            Content = content,
+            SessionId = rawSessionId,
+            AgentName = agentName,
+            IsFinal = true,
+            Origin = sessionOrigin,
+            MessageId = ConversationTurn.NewId(),
+        };
+
+        if (WellKnownSessions.ScheduledTaskName(rawSessionId) is not { } taskName)
+            return reply;
+
+        var deliverySessionId = isSystemTask ? WellKnownSessions.ScheduledSystem : WellKnownSessions.Scheduled;
+        return reply with
+        {
+            Source = UserProxy.ReplySource.Scheduled,
+            SessionId = deliverySessionId,
+            Origin = new ReplyOrigin(
+                Channel: "scheduled",
+                PromptSummary: taskName,
+                StartedAt: now,
+                SessionId: deliverySessionId),
+        };
+    }
+
+    /// <summary>Whether the scheduled task is a system task. Unknown, or no store: it's the user's.</summary>
+    private async Task<bool> IsSystemTaskAsync(string taskName)
+    {
+        if (scheduledTaskStore is null)
+            return false;
+        try
+        {
+            return (await scheduledTaskStore.GetAsync(taskName))?.IsSystemTask == true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not look up scheduled task '{TaskName}'; replying as a user task", taskName);
+            return false;
         }
     }
 
