@@ -147,6 +147,61 @@ public sealed class AgentIntrospectionRequestHandlerTests
     }
 
     [TestMethod]
+    public async Task ScheduledTaskUsage_RunCostCoversThePatrolTurnAndItsSubagents_WithTheTaskCeiling()
+    {
+        // #846: a run's cost is everything charged to the task while it ran — the patrol turn (run
+        // session patrol/{task}) and its subagents (thread patrol/{task}) — and nothing else.
+        using var estimator = Estimator();
+        var dir = Path.Combine(Path.GetTempPath(), $"rb-introspect-runs-{Guid.NewGuid():N}");
+        try
+        {
+            var profile = Options.Create(new AgentProfileOptions { BasePath = dir });
+            using var ledger = new LlmUsageLedger(estimator, Options.Create(new LlmUsageOptions()), profile,
+                NullLogger<LlmUsageLedger>.Instance);
+            var runCosts = new ScheduledTaskRunCosts(Options.Create(new ScheduledTaskCostOptions()), profile,
+                NullLogger<ScheduledTaskRunCosts>.Instance, ledger);
+            var usage = new Microsoft.Extensions.AI.UsageDetails { InputTokenCount = 1_000_000, OutputTokenCount = 1_000_000 };
+
+            ledger.Record("patrol/weekly", "scheduled", "claude-haiku-5-5", usage); // an earlier run
+            runCosts.BeginRun("weekly", ModelTier.Balanced);
+            ledger.Record("patrol/weekly", "scheduled", "claude-haiku-5-5", usage);
+            ledger.Record("subagent-1", "patrol/weekly", "claude-haiku-5-5", usage);
+            ledger.Record("session/blazor-session", "blazor-session", "claude-haiku-5-5", usage);
+            runCosts.NoteTier("weekly", ModelTier.High);
+            var check = await runCosts.EndRunAsync("weekly");
+
+            Assert.AreEqual(1.80, ledger.ScheduledTaskCostToDate("weekly"), 1e-9);
+            Assert.AreEqual(1.20, check!.CostUsd, 1e-9, "the turn and its subagent, at $0.60 each");
+
+            var store = new InMemoryTaskStore(new ScheduledTask("weekly", "0 7 * * 1", "sweep", DateTimeOffset.UtcNow,
+                MaxTier: ModelTier.Balanced, MaxTierReason: "High runs cost 5x"));
+            var row = (await AgentIntrospectionRequestHandler.ScheduledTaskUsageAsync(runCosts, store)).Single();
+
+            Assert.AreEqual("weekly", row.TaskName);
+            Assert.AreEqual(1, row.Runs);
+            Assert.AreEqual(1.20, row.LastCostUsd, 1e-9);
+            Assert.AreEqual("High", row.LastRunTier);
+            Assert.IsFalse(row.LastRunFlagged);
+            Assert.AreEqual("Balanced", row.MaxTier);
+            Assert.AreEqual("High runs cost 5x", row.MaxTierReason);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    private sealed class InMemoryTaskStore(params ScheduledTask[] tasks) : IScheduledTaskStore
+    {
+        public Task SaveAsync(ScheduledTask task) => Task.CompletedTask;
+        public Task<ScheduledTask?> GetAsync(string name) => Task.FromResult(tasks.FirstOrDefault(t => t.Name == name));
+        public Task<IReadOnlyList<ScheduledTask>> ListAsync() => Task.FromResult<IReadOnlyList<ScheduledTask>>(tasks);
+        public Task<bool> DeleteAsync(string name) => Task.FromResult(false);
+        public Task UpdateLastFiredAsync(string name, DateTimeOffset firedAt) => Task.CompletedTask;
+        public Task UpdateDirectiveAsync(string name, string directive) => Task.CompletedTask;
+    }
+
+    [TestMethod]
     public void Usage_ReportsTheLedger_WithTheAskingThreadsTotals()
     {
         using var estimator = Estimator();

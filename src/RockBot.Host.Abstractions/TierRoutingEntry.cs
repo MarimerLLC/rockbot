@@ -48,6 +48,18 @@ public sealed record TierRoutingEntry
     /// <summary>Why the turn escalated mid-turn; null when it did not.</summary>
     public string? EscalationReason { get; init; }
 
+    /// <summary>
+    /// The decision-model refiner's answer for this decision, whether or not it changed
+    /// <see cref="Tier"/>. Null when the refiner was not asked, and on entries written before #846.
+    /// </summary>
+    public TierRefinement? Refinement { get; init; }
+
+    /// <summary>
+    /// For subagent entries, the session that spawned the subagent (e.g. <c>patrol/{task}</c> for a
+    /// scheduled task). Null for user-message entries and entries written before #846.
+    /// </summary>
+    public string? ParentSessionId { get; init; }
+
     // ── Post-injection context size ────────────────────────────────────────────
 
     /// <summary>

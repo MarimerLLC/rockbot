@@ -39,7 +39,8 @@ internal sealed class SubagentResultHandler(
     ISessionWorkRegistry? sessionWorkRegistry = null,
     IOptions<AgentHostOptions>? hostOptions = null,
     IncompleteReplyCheck? incompleteCheck = null,
-    ResultArchive? resultArchive = null) : IMessageHandler<SubagentResultMessage>
+    ResultArchive? resultArchive = null,
+    ScheduledTaskRunCosts? runCosts = null) : IMessageHandler<SubagentResultMessage>
 {
     public async Task HandleAsync(SubagentResultMessage message, MessageHandlerContext context)
     {
@@ -388,15 +389,24 @@ internal sealed class SubagentResultHandler(
     /// the spawn. The session's origin prompt is only a fallback: it is the session's first
     /// prompt, not necessarily this work's.
     /// </summary>
-    private Task ArchiveSynthesisAsync(
+    /// <remarks>
+    /// #846: for a scheduled task this is where its delegated run ends — the synthesis has run, so
+    /// every request of the run is in the ledger. An unusually expensive run says so in its saved copy.
+    /// </remarks>
+    private async Task ArchiveSynthesisAsync(
         string rawSessionId, AgentReply reply, IReadOnlyList<SubagentResultMessage> batchedResults,
         CancellationToken ct)
     {
+        var costCheck = runCosts is not null && WellKnownSessions.ScheduledTaskName(rawSessionId) is { } taskName
+            ? await runCosts.EndRunAsync(taskName, ct)
+            : null;
+
         if (resultArchive is null)
-            return Task.CompletedTask;
+            return;
 
         var (source, label) = ArchiveSourceAndLabel(rawSessionId, batchedResults, reply.Origin);
-        return resultArchive.ArchiveAsync(source, label, reply.Content, reply.AgentName, rawSessionId, ct);
+        await resultArchive.ArchiveAsync(
+            source, label, costCheck?.Annotate(reply.Content) ?? reply.Content, reply.AgentName, rawSessionId, ct);
     }
 
     /// <summary>How a consolidated result is saved: see <see cref="ArchiveSynthesisAsync"/>.</summary>

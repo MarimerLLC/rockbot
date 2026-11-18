@@ -1015,7 +1015,10 @@ its own state without calling its LLM, so this works while the LLM is failing an
   is counted, and a thread's totals include the subagents and workers it started. Days are in the
   agent's home time zone; `since` is when the agent started counting (it keeps the totals in
   `usage-ledger.json` on its volume, 90 days). `unpricedRequests` counts requests whose model no
-  pricing row matches, which are costed at $0.
+  pricing row matches, which are costed at $0. `scheduledTasks` lists each scheduled task's latest
+  run (#846): `taskName`, `runs`, `lastRunAt`, `lastCostUsd`, `medianCostUsd` (its recent runs),
+  `lastRunFlagged` (cost far above that median), `lastRunTier` (the highest tier the run used), and
+  its `maxTier` ceiling with `maxTierReason` when it has one.
 - **`mcp`**: each configured MCP server (`servers`): `name`, `displayName`, `transport` (`http` or
   `stdio`), `host`, `state` (`connected`, `sign-in required`, `sign-in pending`, `failed`,
   `not connected`), `usesOAuth`, tool/prompt/resource counts and `version` while connected, and

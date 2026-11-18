@@ -45,6 +45,9 @@ public static class ServiceCollectionExtensions
         services.Configure<LlmUsageOptions>(_ => { });
         services.TryAddSingleton<LlmUsageLedger>();
         services.AddHostedService<LlmUsageLedgerFlusher>();
+        // #846: per-run cost of scheduled tasks — the cost guard and the dream's tier-ceiling pass.
+        services.Configure<ScheduledTaskCostOptions>(_ => { });
+        services.TryAddSingleton<ScheduledTaskRunCosts>();
         services.Configure<LlmGatewayOptions>(_ => { });
         services.AddSingleton<ILlmGateway, LlmGateway>();
         services.AddTransient<ILlmClient, LlmClient>();

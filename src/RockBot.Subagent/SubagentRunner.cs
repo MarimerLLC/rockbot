@@ -44,7 +44,9 @@ internal sealed class SubagentRunner(
     ISessionWorkRegistry? sessionWorkRegistry = null,
     IOptions<SubagentOptions>? subagentOptions = null,
     TrailingOfferStripper? offerStripper = null,
-    TierRoutingRefiner? tierRefiner = null)
+    TierRoutingRefiner? tierRefiner = null,
+    IScheduledTaskStore? scheduledTaskStore = null,
+    ScheduledTaskRunCosts? runCosts = null)
 {
     /// <summary>
     /// The completion-evaluator triggers a subagent's own loop runs on (#686): claims of work it
@@ -58,6 +60,39 @@ internal sealed class SubagentRunner(
             CompletionEvalTrigger.BareClaim,
             CompletionEvalTrigger.ClaimedChange,
         };
+
+    /// <summary>
+    /// The subagent's tier. Keyword score, then the decision model on a near-tie. #846: a scheduled
+    /// task's subagent is not promoted to High on a near-tie (only the keyword score can send it
+    /// there), and the task's <see cref="ScheduledTask.MaxTier"/> ceiling, when set, caps it.
+    /// </summary>
+    internal async Task<TierClassification> ClassifyAsync(string description, string primarySessionId, CancellationToken ct)
+    {
+        var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
+        var taskName = WellKnownSessions.ScheduledTaskName(primarySessionId);
+
+        if (tierRefiner is not null)
+            classification = await tierRefiner.RefineAsync(description, "subagent", classification, ct,
+                promotionCeiling: taskName is null ? ModelTier.High : ModelTier.Balanced);
+
+        if (taskName is null)
+            return classification;
+
+        var task = scheduledTaskStore is null ? null : await scheduledTaskStore.GetAsync(taskName);
+        if (task?.Cap(classification.Tier) is { } capped && capped != classification.Tier)
+        {
+            logger.LogInformation(
+                "Subagent of scheduled task '{Task}' capped at {MaxTier} (routed {Tier}): {Reason}",
+                taskName, capped, classification.Tier, task.MaxTierReason);
+            classification = classification with
+            {
+                Tier = capped, IntrinsicTier = capped, Rule = TierRoutingRules.TaskCeiling,
+            };
+        }
+
+        runCosts?.NoteTier(taskName, classification.Tier);
+        return classification;
+    }
 
     public async Task<SubagentRunOutcome> RunAsync(
         string taskId,
@@ -81,13 +116,11 @@ internal sealed class SubagentRunner(
         // #715: when the subagent was spawned; null uses the run's own start time.
         DateTimeOffset? spawnedAt = null)
     {
-        var classification = tierSelector.Classify(description, new TierRoutingContext(Origin: "subagent"));
-        if (tierRefiner is not null)
-            classification = await tierRefiner.RefineAsync(description, "subagent", classification, ct);
+        var classification = await ClassifyAsync(description, primarySessionId, ct);
         var tier = classification.Tier;
         logger.LogInformation(
-            "Subagent {TaskId} starting (session {SessionId}) tier={Tier} (score={Score:F3})",
-            taskId, subagentSessionId, tier, classification.ComplexityScore);
+            "Subagent {TaskId} starting (session {SessionId}) tier={Tier} (score={Score:F3}, rule={Rule})",
+            taskId, subagentSessionId, tier, classification.ComplexityScore, classification.Rule);
 
         var subagentNamespace = $"subagent/{taskId}";
         var whiteboardCategory = $"subagent-whiteboards/{taskId}";
@@ -391,6 +424,12 @@ internal sealed class SubagentRunner(
             ComplexityScore = classification.ComplexityScore,
             MatchedHighKeywords = classification.MatchedHighKeywords,
             MatchedLowKeywords = classification.MatchedLowKeywords,
+            // #846: without these every subagent entry read routingRule: null, whatever decided it.
+            RoutingRule = classification.Rule,
+            Refinement = classification.Refinement,
+            EscalatedTier = diagnostics.EscalatedTier,
+            EscalationReason = diagnostics.EscalationReason,
+            ParentSessionId = primarySessionId,
             PostInjectionTokenEstimate = postInjectionTokenEstimate,
             ModelId = diagnostics.ModelId ?? registry.GetModelId(classification.Tier),
             InputTokens = diagnostics.InputTokens > 0 ? diagnostics.InputTokens : null,

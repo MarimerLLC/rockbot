@@ -416,6 +416,48 @@
             @TotalsTable("Workload", usage.Kinds.Select(k => (AgentInfoFormat.KindLabel(k.Kind), false, k.Totals)))
         }
 
+        if (usage.ScheduledTasks.Count > 0)
+        {
+            <h3 class="activity-section-title">Scheduled tasks, latest run</h3>
+            <div class="info-table-wrap">
+                <table class="info-table usage-scheduled">
+                    <thead>
+                        <tr>
+                            <th scope="col">Task</th>
+                            <th scope="col" class="narrow-hide">Last run</th>
+                            <th scope="col" class="num">Cost</th>
+                            <th scope="col" class="num">Usual</th>
+                            <th scope="col">Tier</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var task in usage.ScheduledTasks)
+                        {
+                            <tr>
+                                <th scope="row"><code>@task.TaskName</code></th>
+                                <td class="narrow-hide">@AgentInfoFormat.When(task.LastRunAt, DisplayZone)</td>
+                                <td class="num">
+                                    @AgentInfoFormat.Cost(task.LastCostUsd)
+                                    @if (task.LastRunFlagged && task.MedianCostUsd is { } median && median > 0)
+                                    {
+                                        <span class="info-alert" title="Far above this task's recent runs"> (@((task.LastCostUsd / median).ToString("0.#"))×)</span>
+                                    }
+                                </td>
+                                <td class="num">@(task.MedianCostUsd is { } m ? AgentInfoFormat.Cost(m) : "—")</td>
+                                <td>
+                                    @(task.LastRunTier ?? "—")
+                                    @if (task.MaxTier is { } maxTier)
+                                    {
+                                        <span class="info-muted" title="@task.MaxTierReason"> (capped at @maxTier)</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
         <p class="info-note">
             Estimated from the agent's pricing table, counting every request it sends: conversations
             (with the subagents and workers they start), scheduled tasks and its own background work.

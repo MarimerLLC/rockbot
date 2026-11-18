@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using RockBot.UserProxy;
 
 namespace RockBot.Host;
@@ -37,6 +38,13 @@ namespace RockBot.Host;
 /// <c>"local"</c> to follow the user's current zone as they travel, or a fixed IANA id. Null keeps
 /// the behavior of tasks scheduled before per-task zones existed.
 /// </param>
+/// <param name="MaxTier">
+/// The highest model tier this task's run may use: its own patrol turn (normally Balanced) and
+/// every subagent it spawns. Null leaves routing alone. Set by the dream's scheduled-task tier
+/// pass when the task's run history shows High runs costing far more than Balanced runs that
+/// did the same job (#846).
+/// </param>
+/// <param name="MaxTierReason">Why <paramref name="MaxTier"/> was set, for the logs and the Usage tab.</param>
 public sealed record ScheduledTask(
     string Name,
     string CronExpression,
@@ -47,4 +55,11 @@ public sealed record ScheduledTask(
     bool IsSystemTask = false,
     string? Directive = null,
     ClientCapabilities ClientCapabilities = ClientCapabilities.None,
-    string? TimeZone = null);
+    string? TimeZone = null,
+    [property: JsonConverter(typeof(JsonStringEnumConverter))] ModelTier? MaxTier = null,
+    string? MaxTierReason = null)
+{
+    /// <summary><paramref name="tier"/>, lowered to <see cref="MaxTier"/> when this task sets one.</summary>
+    public ModelTier Cap(ModelTier tier) =>
+        MaxTier is { } max && tier > max ? max : tier;
+}

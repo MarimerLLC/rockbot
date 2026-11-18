@@ -38,7 +38,34 @@ public sealed record TierClassification(
     /// Null when the selector has no score bands.
     /// </summary>
     public double? BoundaryDistance { get; init; }
+
+    /// <summary>
+    /// What the decision-model refiner said about this classification, applied or not. Null when
+    /// the refiner was not asked or gave no usable answer. Logged with the routing entry so a
+    /// near-boundary bump (or a declined one) is visible after pod logs are gone. See #846.
+    /// </summary>
+    public TierRefinement? Refinement { get; init; }
 }
+
+/// <summary>
+/// The decision model's second opinion on a near-boundary tier decision (#846).
+/// </summary>
+/// <param name="KeywordTier">The tier the keyword selector chose before the refiner ran.</param>
+/// <param name="ModelChoice">The tier the decision model answered, before the one-step clamp.</param>
+/// <param name="Confidence">The model's confidence in <paramref name="ModelChoice"/>.</param>
+/// <param name="Threshold">The confidence the refiner required to act.</param>
+/// <param name="Applied">True when the refiner changed the tier.</param>
+/// <param name="Capped">
+/// True when the model's upward move was held at the caller's promotion ceiling (a scheduled
+/// task's subagent is not promoted to High on a near-tie).
+/// </param>
+public sealed record TierRefinement(
+    ModelTier KeywordTier,
+    ModelTier ModelChoice,
+    double Confidence,
+    double Threshold,
+    bool Applied,
+    bool Capped = false);
 
 /// <summary>
 /// Names of the rules that can decide a tier-routing outcome. Values are stable strings
@@ -70,6 +97,12 @@ public static class TierRoutingRules
 
     /// <summary>The keyword score sat near a tier boundary and the decision model picked the tier.</summary>
     public const string DecisionModel = "decision-model";
+
+    /// <summary>
+    /// A scheduled task's <see cref="ScheduledTask.MaxTier"/> ceiling lowered the tier its
+    /// subagent would otherwise have routed to (#846).
+    /// </summary>
+    public const string TaskCeiling = "task-ceiling";
 
     /// <summary>A dream-learned balanced-floor keyword escalated Low to Balanced (#486).</summary>
     public const string BalancedFloorKeyword = "balanced-floor-keyword";

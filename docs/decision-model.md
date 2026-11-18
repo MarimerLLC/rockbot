@@ -60,7 +60,7 @@ Observed response shapes (2026-10-13):
 | `TrailingOffer` | Regex finds a trailing "Should I… / Let me know if…" paragraph | A candidate was found | Stripped, as before | 0.5 |
 | `MemoryDuplicate` | Similarity ≥ threshold and no missing names or numbers → reinforce, drop new text | Before reinforcing | Reinforced, as before | 0.5 |
 | `MemoryContradiction` | Keyword valence plus overlap picks candidates | There are candidates. One call covers up to 10 | Keyword verdict | 0.5 |
-| `TierRouting` | Keyword selector score bands, floors and guards | The score band decided and the score is within `TierRoutingMargin` (0.08) of a ceiling | Keyword tier | 0.6 confidence; moves at most one tier |
+| `TierRouting` | Keyword selector score bands, floors and guards | The score band decided and the score is within `TierRoutingMargin` (0.08) of a ceiling | Keyword tier | 0.6 confidence; moves at most one tier; a scheduled task's subagent is never moved up to High (#846). Every answer, applied or not, is logged as `refinement` in the routing log |
 | `IncompleteReply` | Reply ends with ":" or "..." (`IsIncompleteSetupPhrase`) | A candidate, at first-response routing, the native-path summary fallback and subagent reports | Candidate treated as incomplete | 0.5 |
 | `FollowUp` | Follow-ups off, or complexity ≤ 0.15 → skip | Before the follow-up evaluator's LLM call | Evaluate | Evaluate at ≥ 0.3 |
 | `SkillRecall` | Skill search ranks the newly recalled skills | Some were newly recalled this turn (already-recalled skills aren't asked about again) | Rank-1 gets the full body | 0.6 confidence |

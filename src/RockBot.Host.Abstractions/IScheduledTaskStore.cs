@@ -48,4 +48,12 @@ public interface IScheduledTaskStore
     /// </remarks>
     Task<ContentEditResult> EditDirectiveAsync(string name, string oldText, string newText, bool replaceAll = false)
         => Task.FromResult(ContentEditResult.NotSupported);
+
+    /// <summary>
+    /// Sets (or, with null, clears) an existing task's <see cref="ScheduledTask.MaxTier"/> ceiling
+    /// and its reason, leaving every other field untouched (#846). Returns false when the task does
+    /// not exist or the store does not support it.
+    /// </summary>
+    Task<bool> UpdateMaxTierAsync(string name, ModelTier? maxTier, string? reason)
+        => Task.FromResult(false);
 }
