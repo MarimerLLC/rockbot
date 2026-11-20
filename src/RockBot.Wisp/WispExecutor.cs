@@ -272,9 +272,7 @@ internal sealed class WispExecutor(
         // for debugging.
         if (isSuccess)
         {
-            var successTtl = options.SuccessOutputTtl > TimeSpan.Zero
-                ? options.SuccessOutputTtl
-                : TimeSpan.FromMinutes(5);
+            var successTtl = SuccessTtl;
             var entries = await workingMemory.ListAsync(wispNamespace);
             foreach (var entry in entries)
             {
@@ -673,6 +671,20 @@ internal sealed class WispExecutor(
     /// the same tool with the same arguments — by the parent or by a worker it spawns — is told the
     /// data is already in this step's output. A state-changing call forgets that server's reads.
     /// </summary>
+    /// <summary>
+    /// The shortest a step output can stay in working memory: written for 60 minutes, then cut to
+    /// <see cref="SuccessTtl"/> when the wisp succeeds. A repeat after this is no longer pointed at
+    /// the key, which may have expired.
+    /// </summary>
+    private TimeSpan OutputKeyLifetime =>
+        SuccessTtl < StepOutputTtl ? SuccessTtl : StepOutputTtl;
+
+    private static readonly TimeSpan StepOutputTtl = TimeSpan.FromMinutes(60);
+
+    private TimeSpan SuccessTtl => options.SuccessOutputTtl > TimeSpan.Zero
+        ? options.SuccessOutputTtl
+        : TimeSpan.FromMinutes(5);
+
     private void RecordFetch(WispStep step, ToolRouteResult route, string wispId, int? itemIndex)
     {
         if (RunFetchRegistryContext.Value is not { } registry || string.IsNullOrEmpty(route.ToolName))
@@ -683,7 +695,7 @@ internal sealed class WispExecutor(
                 ? $"by wisp {wispId} step {step.Id} (item {i})"
                 : $"by wisp {wispId} step {step.Id}";
             registry.Observe(route.ToolName, route.Arguments, succeeded: true, where,
-                key: $"wisp/{wispId}/{step.Id}/output");
+                key: $"wisp/{wispId}/{step.Id}/output", keyLifetime: OutputKeyLifetime);
         }
         catch (Exception ex)
         {

@@ -403,9 +403,15 @@ Every successful Direct step is also recorded in the run's fetch registry
 (`RunFetchRegistry`). It holds the tool and its arguments with keys sorted; a
 `mcp_invoke_tool` call and the typed `{server}__{tool}` call count as the same tool. When
 the agent, or a worker it spawned, later makes the same read-only call, the result gets a
-system note naming the wisp step and its output key. The call still runs. A successful
-state-changing call on a server clears that server's recorded reads, so re-reading after a
-write is not flagged.
+system note naming the wisp step and its output key. The call still runs, and the note allows
+a deliberate re-read for fresher data. A successful state-changing call on a server clears
+that server's recorded reads, so re-reading after a write is not flagged; an MCP tool named
+like the agent's own bookkeeping (`task_update`, `save_memory`) counts as such a write. Reads
+meant to repeat are not tracked: names with `status`, `poll`, `progress`, `health`,
+`current`, `now`, `time` or `wait`, and MCP discovery (`mcp_list_services` and the like). A wisp
+step is cited only while its output key can still be in working memory (the shorter of
+`SuccessOutputTtl` and the 60-minute step TTL). A call with no key is cited only to the loop
+that made it, since another loop (a worker, the spawner) cannot see that result.
 
 ### When to parallelize
 

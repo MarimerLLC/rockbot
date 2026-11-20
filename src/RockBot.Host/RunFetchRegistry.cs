@@ -15,7 +15,9 @@ namespace RockBot.Host;
 /// Recorded by the loop's own tool calls and by wisp Direct steps. Workers spawned from the run share
 /// it (<see cref="AgentLoopRunner.RunAsync"/> takes it as a parameter), so a worker brief that repeats
 /// a wisp's fetch is flagged too. Only reads are kept: a successful state-changing call on a server
-/// forgets that server's reads, because re-reading after a write is legitimate. Thread-safe.
+/// forgets that server's reads, because re-reading after a write is legitimate. Reads expected to
+/// change between calls (status polls, clocks) and MCP discovery are not tracked, and an earlier
+/// fetch is only cited while the caller can still reach its data. Thread-safe.
 /// </para>
 /// </summary>
 public sealed class RunFetchRegistry
@@ -24,10 +26,32 @@ public sealed class RunFetchRegistry
     /// <param name="Tool">The tool's display name, e.g. <c>calendar-mcp__get_calendar_events</c>.</param>
     /// <param name="Location">Who made the call, e.g. <c>by wisp wisp-1234 step list</c>.</param>
     /// <param name="Key">The working-memory key holding its output, when there is one.</param>
-    public sealed record Entry(string Tool, string Location, string? Key);
+    public sealed record Entry(string Tool, string Location, string? Key)
+    {
+        /// <summary>
+        /// The loop (session id) whose conversation holds the result, for a call recorded without a
+        /// <see cref="Key"/>. Its result is visible only there, so a repeat from another loop sharing
+        /// this registry — a worker, a wisp step, the spawner after its workers return — is not told
+        /// the result is "already in this conversation".
+        /// </summary>
+        public string? Origin { get; init; }
+
+        /// <summary>When <see cref="Key"/> expires from working memory, or null when unknown.</summary>
+        public DateTimeOffset? KeyExpiresAt { get; init; }
+    }
 
     private readonly Dictionary<string, (string Server, Entry Entry)> _entries = new(StringComparer.Ordinal);
     private readonly Lock _lock = new();
+    private readonly TimeProvider _time;
+
+    /// <summary>A registry using the system clock.</summary>
+    public RunFetchRegistry() : this(TimeProvider.System) { }
+
+    /// <summary>A registry using <paramref name="time"/> to age working-memory keys.</summary>
+    public RunFetchRegistry(TimeProvider time)
+    {
+        _time = time;
+    }
 
     /// <summary>Number of fetches recorded.</summary>
     public int Count
@@ -39,39 +63,52 @@ public sealed class RunFetchRegistry
     /// Records a finished call and returns the earlier fetch it repeats, or null. A failed call
     /// changes nothing. A successful read is remembered (the first location is kept); a successful
     /// state-changing call forgets the reads of its server.
+    /// <para>
+    /// An earlier fetch is only reported when its data can still be reached by the caller: one
+    /// stored under a key that has not expired, or one made by the same loop
+    /// (<paramref name="origin"/>), whose result is in that loop's conversation. Otherwise the new
+    /// call replaces it and nothing is reported, so the note never sends the model to data it
+    /// cannot read.
+    /// </para>
     /// </summary>
     /// <param name="toolName">The tool name as called.</param>
     /// <param name="arguments">The call's arguments.</param>
     /// <param name="succeeded">Whether the call succeeded.</param>
     /// <param name="location">Who made the call, for a later duplicate's note.</param>
     /// <param name="key">Working-memory key holding the output, or null.</param>
+    /// <param name="origin">The loop (session id) making the call; compared for calls with no key.</param>
+    /// <param name="keyLifetime">How long <paramref name="key"/> stays in working memory, or null when unknown.</param>
     public Entry? Observe(
         string toolName,
         IEnumerable<KeyValuePair<string, object?>>? arguments,
         bool succeeded,
         string location,
-        string? key = null)
+        string? key = null,
+        string? origin = null,
+        TimeSpan? keyLifetime = null)
     {
         if (!succeeded || string.IsNullOrWhiteSpace(toolName)) return null;
         var call = Describe(toolName, arguments);
         if (call is null) return null;
-        return Observe(call.Value, location, key);
+        return Observe(call.Value, location, key, origin, keyLifetime);
     }
 
     /// <summary>
-    /// <see cref="Observe(string, IEnumerable{KeyValuePair{string, object?}}?, bool, string, string?)"/>
+    /// <see cref="Observe(string, IEnumerable{KeyValuePair{string, object?}}?, bool, string, string?, string?, TimeSpan?)"/>
     /// for arguments given as a JSON object string (a wisp step's routed arguments).
     /// </summary>
-    public Entry? Observe(string toolName, string? argumentsJson, bool succeeded, string location, string? key = null)
+    public Entry? Observe(string toolName, string? argumentsJson, bool succeeded, string location,
+        string? key = null, string? origin = null, TimeSpan? keyLifetime = null)
     {
         if (!succeeded || string.IsNullOrWhiteSpace(toolName)) return null;
         var call = Describe(toolName, ParseArguments(argumentsJson));
         if (call is null) return null;
-        return Observe(call.Value, location, key);
+        return Observe(call.Value, location, key, origin, keyLifetime);
     }
 
-    private Entry? Observe(CallIdentity call, string location, string? key)
+    private Entry? Observe(CallIdentity call, string location, string? key, string? origin, TimeSpan? keyLifetime)
     {
+        var now = _time.GetUtcNow();
         lock (_lock)
         {
             if (call.SideEffecting)
@@ -81,25 +118,39 @@ public sealed class RunFetchRegistry
                 return null;
             }
 
-            if (_entries.TryGetValue(call.Fingerprint, out var prior))
+            if (_entries.TryGetValue(call.Fingerprint, out var prior) && IsReachable(prior.Entry, origin, now))
                 return prior.Entry;
 
-            _entries[call.Fingerprint] = (call.Server, new Entry(call.DisplayName, location, key));
+            // First fetch, or the earlier one's data is out of the caller's reach: this call is the
+            // one a later repeat should be pointed at.
+            _entries[call.Fingerprint] = (call.Server, new Entry(call.DisplayName, location, key)
+            {
+                Origin = origin,
+                KeyExpiresAt = key is not null && keyLifetime is { } life ? now + life : null,
+            });
             return null;
         }
     }
 
+    private static bool IsReachable(Entry entry, string? origin, DateTimeOffset now) =>
+        entry.Key is { Length: > 0 }
+            ? entry.KeyExpiresAt is not { } expires || now < expires
+            : string.Equals(entry.Origin, origin, StringComparison.Ordinal);
+
     /// <summary>
     /// The note appended to a call's result when it repeats <paramref name="prior"/>. One wording
-    /// for every tool-calling path.
+    /// for every tool-calling path. It discourages a repeat rather than forbidding one: a deliberate
+    /// re-read for fresher data is still the caller's call.
     /// </summary>
     public static string FormatDuplicateNote(Entry prior)
     {
         var where = prior.Key is { Length: > 0 } key
-            ? $" Its output is in working memory at `{key}`: read it with get_from_working_memory, or pass the key to spawn_workers as input_keys so a worker filters it."
-            : " Its result is already in this conversation (or in the stash it was moved to).";
+            ? $" Its output is in working memory at `{key}`: read it with get_from_working_memory " +
+              "(or, if spawn_workers is in your tool list, pass the key to it as input_keys so a worker filters it)."
+            : " Its result is already earlier in this conversation (or in the stash it was moved to).";
         return $"\n\n[System note: this exact call ({prior.Tool}, same arguments) already succeeded in this run, made {prior.Location}.{where} " +
-               "Do not fetch the same data again, and do not ask a worker to re-run it.]";
+               "Use that instead of fetching the same data again, and don't ask a worker to re-run it. " +
+               "Calling again is fine only when you need fresher data, e.g. a status that may have changed.]";
     }
 
     private readonly record struct CallIdentity(string Fingerprint, string Server, string DisplayName, bool SideEffecting);
@@ -135,7 +186,10 @@ public sealed class RunFetchRegistry
             args = ToNode(arguments?.ToDictionary(a => a.Key, a => a.Value));
         }
 
-        var sideEffecting = ToolSideEffects.IsSideEffectingName(tool);
+        // A tool named like the agent's own bookkeeping (task_update, save_memory, …) is a write when
+        // it runs on an MCP server: it changes that server's data, so its reads must be forgotten.
+        var sideEffecting = ToolSideEffects.IsSideEffectingName(tool)
+                            || (server.Length > 0 && ToolSideEffects.IsBookkeeping(tool));
         if (!sideEffecting && !IsTrackedRead(toolName, tool)) return null;
 
         var display = server.Length > 0 ? $"{server}__{tool}" : tool;
@@ -146,11 +200,33 @@ public sealed class RunFetchRegistry
         return new CallIdentity(fingerprint, server.ToLowerInvariant(), display, sideEffecting);
     }
 
+    /// <summary>
+    /// Words that mark a read whose answer is expected to change between calls — a status poll, a
+    /// clock, a health check. Repeating one is the point, so it is never flagged.
+    /// </summary>
+    private static readonly HashSet<string> VolatileReadWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "status", "poll", "progress", "health", "heartbeat", "current", "now", "time", "wait",
+    };
+
+    /// <summary>
+    /// MCP gateway tools that fetch real data. The others (<c>mcp_list_services</c>,
+    /// <c>mcp_get_service_details</c>, <c>mcp_find_tools</c>, …) are discovery, which the directives
+    /// tell the agent to repeat after a failure, so they are not tracked.
+    /// </summary>
+    private static readonly HashSet<string> McpDataGatewayTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ToolSideEffects.McpInvokeToolName, "mcp_read_resource", "mcp_get_prompt",
+    };
+
     private static bool IsTrackedRead(string calledName, string tool)
     {
         // Batch and delegation tools: the calls they make are recorded where they run.
         if (calledName.StartsWith("spawn_", StringComparison.OrdinalIgnoreCase)) return false;
         if (ToolSideEffects.IsDelegation(calledName)) return false;
+        if (calledName.StartsWith("mcp_", StringComparison.OrdinalIgnoreCase) && !McpDataGatewayTools.Contains(calledName))
+            return false;
+        if (ToolSideEffects.SplitWords(tool).Any(VolatileReadWords.Contains)) return false;
         // Bookkeeping, context reads (get_from_working_memory is what the note tells the model to
         // call) and instant utilities are not fetches.
         return ToolSideEffects.IsThreadWork(new LoopToolCall(tool, null, true));
@@ -250,7 +326,9 @@ public static class RunFetchRegistryContext
         if (Current.Value is not { } registry) return null;
         try
         {
-            var prior = registry.Observe(toolName, arguments, succeeded, "by an earlier direct call");
+            // The loop's session id: a call with no key is reported only to the loop that holds its result.
+            var prior = registry.Observe(toolName, arguments, succeeded, "by an earlier direct call",
+                origin: ToolCallSessionContext.SessionId ?? string.Empty);
             return prior is null ? null : RunFetchRegistry.FormatDuplicateNote(prior);
         }
         catch
