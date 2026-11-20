@@ -769,6 +769,46 @@ public class SubagentManagerTests
     }
 
     [TestMethod]
+    public async Task Gate_WithRealManager_WaitsForFinishedSiblingsResult()
+    {
+        // The real manager and the gate together: both siblings have finished and left the
+        // active set, but only task A's result has reached the gate. It must wait for B's.
+        var (manager, release) = CreateBlockingManager();
+        var a = await manager.SpawnAsync("task a", null, 10, "session/s1", CancellationToken.None, batchId: "batch-9");
+        var b = await manager.SpawnAsync("task b", null, 10, "session/s1", CancellationToken.None, batchId: "batch-9");
+
+        release.SetResult(true);
+        for (var i = 0; i < 100 && manager.ListActive().Count > 0; i++)
+            await Task.Delay(50);
+        Assert.AreEqual(0, manager.ListActive().Count, "both runs should have ended");
+
+        var gate = new SubagentResultGate(
+            Options.Create(new SubagentOptions { InteractiveConsolidationTimeoutSeconds = 30 }),
+            NullLogger<SubagentResultGate>.Instance);
+
+        var first = Task.Run(() => gate.AccumulateAsync(GateResult(a), manager, CancellationToken.None));
+        await Task.Delay(300);
+        Assert.IsFalse(first.IsCompleted, "A must wait for its finished sibling's result.");
+
+        var second = await gate.AccumulateAsync(GateResult(b), manager, CancellationToken.None);
+        var winners = new[] { await first, second }.Where(r => r is not null).ToList();
+        Assert.AreEqual(1, winners.Count);
+        Assert.AreEqual(2, winners[0]!.Count);
+
+        static SubagentResultMessage GateResult(string taskId) => new()
+        {
+            TaskId = taskId,
+            SubagentSessionId = $"subagent-{taskId}",
+            PrimarySessionId = "session/s1",
+            Output = $"Output from {taskId}",
+            IsSuccess = true,
+            Timestamp = DateTimeOffset.UtcNow,
+            BatchId = "batch-9",
+            Consolidate = true,
+        };
+    }
+
+    [TestMethod]
     public void Resolver_UnknownSubagent_ResolvesNull()
     {
         var manager = CreateManager();

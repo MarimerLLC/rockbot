@@ -97,6 +97,12 @@ internal sealed class SubagentResultGate(
         // signal so we can detect new arrivals without racing on the previous TaskCompletionSource.
         while (DateTimeOffset.UtcNow < deadline)
         {
+            // Another waiter already fired this batch, with our result in it.
+            lock (batch.Lock)
+            {
+                if (batch.Fired) return null;
+            }
+
             var (activeCount, nextArrivalDeadline) =
                 PendingSiblings(result, batch, batchKey, subagentManager, arrivalGrace);
 
@@ -227,32 +233,34 @@ internal sealed class SubagentResultGate(
     {
         // Active first: an entry is listed as finished before it leaves the active set, so
         // reading in this order can't miss one moving between the two.
-        var activeCount = subagentManager.ListActive().Count(e => IsSibling(result, e.TaskId,
-            e.PrimarySessionId, e.BatchId, e.Consolidate));
+        var active = subagentManager.ListActive()
+            .Where(e => IsSibling(result, e.TaskId, e.PrimarySessionId, e.BatchId, e.Consolidate))
+            .ToList();
         var finished = subagentManager.ListRecentlyFinished()
             .Where(f => IsSibling(result, f.TaskId, f.PrimarySessionId, f.BatchId, f.Consolidate))
             .ToList();
 
         var now = DateTimeOffset.UtcNow;
         DateTimeOffset? nextArrivalDeadline = null;
+        int activeCount;
         lock (batch.Lock)
         {
+            // A sibling whose result is already here isn't pending, even if its run hasn't left
+            // the active set yet: nothing signals the gate when it does.
+            activeCount = active.Count(e => !batch.Results.Any(r => r.TaskId == e.TaskId));
+
             foreach (var f in finished)
             {
                 if (batch.Results.Any(r => r.TaskId == f.TaskId))
-                {
-                    batch.AwaitedArrivals.Remove(f.TaskId);
                     continue;
-                }
 
                 var arrivalDeadline = f.FinishedAt + arrivalGrace;
                 if (arrivalDeadline > now)
                 {
-                    batch.AwaitedArrivals.Add(f.TaskId);
                     if (nextArrivalDeadline is null || arrivalDeadline < nextArrivalDeadline)
                         nextArrivalDeadline = arrivalDeadline;
                 }
-                else if (batch.AwaitedArrivals.Remove(f.TaskId))
+                else if (batch.ReportedMissing.Add(f.TaskId))
                 {
                     logger.LogWarning(
                         "Batch {BatchKey}: sibling {TaskId} finished {Seconds:F0}s ago but its result has not arrived — no longer waiting for it",
@@ -307,9 +315,9 @@ internal sealed class SubagentResultGate(
     {
         public List<SubagentResultMessage> Results { get; } = [];
 
-        // Finished siblings a waiter has waited on whose result hasn't arrived (#858), so the
-        // warning for one that never arrives is logged once, and only for a sibling actually awaited.
-        public HashSet<string> AwaitedArrivals { get; } = [];
+        // Finished siblings whose result didn't arrive within the arrival grace (#858), so the
+        // warning for each is logged once across all waiters.
+        public HashSet<string> ReportedMissing { get; } = [];
         public bool Fired { get; set; }
         public DateTimeOffset? FiredAt { get; set; }
         public Lock Lock { get; } = new();
