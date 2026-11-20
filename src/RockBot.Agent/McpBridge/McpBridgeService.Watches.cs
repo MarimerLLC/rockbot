@@ -112,15 +112,23 @@ public sealed partial class McpBridgeService
             if (FindWatch(sessionId, name, uri) is { } existing)
             {
                 // Asked again: the watch keeps going for a full lifetime from now, and the
-                // instructions, when given, replace (or, empty, clear) what it had.
-                if (!await RewatchAsync(existing.Entry, onChange))
-                    return Refuse("[rockbot] The watch couldn't be updated: recording the change failed. Nothing was changed; try again.");
-                return new McpWatchResourceResponse
+                // instructions, when given, replace (or, empty, clear) what it had. A watch that
+                // ended meanwhile (its maximum lifetime, its resource gone) is watched anew below.
+                switch (await RewatchAsync(existing, onChange))
                 {
-                    ServerName = name, Uri = uri, WatchId = existing.WatchId,
-                    Message = McpWatchText.AlreadyWatching(existing.Entry, req.OnChange is not null, Math.Max(1, _options.WatchMaxLifetimeDays),
-                        await _watchRules.MatchingAsync(name, uri, ct)),
-                };
+                    case RewatchOutcome.Failed:
+                        return Refuse("[rockbot] The watch couldn't be updated: recording the change failed. Nothing was changed; try again.");
+                    case RewatchOutcome.Kept:
+                        return new McpWatchResourceResponse
+                        {
+                            ServerName = name, Uri = uri, WatchId = existing.WatchId,
+                            Message = McpWatchText.AlreadyWatching(existing.Entry, req.OnChange is not null, Math.Max(1, _options.WatchMaxLifetimeDays),
+                                await _watchRules.MatchingAsync(name, uri, ct)),
+                        };
+                }
+
+                // Ended: a new watch keeps the instructions unless this call changes them.
+                onChange ??= existing.Entry.OnChange ?? "";
             }
 
             var mine = SessionWatchEntries(sessionId);
@@ -198,39 +206,56 @@ public sealed partial class McpBridgeService
     /// A watch asked for again: its maximum lifetime starts over, its renewal date moves out, and
     /// <paramref name="onChange"/>, when not null, replaces its instructions (empty clears them).
     /// </summary>
-    private async Task<bool> RewatchAsync(McpWatchEntry entry, string? onChange)
+    private async Task<RewatchOutcome> RewatchAsync(ActiveWatch watch, string? onChange)
     {
-        var now = _time.GetUtcNow();
-        var lifetimeEnd = now + TimeSpan.FromDays(Math.Max(1, _options.WatchMaxLifetimeDays));
-        var expires = Min(now + TimeSpan.FromDays(Math.Max(1, _options.WatchTtlDays)), lifetimeEnd);
-        var instructions = onChange is null ? entry.OnChange : onChange.Length == 0 ? null : onChange;
-
-        // Write-ahead: the bridge's copy changes only once the ledger holds the change.
+        // The watch's read gate is what its reads and the expiry check end it under, so it can't
+        // end between the check below and the update (a rewatch that reported a lifetime for a
+        // watch already gone).
+        await watch.ReadGate.WaitAsync(_lifetime.Token);
         try
         {
-            await _watchLedger.UpdateAsync(entry.WatchId, e =>
+            var entry = watch.Entry;
+            var now = _time.GetUtcNow();
+            if (!_watches.ContainsKey(watch.WatchId) || now >= MaxLifetimeEnd(entry))
+                return RewatchOutcome.Ended;
+
+            var lifetimeEnd = now + TimeSpan.FromDays(Math.Max(1, _options.WatchMaxLifetimeDays));
+            var expires = Min(now + TimeSpan.FromDays(Math.Max(1, _options.WatchTtlDays)), lifetimeEnd);
+            var instructions = onChange is null ? entry.OnChange : onChange.Length == 0 ? null : onChange;
+
+            // Write-ahead: the bridge's copy changes only once the ledger holds the change.
+            try
             {
-                e.LifetimeStartedAt = now;
-                e.ExpiryWarnedAt = null;
-                e.ExpiresAt = expires;
-                e.OnChange = instructions;
-            }, CancellationToken.None);
+                await _watchLedger.UpdateAsync(entry.WatchId, e =>
+                {
+                    e.LifetimeStartedAt = now;
+                    e.ExpiryWarnedAt = null;
+                    e.ExpiresAt = expires;
+                    e.OnChange = instructions;
+                }, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not record watch {WatchId} being asked for again", entry.WatchId);
+                return RewatchOutcome.Failed;
+            }
+
+            entry.LifetimeStartedAt = now;
+            entry.ExpiryWarnedAt = null;
+            entry.ExpiresAt = expires;
+            entry.OnChange = instructions;
+
+            _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) asked for again; runs until at least {ExpiresAt:u}{Instructions}",
+                entry.WatchId, entry.Server, entry.Uri, expires, onChange is null ? "" : instructions is null ? ", instructions cleared" : ", instructions set");
+            return RewatchOutcome.Kept;
         }
-        catch (Exception ex)
+        finally
         {
-            _logger.LogWarning(ex, "Could not record watch {WatchId} being asked for again", entry.WatchId);
-            return false;
+            watch.ReadGate.Release();
         }
-
-        entry.LifetimeStartedAt = now;
-        entry.ExpiryWarnedAt = null;
-        entry.ExpiresAt = expires;
-        entry.OnChange = instructions;
-
-        _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) asked for again; runs until at least {ExpiresAt:u}{Instructions}",
-            entry.WatchId, entry.Server, entry.Uri, expires, onChange is null ? "" : instructions is null ? ", instructions cleared" : ", instructions set");
-        return true;
     }
+
+    private enum RewatchOutcome { Kept, Ended, Failed }
 
     /// <summary><c>mcp_list_watches</c>: this session's watches and the standing watch rules (#853).</summary>
     private async Task<McpWatchResourceResponse> ListWatchesAsync(McpListWatchesRequest req, CancellationToken ct)
@@ -259,13 +284,19 @@ public sealed partial class McpBridgeService
         // A run of stars means what one does.
         while (pattern.Contains("**", StringComparison.Ordinal))
             pattern = pattern.Replace("**", "*", StringComparison.Ordinal);
-        if (!_connections.IsConfigured(req.ServerName ?? ""))
-            return Refuse(McpCallDiagnostics.DescribeUnknownServer(req.ServerName ?? "", _connections.ConfiguredNames));
-
-        var server = _connections.ConfiguredNames.First(n => string.Equals(n, req.ServerName, StringComparison.OrdinalIgnoreCase));
         var instructions = McpWatchText.CleanInstructions(req.OnChange ?? "");
         if (instructions.Length > McpManagementExecutor.MaxWatchInstructionsChars)
             return Refuse(McpWatchText.InstructionsTooLong(instructions.Length));
+
+        // Setting a rule needs a configured server. Removing one doesn't: a rule outlives its
+        // server's removal, and must still be removable by the name it was stored under.
+        var server = _connections.ConfiguredNames.FirstOrDefault(n => string.Equals(n, req.ServerName, StringComparison.OrdinalIgnoreCase));
+        if (server is null)
+        {
+            if (instructions.Length > 0 || string.IsNullOrWhiteSpace(req.ServerName))
+                return Refuse(McpCallDiagnostics.DescribeUnknownServer(req.ServerName ?? "", _connections.ConfiguredNames));
+            server = req.ServerName.Trim();
+        }
 
         await _watchGate.WaitAsync(ct);
         try
@@ -1221,7 +1252,7 @@ public sealed partial class McpBridgeService
                      .ToList())
         {
             if (now >= MaxLifetimeEnd(watch.Entry))
-                await EndWatchAsync(watch, ExpiredReason(watch.Entry), notify: true);
+                await EndExpiredWatchAsync(watch);
             else
                 ScheduleWatchRead(watch, TimeSpan.Zero);
         }
@@ -1239,19 +1270,41 @@ public sealed partial class McpBridgeService
         }
     }
 
-    /// <summary>Tells a session its watch will soon reach its maximum lifetime; recorded first, sent once.</summary>
-    private async Task WarnWatchExpiringAsync(McpWatchEntry entry, DateTimeOffset now)
+    /// <summary>
+    /// Ends a watch past its maximum lifetime, under its read gate and only if it is still past it
+    /// there: asking for the watch again (which takes the same gate) may just have kept it (#853).
+    /// </summary>
+    private async Task EndExpiredWatchAsync(ActiveWatch watch)
     {
-        entry.ExpiryWarnedAt = now;
         try
         {
-            await _watchLedger.UpdateAsync(entry.WatchId, e => e.ExpiryWarnedAt = now, CancellationToken.None);
+            await watch.ReadGate.WaitAsync(_lifetime.Token);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Could not record the expiry warning of watch {WatchId}", entry.WatchId);
+            return;
         }
 
+        try
+        {
+            if (_watches.ContainsKey(watch.WatchId) && _time.GetUtcNow() >= MaxLifetimeEnd(watch.Entry))
+                await EndWatchAsync(watch, ExpiredReason(watch.Entry), notify: true);
+        }
+        finally
+        {
+            watch.ReadGate.Release();
+        }
+    }
+
+    /// <summary>Tells a session its watch will soon reach its maximum lifetime; recorded once it was sent.</summary>
+    /// <remarks>
+    /// At least once: a restart between publishing and recording sends it once more (its
+    /// lifetime-specific <c>ContentHash</c> lets a handler that already took it tell the repeat).
+    /// Recording first could lose it for good, as a restart would then skip a warning that never
+    /// went out.
+    /// </remarks>
+    private async Task WarnWatchExpiringAsync(McpWatchEntry entry, DateTimeOffset now)
+    {
         var delivered = await PublishTaskResultAsync(new McpTaskResult
         {
             SessionId = entry.SessionId,
@@ -1268,20 +1321,19 @@ public sealed partial class McpBridgeService
             OnChange = entry.OnChange,
         }, CancellationToken.None);
 
+        // Not sent: the next check tries again.
         if (!delivered)
-        {
-            // Not sent: the next check tries again.
-            entry.ExpiryWarnedAt = null;
-            try
-            {
-                await _watchLedger.UpdateAsync(entry.WatchId, e => e.ExpiryWarnedAt = null, CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                // At worst a restart doesn't warn again; the in-memory entry still retries.
-                _logger.LogWarning(ex, "Could not record that watch {WatchId}'s expiry warning wasn't sent", entry.WatchId);
-            }
             return;
+
+        entry.ExpiryWarnedAt = now;
+        try
+        {
+            await _watchLedger.UpdateAsync(entry.WatchId, e => e.ExpiryWarnedAt = now, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // At worst the session is warned once more after a restart.
+            _logger.LogWarning(ex, "Could not record the expiry warning of watch {WatchId}", entry.WatchId);
         }
 
         _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) ends at {End:u}; {Session} was told",

@@ -223,6 +223,50 @@ public class McpWatchInstructionsEndToEndTests
 
     [TestMethod]
     [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task ARule_CanBeRemoved_AfterItsServerIsGone_ButNotSetForOne()
+    {
+        var store = new WatchableResources();
+        await using var harness = await StartAsync(store);
+        // A rule set while "retired" was configured; that server has since been removed.
+        await harness.Bridge.WatchRules.SetAsync("retired", "retired://events/*/status", "Propose new times.");
+
+        var setForIt = await harness.SetWatchRuleAsync("retired://events/*/status", "Something else.", server: "retired");
+        Assert.IsNotNull(setForIt.Error, "a new rule needs a configured server");
+
+        var removed = await harness.SetWatchRuleAsync("retired://events/*/status", "", server: "Retired");
+        Assert.IsNull(removed.Error, removed.Error);
+        Assert.AreEqual(0, (await harness.Bridge.WatchRules.ActiveAsync()).Count, "it no longer counts against the limit");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AWatchPastItsLifetime_AskedForAgain_IsWatchedAnew_NotReportedAsKept()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        await using var harness = await StartAsync(store, timeProvider: clock, configureBridge: o =>
+        {
+            o.WatchTtlDays = 30;
+            o.WatchMaxLifetimeDays = 1;
+            o.WatchExpiryWarningHours = 0;
+            o.WatchDebounceMs = 0;
+        });
+        var first = await WatchAsync(harness, "Propose new times.");
+
+        // Past its lifetime: whether the expiry check or the request gets there first, the answer is
+        // a new watch, never a kept one that has already ended.
+        clock.Advance(TimeSpan.FromDays(2));
+        var again = await harness.WatchWithInstructionsAsync(Poll, Session, onChange: null);
+        Assert.IsNull(again.Error, again.Error);
+        Assert.AreNotEqual(first, again.WatchId);
+        StringAssert.StartsWith(again.Message, "[rockbot] Watching");
+        await WaitUntilAsync(() => harness.Bridge.ActiveWatchEntries.Count == 1
+                                   && harness.Bridge.ActiveWatchEntries[0].WatchId == again.WatchId, "only the new watch to be active");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
     public async Task TheListing_ShowsEachWatchsInstructions_AndTheRules()
     {
         var store = new WatchableResources();
