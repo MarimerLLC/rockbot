@@ -661,7 +661,7 @@ internal sealed class UserMessageHandler(
                 },
                 cancellationToken: ct,
                 // #685: external changes need this message (or the proposal it accepts) to ask for them.
-                actionGate: ActionGateScope.ForUserTurn,
+                actionGate: ActionGateScope.ForUserMessage,
                 // #670: rarely used tool families wait until the conversation loads them.
                 deferRareTools: true);
 
@@ -842,7 +842,7 @@ internal sealed class UserMessageHandler(
                 },
                 cancellationToken: ct,
                 // #685: external changes need this message (or the proposal it accepts) to ask for them.
-                actionGate: ActionGateScope.ForUserTurn,
+                actionGate: ActionGateScope.ForUserMessage,
                 // #670: rarely used tool families wait until the conversation loads them.
                 deferRareTools: true);
 

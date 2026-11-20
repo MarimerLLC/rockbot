@@ -45,17 +45,24 @@ public sealed partial class McpBridgeService
     private const int WatchReadFailureLimit = 5;
 
     private McpWatchLedger _watchLedger = null!;
+    private McpWatchRuleStore _watchRules = null!;
+    private McpRecentCalls _recentCalls = null!;
     private readonly ConcurrentDictionary<string, ActiveWatch> _watches = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WatchStream> _watchStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _watchGate = new(1, 1);
 
     private void InitializeWatches(TimeProvider? timeProvider)
     {
-        var path = Path.IsPathRooted(_options.WatchLedgerPath)
-            ? _options.WatchLedgerPath
-            : Path.Combine(Path.GetDirectoryName(_configPath) ?? AppContext.BaseDirectory, _options.WatchLedgerPath);
-        _watchLedger = new McpWatchLedger(path, _logger, timeProvider);
+        string Resolve(string path) => Path.IsPathRooted(path)
+            ? path
+            : Path.Combine(Path.GetDirectoryName(_configPath) ?? AppContext.BaseDirectory, path);
+        _watchLedger = new McpWatchLedger(Resolve(_options.WatchLedgerPath), _logger, timeProvider);
+        _watchRules = new McpWatchRuleStore(Resolve(_options.WatchRulesPath), _logger, timeProvider);
+        _recentCalls = new McpRecentCalls(timeProvider ?? TimeProvider.System);
     }
+
+    /// <summary>The standing watch rules, for tests.</summary>
+    internal McpWatchRuleStore WatchRules => _watchRules;
 
     /// <summary>Whether a connected server lets the agent watch its resources.</summary>
     private static bool OffersWatches(McpBridgeServerConfig config, McpClient client) =>
@@ -77,6 +84,17 @@ public sealed partial class McpBridgeService
             return Refuse("'uri' is required: the resource URI as the server lists it (see mcp_list_resources), any template expanded.");
         var sessionId = req.SessionId!;
 
+        // Instructions are the user's (#853): only a turn their own message started may set them.
+        string? onChange = null;
+        if (req.OnChange is not null)
+        {
+            if (!req.InstructionsAllowed)
+                return Refuse(McpWatchText.InstructionsRefused);
+            onChange = McpWatchText.CleanInstructions(req.OnChange);
+            if (onChange.Length > McpManagementExecutor.MaxWatchInstructionsChars)
+                return Refuse(McpWatchText.InstructionsTooLong(onChange.Length));
+        }
+
         await _watchGate.WaitAsync(ct);
         try
         {
@@ -93,10 +111,15 @@ public sealed partial class McpBridgeService
 
             if (FindWatch(sessionId, name, uri) is { } existing)
             {
+                // Asked again: the watch keeps going for a full lifetime from now, and the
+                // instructions, when given, replace (or, empty, clear) what it had.
+                if (!await RewatchAsync(existing.Entry, onChange))
+                    return Refuse("[rockbot] The watch couldn't be updated: recording the change failed. Nothing was changed; try again.");
                 return new McpWatchResourceResponse
                 {
                     ServerName = name, Uri = uri, WatchId = existing.WatchId,
-                    Message = McpWatchText.AlreadyWatching(existing.Entry),
+                    Message = McpWatchText.AlreadyWatching(existing.Entry, req.OnChange is not null, Math.Max(1, _options.WatchMaxLifetimeDays),
+                        await _watchRules.MatchingAsync(name, uri, ct)),
                 };
             }
 
@@ -139,7 +162,9 @@ public sealed partial class McpBridgeService
                 LastHash = hash,
                 RunOrigin = req.RunOrigin,
                 UserAskedFor = req.UserAskedFor,
+                OnChange = string.IsNullOrEmpty(onChange) ? null : onChange,
                 CreatedAt = now,
+                LifetimeStartedAt = now,
                 ExpiresAt = now + TimeSpan.FromDays(Math.Max(1, Math.Min(_options.WatchTtlDays, _options.WatchMaxLifetimeDays))),
             };
 
@@ -159,7 +184,117 @@ public sealed partial class McpBridgeService
             _logger.LogInformation("Session {Session} now watches {Server} {Uri} ({WatchId})", sessionId, name, uri, entry.WatchId);
             return new McpWatchResourceResponse
             {
-                ServerName = name, Uri = uri, WatchId = entry.WatchId, Message = McpWatchText.Watching(entry, Math.Max(1, _options.WatchMaxLifetimeDays)),
+                ServerName = name, Uri = uri, WatchId = entry.WatchId,
+                Message = McpWatchText.Watching(entry, Math.Max(1, _options.WatchMaxLifetimeDays), await _watchRules.MatchingAsync(name, uri, ct)),
+            };
+        }
+        finally
+        {
+            _watchGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// A watch asked for again: its maximum lifetime starts over, its renewal date moves out, and
+    /// <paramref name="onChange"/>, when not null, replaces its instructions (empty clears them).
+    /// </summary>
+    private async Task<bool> RewatchAsync(McpWatchEntry entry, string? onChange)
+    {
+        var now = _time.GetUtcNow();
+        var lifetimeEnd = now + TimeSpan.FromDays(Math.Max(1, _options.WatchMaxLifetimeDays));
+        var expires = Min(now + TimeSpan.FromDays(Math.Max(1, _options.WatchTtlDays)), lifetimeEnd);
+        var instructions = onChange is null ? entry.OnChange : onChange.Length == 0 ? null : onChange;
+
+        // Write-ahead: the bridge's copy changes only once the ledger holds the change.
+        try
+        {
+            await _watchLedger.UpdateAsync(entry.WatchId, e =>
+            {
+                e.LifetimeStartedAt = now;
+                e.ExpiryWarnedAt = null;
+                e.ExpiresAt = expires;
+                e.OnChange = instructions;
+            }, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not record watch {WatchId} being asked for again", entry.WatchId);
+            return false;
+        }
+
+        entry.LifetimeStartedAt = now;
+        entry.ExpiryWarnedAt = null;
+        entry.ExpiresAt = expires;
+        entry.OnChange = instructions;
+
+        _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) asked for again; runs until at least {ExpiresAt:u}{Instructions}",
+            entry.WatchId, entry.Server, entry.Uri, expires, onChange is null ? "" : instructions is null ? ", instructions cleared" : ", instructions set");
+        return true;
+    }
+
+    /// <summary><c>mcp_list_watches</c>: this session's watches and the standing watch rules (#853).</summary>
+    private async Task<McpWatchResourceResponse> ListWatchesAsync(McpListWatchesRequest req, CancellationToken ct)
+    {
+        var mine = req.SessionId is null ? [] : SessionWatchEntries(req.SessionId);
+        var rules = await _watchRules.ActiveAsync(ct);
+        return new McpWatchResourceResponse
+        {
+            ServerName = "", Uri = "",
+            Message = McpWatchText.Listing(mine, rules, MaxLifetimeEnd),
+        };
+    }
+
+    /// <summary><c>mcp_set_watch_rule</c>: sets, replaces or removes a standing watch rule (#853).</summary>
+    private async Task<McpWatchResourceResponse> SetWatchRuleAsync(McpSetWatchRuleRequest req, CancellationToken ct)
+    {
+        var pattern = req.UriPattern?.Trim() ?? "";
+        McpWatchResourceResponse Refuse(string error) => new() { ServerName = req.ServerName ?? "", Uri = pattern, Error = error };
+
+        if (!req.InstructionsAllowed)
+            return Refuse(McpWatchText.InstructionsRefused);
+        if (pattern.Length == 0)
+            return Refuse("'uri_pattern' is required: the URIs the rule covers, with * for any run of characters other than '/' (e.g. 'scheduler://events/*/status').");
+        if (pattern.Length > McpWatchRule.MaxPatternChars)
+            return Refuse($"'uri_pattern' is {pattern.Length:N0} characters; the limit is {McpWatchRule.MaxPatternChars:N0}.");
+        // A run of stars means what one does.
+        while (pattern.Contains("**", StringComparison.Ordinal))
+            pattern = pattern.Replace("**", "*", StringComparison.Ordinal);
+        if (!_connections.IsConfigured(req.ServerName ?? ""))
+            return Refuse(McpCallDiagnostics.DescribeUnknownServer(req.ServerName ?? "", _connections.ConfiguredNames));
+
+        var server = _connections.ConfiguredNames.First(n => string.Equals(n, req.ServerName, StringComparison.OrdinalIgnoreCase));
+        var instructions = McpWatchText.CleanInstructions(req.OnChange ?? "");
+        if (instructions.Length > McpManagementExecutor.MaxWatchInstructionsChars)
+            return Refuse(McpWatchText.InstructionsTooLong(instructions.Length));
+
+        await _watchGate.WaitAsync(ct);
+        try
+        {
+            if (instructions.Length == 0)
+            {
+                var removed = await _watchRules.RemoveAsync(server, pattern, ct);
+                if (removed is null)
+                    return Refuse(McpWatchText.NoSuchRule(server, pattern, await _watchRules.ActiveAsync(ct)));
+                _logger.LogInformation("Watch rule {RuleId} ({Server} {Pattern}) removed", removed.RuleId, server, pattern);
+                return new McpWatchResourceResponse
+                {
+                    ServerName = server, Uri = pattern, WatchId = removed.RuleId, Message = McpWatchText.RuleRemoved(removed),
+                };
+            }
+
+            var active = await _watchRules.ActiveAsync(ct);
+            var replacing = active.Any(r => string.Equals(r.Server, server, StringComparison.OrdinalIgnoreCase)
+                                            && string.Equals(r.UriPattern, pattern, StringComparison.Ordinal));
+            var limit = Math.Max(1, _options.MaxWatchRules);
+            if (!replacing && active.Count >= limit)
+                return Refuse(McpWatchText.RuleCapReached(limit, active));
+
+            var (rule, replaced) = await _watchRules.SetAsync(server, pattern, instructions, ct);
+            _logger.LogInformation("Watch rule {RuleId} ({Server} {Pattern}) {What}", rule.RuleId, server, pattern, replaced ? "replaced" : "set");
+            var covered = _watches.Values.Count(w => rule.Matches(w.Entry.Server, w.Entry.Uri));
+            return new McpWatchResourceResponse
+            {
+                ServerName = server, Uri = pattern, WatchId = rule.RuleId, Message = McpWatchText.RuleSet(rule, replaced, covered),
             };
         }
         finally
@@ -589,6 +724,9 @@ public sealed partial class McpBridgeService
                 && string.Equals(watch.Entry.Server, server, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(watch.Entry.Uri, uri, StringComparison.Ordinal))
             {
+                // The first notification of a burst is what an echo is judged by (#853).
+                lock (watch)
+                    watch.FirstNotifiedAt ??= _time.GetUtcNow();
                 ScheduleWatchRead(watch, debounce);
             }
         }
@@ -669,6 +807,15 @@ public sealed partial class McpBridgeService
                 return;
             }
 
+            // What asked for this read, taken before reading: a notification that arrives while the
+            // read runs starts the next burst, with its own time (#853).
+            DateTimeOffset? notifiedAt;
+            lock (watch)
+            {
+                notifiedAt = watch.FirstNotifiedAt;
+                watch.FirstNotifiedAt = null;
+            }
+
             ReadResourceResult result;
             using (var lease = _connections.Lease(entry.Server))
             {
@@ -692,7 +839,12 @@ public sealed partial class McpBridgeService
                     _logger.LogWarning(ex, "Reading watched {Server} {Uri} failed ({Failures}/{Limit})",
                         entry.Server, entry.Uri, failures, WatchReadFailureLimit);
                     if (failures < WatchReadFailureLimit)
+                    {
+                        // The retry reads for the same notification.
+                        lock (watch)
+                            watch.FirstNotifiedAt ??= notifiedAt;
                         ScheduleWatchRead(watch, TimeSpan.FromMilliseconds(Math.Max(10, _options.SubscriptionReconnectMinMs) * (1 << failures)));
+                    }
                     return;
                 }
             }
@@ -705,6 +857,13 @@ public sealed partial class McpBridgeService
             if (string.Equals(hash, entry.LastHash, StringComparison.Ordinal))
                 return;
 
+            // The session's own call on this server most likely made this change (#853): it is
+            // recorded for the session, without a turn that would only repeat what it did.
+            var cause = _options.WatchEchoSuppression && notifiedAt is { } at
+                ? _recentCalls.CauseOf(entry.SessionId, entry.Server, at, TimeSpan.FromSeconds(Math.Max(0, _options.WatchEchoGraceSeconds)))
+                : null;
+
+            var rules = await _watchRules.MatchingAsync(entry.Server, entry.Uri, ct);
             var delivered = await PublishTaskResultAsync(new McpTaskResult
             {
                 SessionId = entry.SessionId,
@@ -717,11 +876,17 @@ public sealed partial class McpBridgeService
                 ContentHash = hash,
                 RunOrigin = entry.RunOrigin,
                 UserAskedFor = entry.UserAskedFor,
+                OnChange = entry.OnChange,
+                WatchRules = rules.Count == 0 ? null : [.. rules.Select(McpWatchText.RuleText)],
+                CausedByTool = cause?.Tool,
+                NeedsReply = cause is null,
             }, ct);
 
             if (!delivered)
             {
-                // The hash is unchanged, so the next read delivers it again.
+                // The hash is unchanged, so the next read delivers it again, judged the same way.
+                lock (watch)
+                    watch.FirstNotifiedAt ??= notifiedAt;
                 ScheduleWatchRead(watch, TimeSpan.FromMilliseconds(Math.Max(10, _options.SubscriptionReconnectMinMs)));
                 return;
             }
@@ -737,8 +902,17 @@ public sealed partial class McpBridgeService
                 _logger.LogWarning(ex, "Could not record the delivery of watch {WatchId}", entry.WatchId);
             }
 
-            _logger.LogInformation("← MCP {Server} {Uri} changed; delivered to {Session} (watch {WatchId})",
-                entry.Server, entry.Uri, entry.SessionId, entry.WatchId);
+            if (cause is null)
+            {
+                _logger.LogInformation("← MCP {Server} {Uri} changed; delivered to {Session} (watch {WatchId})",
+                    entry.Server, entry.Uri, entry.SessionId, entry.WatchId);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "← MCP {Server} {Uri} changed, most likely by {Session}'s own {Tool} call; recorded without a reply (watch {WatchId})",
+                    entry.Server, entry.Uri, entry.SessionId, cause.Tool, entry.WatchId);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -854,6 +1028,7 @@ public sealed partial class McpBridgeService
             ResourceUri = entry.Uri,
             RunOrigin = entry.RunOrigin,
             UserAskedFor = entry.UserAskedFor,
+            OnChange = entry.OnChange,
         };
 
         var delay = TimeSpan.FromMilliseconds(Math.Max(10, _options.SubscriptionReconnectMinMs));
@@ -1018,7 +1193,15 @@ public sealed partial class McpBridgeService
                 return;
             }
 
-            await ExpireWatchesAsync();
+            try
+            {
+                await ExpireWatchesAsync();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !_lifetime.IsCancellationRequested)
+            {
+                // One bad check must not end the loop: renewals, endings and warnings all run from it.
+                _logger.LogError(ex, "Checking MCP watches for expiry failed; trying again at the next check");
+            }
         }
     }
 
@@ -1042,6 +1225,67 @@ public sealed partial class McpBridgeService
             else
                 ScheduleWatchRead(watch, TimeSpan.Zero);
         }
+
+        // Close to its maximum lifetime: the session is told once, so it can keep the watch (#853).
+        var warning = TimeSpan.FromHours(Math.Max(0, _options.WatchExpiryWarningHours));
+        if (warning <= TimeSpan.Zero)
+            return;
+        foreach (var watch in _watches.Values
+                     .Where(w => w.Confirmed && w.Entry.ExpiryWarnedAt is null
+                                 && now >= MaxLifetimeEnd(w.Entry) - warning && now < MaxLifetimeEnd(w.Entry))
+                     .ToList())
+        {
+            await WarnWatchExpiringAsync(watch.Entry, now);
+        }
+    }
+
+    /// <summary>Tells a session its watch will soon reach its maximum lifetime; recorded first, sent once.</summary>
+    private async Task WarnWatchExpiringAsync(McpWatchEntry entry, DateTimeOffset now)
+    {
+        entry.ExpiryWarnedAt = now;
+        try
+        {
+            await _watchLedger.UpdateAsync(entry.WatchId, e => e.ExpiryWarnedAt = now, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not record the expiry warning of watch {WatchId}", entry.WatchId);
+        }
+
+        var delivered = await PublishTaskResultAsync(new McpTaskResult
+        {
+            SessionId = entry.SessionId,
+            TaskId = entry.WatchId,
+            ServerName = entry.Server,
+            ToolName = entry.Uri,
+            Kind = McpTaskResult.KindWatchExpiring,
+            Content = McpWatchText.Expiring(entry, MaxLifetimeEnd(entry), Math.Max(1, _options.WatchMaxLifetimeDays)),
+            ResourceUri = entry.Uri,
+            // One warning per lifetime: a watch kept going is warned again before its new end.
+            ContentHash = $"expiring-{MaxLifetimeEnd(entry):yyyyMMddHHmmss}",
+            RunOrigin = entry.RunOrigin,
+            UserAskedFor = entry.UserAskedFor,
+            OnChange = entry.OnChange,
+        }, CancellationToken.None);
+
+        if (!delivered)
+        {
+            // Not sent: the next check tries again.
+            entry.ExpiryWarnedAt = null;
+            try
+            {
+                await _watchLedger.UpdateAsync(entry.WatchId, e => e.ExpiryWarnedAt = null, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                // At worst a restart doesn't warn again; the in-memory entry still retries.
+                _logger.LogWarning(ex, "Could not record that watch {WatchId}'s expiry warning wasn't sent", entry.WatchId);
+            }
+            return;
+        }
+
+        _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) ends at {End:u}; {Session} was told",
+            entry.WatchId, entry.Server, entry.Uri, MaxLifetimeEnd(entry), entry.SessionId);
     }
 
     /// <summary>Extends a watch whose resource still exists by another renewal period, up to its maximum lifetime.</summary>
@@ -1065,7 +1309,7 @@ public sealed partial class McpBridgeService
 
     /// <summary>When a watch ends however often it was renewed.</summary>
     private DateTimeOffset MaxLifetimeEnd(McpWatchEntry entry) =>
-        entry.CreatedAt + TimeSpan.FromDays(Math.Max(1, _options.WatchMaxLifetimeDays));
+        (entry.LifetimeStartedAt ?? entry.CreatedAt) + TimeSpan.FromDays(Math.Max(1, _options.WatchMaxLifetimeDays));
 
     private string ExpiredReason(McpWatchEntry entry) =>
         $"it reached its maximum lifetime of {Math.Max(1, _options.WatchMaxLifetimeDays)} day(s)";

@@ -165,6 +165,34 @@ public sealed class McpBridgeOptions
     public int WatchDebounceMs { get; set; } = 5000;
 
     /// <summary>
+    /// The user's standing watch rules (<c>mcp_set_watch_rule</c>, #853): instructions for every
+    /// watched resource on a server whose URI matches a pattern. A relative path resolves next to
+    /// <see cref="ConfigPath"/>. Default <c>mcp/watch-rules.json</c> beside <c>mcp.json</c>.
+    /// </summary>
+    public string WatchRulesPath { get; set; } = "mcp/watch-rules.json";
+
+    /// <summary>Most standing watch rules the agent keeps.</summary>
+    public int MaxWatchRules { get; set; } = 50;
+
+    /// <summary>
+    /// Hours before a watch's maximum lifetime (<see cref="WatchMaxLifetimeDays"/>) ends that its
+    /// session is told, so it can keep the watch by asking for it again (#853). 0 sends no warning.
+    /// </summary>
+    public int WatchExpiryWarningHours { get; set; } = 24;
+
+    /// <summary>
+    /// Whether a change to a watched resource that the watching session's own tool call on the same
+    /// server most likely caused is recorded without a reply (#853): the agent already knows.
+    /// </summary>
+    public bool WatchEchoSuppression { get; set; } = true;
+
+    /// <summary>
+    /// How long after the session's own call on a server ends that a change notification still counts
+    /// as that call's echo (<see cref="WatchEchoSuppression"/>).
+    /// </summary>
+    public int WatchEchoGraceSeconds { get; set; } = 10;
+
+    /// <summary>
     /// Longest a <c>subscriptions/listen</c> stream stays open before the bridge reopens it. The
     /// bearer token is checked only when a stream opens, and a quiet stream sends nothing, so this
     /// bounds both how long a stream outlives its token and how long a silently dead one goes

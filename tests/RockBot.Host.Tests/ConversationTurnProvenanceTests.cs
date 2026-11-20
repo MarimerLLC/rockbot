@@ -185,6 +185,28 @@ public class ConversationTurnProvenanceTests
     }
 
     [TestMethod]
+    public async Task FileMemory_KeepsATurnExcludedFromLearning_InHistoryButOutOfTheConversationLog()
+    {
+        // #853: a watch update's turn has the user role but isn't the user's words; the dream must
+        // not learn a second copy of the user's watch instructions from it.
+        var log = new RecordingLog();
+        using var memory = CreateFileMemory(log);
+
+        await memory.AddTurnAsync("blazor-session", new ConversationTurn("user", "[rockbot] The MCP resource … changed", DateTimeOffset.UtcNow)
+        {
+            AgentName = "mcp-bridge",
+            ExcludeFromLearning = true,
+        });
+        await memory.AddTurnAsync("blazor-session", new ConversationTurn("user", "hello", DateTimeOffset.UtcNow));
+        await Task.Delay(50); // the log append is fire-and-forget
+
+        CollectionAssert.AreEqual(new[] { "hello" }, log.Entries.Select(e => e.Content).ToArray());
+        var history = await memory.GetTurnsAsync("blazor-session");
+        Assert.AreEqual(2, history.Count, "the conversation still has it");
+        Assert.IsTrue(history[0].ExcludeFromLearning);
+    }
+
+    [TestMethod]
     public async Task FileMemory_RestoresABroadcastSessionPastTheIdleTimeout()
     {
         // A broadcast session is merged into every thread's history, so it doesn't idle out.

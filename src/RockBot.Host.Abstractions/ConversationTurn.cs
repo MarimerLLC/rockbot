@@ -50,6 +50,16 @@ public sealed record ConversationTurn(string Role, string Content, DateTimeOffse
     public ConversationTurnReference? ImportedFrom { get; init; }
 
     /// <summary>
+    /// Kept in the conversation's history but left out of the conversation log the dream and
+    /// observation passes learn from (#853): a turn that isn't the user's own words although its
+    /// role is <c>user</c>, such as the bridge's note that a watched resource changed. Its text is a
+    /// server's data plus the user's watch instructions, and learning a skill or memory from it
+    /// would put a second, drifting copy of those instructions beside the user's own. The agent's
+    /// reply to such a turn is marked too, as it tends to restate them. Additive.
+    /// </summary>
+    public bool ExcludeFromLearning { get; init; }
+
+    /// <summary>
     /// A new value for <see cref="Id"/>. A writer that publishes the turn as a reply uses the same
     /// value for the reply's message id.
     /// </summary>

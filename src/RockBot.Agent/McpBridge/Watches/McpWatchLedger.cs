@@ -109,7 +109,22 @@ internal sealed class McpWatchEntry : ILedgerEntry<McpWatchEntry>
     /// <summary>What the originating user request asked for, if stated.</summary>
     public string? UserAskedFor { get; set; }
 
+    /// <summary>
+    /// The user's instructions for what to do when the resource changes (#853), quoted to the
+    /// agent with each change. Set only from a turn the user's own message started.
+    /// </summary>
+    public string? OnChange { get; set; }
+
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>
+    /// When the watch's maximum lifetime started counting: <see cref="CreatedAt"/>, or the last
+    /// time the agent asked to watch it again (#853). Null on entries from before that.
+    /// </summary>
+    public DateTimeOffset? LifetimeStartedAt { get; set; }
+
+    /// <summary>When the session was told the watch would soon reach its maximum lifetime (#853).</summary>
+    public DateTimeOffset? ExpiryWarnedAt { get; set; }
 
     /// <summary>When the watch ends on its own.</summary>
     public DateTimeOffset ExpiresAt { get; set; }

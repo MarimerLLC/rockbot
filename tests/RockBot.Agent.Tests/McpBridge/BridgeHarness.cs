@@ -394,6 +394,43 @@ internal sealed class BridgeHarness : IAsyncDisposable
         return reply.GetPayload<McpWatchResourceResponse>()!;
     }
 
+    /// <summary>Sends an <c>mcp_watch_resource</c> request with instructions (#853).</summary>
+    public async Task<McpWatchResourceResponse> WatchWithInstructionsAsync(
+        string uri, string sessionId, string? onChange, bool instructionsAllowed = true, string server = ServerName)
+    {
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic,
+            new McpWatchResourceRequest
+            {
+                ServerName = server, Uri = uri, SessionId = sessionId,
+                OnChange = onChange, InstructionsAllowed = instructionsAllowed,
+            }, headers: null);
+        return reply.GetPayload<McpWatchResourceResponse>()!;
+    }
+
+    /// <summary>Sends an <c>mcp_list_watches</c> request.</summary>
+    public async Task<McpWatchResourceResponse> ListWatchesAsync(string sessionId)
+    {
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic,
+            new McpListWatchesRequest { SessionId = sessionId }, headers: null);
+        return reply.GetPayload<McpWatchResourceResponse>()!;
+    }
+
+    /// <summary>Sends an <c>mcp_set_watch_rule</c> request.</summary>
+    public async Task<McpWatchResourceResponse> SetWatchRuleAsync(
+        string pattern, string onChange, bool instructionsAllowed = true, string server = ServerName, string sessionId = "session/test")
+    {
+        var reply = await SendAsync(McpManagementExecutor.ManageTopic,
+            new McpSetWatchRuleRequest
+            {
+                ServerName = server, UriPattern = pattern, OnChange = onChange,
+                SessionId = sessionId, InstructionsAllowed = instructionsAllowed,
+            }, headers: null);
+        return reply.GetPayload<McpWatchResourceResponse>()!;
+    }
+
+    /// <summary>Where the bridge keeps the standing watch rules in this run.</summary>
+    public string WatchRulesPath => Path.Combine(_configDir, "mcp", "watch-rules.json");
+
     /// <summary>Sends an <c>mcp_unwatch_resource</c> request.</summary>
     public async Task<McpWatchResourceResponse> UnwatchAsync(string uri, string sessionId, string server = ServerName)
     {

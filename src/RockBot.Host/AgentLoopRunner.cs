@@ -3535,7 +3535,11 @@ public sealed partial class AgentLoopRunner(
     internal static ActionGateScope ResolveActionGateScope(
         ActionGateScope? requested, ActionGateScope? enclosing, UserRequestKind classified)
     {
-        var scope = requested ?? enclosing ?? ActionGateScope.Unknown;
+        // A nested run (a wisp's LLM step, a worker) inherits the enclosing run's gate, but it isn't
+        // the user's own message: its input is earlier steps' output (#853).
+        var scope = requested
+                    ?? (enclosing is { DirectUserMessage: true } ? enclosing with { DirectUserMessage = false } : enclosing)
+                    ?? ActionGateScope.Unknown;
         return scope.RequiresUserInstruction && scope.UserAskedFor is null
             ? scope with { UserAskedFor = classified }
             : scope;
