@@ -48,6 +48,48 @@ public sealed record WorkerDefinition
     }
 
     /// <summary>
+    /// Optional working-memory keys holding data the worker should work from instead of fetching
+    /// it (#847): a wisp step's output as <c>wisp:&lt;wisp-id&gt;/&lt;step-id&gt;</c>, or any full key
+    /// (with a '/'), e.g. <c>wisp/wisp-1234/search/output</c> or the key a save reported. The worker
+    /// gets the content as its input and is told not to fetch it again, so wisp → worker becomes
+    /// fetch once, filter cheaply. Use <see cref="ResolveInputKey"/> for the stored key.
+    /// </summary>
+    [JsonPropertyName("input_keys")]
+    public IReadOnlyList<string>? InputKeys { get; init; }
+
+    /// <summary>The prefix of a wisp step reference in <see cref="InputKeys"/>.</summary>
+    public const string WispReferencePrefix = "wisp:";
+
+    /// <summary>
+    /// Resolves one <see cref="InputKeys"/> entry to its working-memory key:
+    /// <c>wisp:&lt;id&gt;/&lt;step&gt;</c> → <c>wisp/&lt;id&gt;/&lt;step&gt;/output</c>; a key with a '/' is
+    /// used as is. Returns null for anything else — a bare key would resolve against the worker's
+    /// own, empty namespace, not the spawner's, so it is refused rather than guessed.
+    /// </summary>
+    public static string? ResolveInputKey(string? entry)
+    {
+        var key = entry?.Trim();
+        if (string.IsNullOrEmpty(key))
+            return null;
+
+        if (key.StartsWith(WispReferencePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var reference = key[WispReferencePrefix.Length..].Trim().Trim('/');
+            var slash = reference.IndexOf('/');
+            if (slash <= 0 || slash == reference.Length - 1)
+                return null;
+            // Tolerate a reference written with the output suffix or the namespace prefix.
+            if (reference.StartsWith("wisp/", StringComparison.OrdinalIgnoreCase))
+                reference = reference["wisp/".Length..];
+            return reference.EndsWith("/output", StringComparison.OrdinalIgnoreCase)
+                ? $"wisp/{reference}"
+                : $"wisp/{reference}/output";
+        }
+
+        return key.Contains('/') ? key : null;
+    }
+
+    /// <summary>
     /// Soft wall-clock cap in minutes. When null, falls back to
     /// <see cref="WorkerOptions.DefaultTimeoutMinutes"/>.
     /// </summary>

@@ -267,18 +267,22 @@ internal sealed class WispExecutor(
         overallSw.Stop();
         var isSuccess = stepResults.All(s => s.IsSuccess || s.WasSkipped || s.FailureHandled);
 
-        // On success, shorten TTL so results stay available briefly for the calling agent
-        // to inspect, then expire naturally. On failure, keep full TTL for debugging.
+        // On success, shorten TTL so results stay available for the calling agent to inspect or
+        // hand to a worker (input_keys, #847), then expire naturally. On failure, keep full TTL
+        // for debugging.
         if (isSuccess)
         {
+            var successTtl = options.SuccessOutputTtl > TimeSpan.Zero
+                ? options.SuccessOutputTtl
+                : TimeSpan.FromMinutes(5);
             var entries = await workingMemory.ListAsync(wispNamespace);
             foreach (var entry in entries)
             {
                 await workingMemory.SetAsync(entry.Key, entry.Value,
-                    ttl: TimeSpan.FromMinutes(5), category: entry.Category, tags: entry.Tags);
+                    ttl: successTtl, category: entry.Category, tags: entry.Tags);
             }
-            logger.LogDebug("Wisp {WispId} set 5-min TTL on {Count} working memory entries in {Namespace}",
-                wispId, entries.Count, wispNamespace);
+            logger.LogDebug("Wisp {WispId} set {Ttl} TTL on {Count} working memory entries in {Namespace}",
+                wispId, successTtl, entries.Count, wispNamespace);
         }
 
         logger.LogInformation("Wisp {WispId} finished: success={Success}, duration={Duration:F1}ms",
@@ -658,8 +662,33 @@ internal sealed class WispExecutor(
                 call: NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: false, itemIndex));
         }
 
+        RecordFetch(step, route, wispId, itemIndex);
+
         return new DirectCallOutcome(true, response.Content, null,
             NestedCall(step, wispId, route.ToolName, route.Arguments, succeeded: true, itemIndex));
+    }
+
+    /// <summary>
+    /// #847: records a successful direct call in the parent run's fetch registry, so a later call of
+    /// the same tool with the same arguments — by the parent or by a worker it spawns — is told the
+    /// data is already in this step's output. A state-changing call forgets that server's reads.
+    /// </summary>
+    private void RecordFetch(WispStep step, ToolRouteResult route, string wispId, int? itemIndex)
+    {
+        if (RunFetchRegistryContext.Value is not { } registry || string.IsNullOrEmpty(route.ToolName))
+            return;
+        try
+        {
+            var where = itemIndex is { } i
+                ? $"by wisp {wispId} step {step.Id} (item {i})"
+                : $"by wisp {wispId} step {step.Id}";
+            registry.Observe(route.ToolName, route.Arguments, succeeded: true, where,
+                key: $"wisp/{wispId}/{step.Id}/output");
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Wisp {WispId} step {StepId}: could not record the fetch", wispId, step.Id);
+        }
     }
 
     /// <summary>
@@ -1089,7 +1118,9 @@ internal sealed class WispExecutor(
                 enableFollowUp: false,
                 enableCompletionEval: false,
                 diagnostics: diagnostics,
-                cancellationToken: ct);
+                cancellationToken: ct,
+                // #847: the step's fetches count toward the run that spawned the wisp.
+                fetchRegistry: RunFetchRegistryContext.Value);
         }
         catch (Exception ex)
         {

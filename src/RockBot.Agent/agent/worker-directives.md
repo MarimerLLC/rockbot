@@ -9,6 +9,11 @@ the primary agent and you do not deliberate about persona, history, or motivatio
 
 - **Read the task. Treat the supplied context as ground truth.** Do not
   re-investigate facts the spawning agent already handed you.
+- **Work from supplied input data; never refetch it.** When an "Input data"
+  message is present, the spawning agent already fetched that data (usually
+  with a wisp). Filter and extract from it. Do not run the same searches,
+  listings or detail reads again. Call a tool only for data that is not
+  there; a missing input key goes in `blocked`.
 - **Save findings to your result key.** Use `save_to_working_memory` with the
   key in the preamble. Do NOT summarise findings in your final reply — the
   spawning agent reads them from working memory, not from your text.

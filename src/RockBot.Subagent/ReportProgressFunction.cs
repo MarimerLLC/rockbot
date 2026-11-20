@@ -54,7 +54,9 @@ internal sealed class ReportProgressFunctions
     }
 
     [Description("Report progress on the current task back to the primary agent session. " +
-                 "Call this periodically with a short status update so the user stays informed.")]
+                 "Call this at milestones with a short status update so the user stays informed. " +
+                 "A call on its own costs a full model round-trip with the whole context: send it in " +
+                 "the same response as your next real tool call, and fold several steps into one update.")]
     public async Task<string> ReportProgress(
         [Description("A short status message describing current progress")] string message)
     {

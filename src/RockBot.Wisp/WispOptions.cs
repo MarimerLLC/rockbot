@@ -20,6 +20,15 @@ public sealed class WispOptions
     public int MaxConcurrentWisps { get; set; } = 10;
 
     /// <summary>
+    /// How long a successful wisp's step outputs (<c>wisp/&lt;id&gt;/&lt;step&gt;/output</c>) stay in
+    /// working memory. Long enough for the calling agent to hand them to a worker through
+    /// <c>input_keys</c> instead of fetching the same data again (#847). It was a hard-coded
+    /// five minutes, which a few turns of deliberation could outlast. Zero or less falls back to
+    /// five minutes.
+    /// </summary>
+    public TimeSpan SuccessOutputTtl { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// When true, wisp runs originating from a scheduled-task session
     /// (sessionId prefixed with <c>patrol/</c>) eagerly attach their body as a
     /// provisional resource on the originating skill once the shape has succeeded

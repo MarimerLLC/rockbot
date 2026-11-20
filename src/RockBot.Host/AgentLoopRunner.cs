@@ -574,9 +574,13 @@ public sealed partial class AgentLoopRunner(
         // #715: for a subagent synthesis, the user's messages sent after the relayed subagents were
         // spawned, oldest first. They amend originatingUserRequest: a correction sent while the
         // subagent ran overrides the request it replaced.
-        IReadOnlyList<string>? laterUserMessages = null)
+        IReadOnlyList<string>? laterUserMessages = null,
+        // #847: the read-only fetches already made on this run's behalf. Null starts a fresh one;
+        // a worker passes its spawner's, so a worker re-running a wisp's fetch is flagged.
+        RunFetchRegistry? fetchRegistry = null)
     {
         using var _ = ToolCallSessionContext.Set(sessionId);
+        using var fetchScope = RunFetchRegistryContext.Set(fetchRegistry ?? new RunFetchRegistry());
         // Always bind (possibly null) so a nested run — a subagent started from a tool call —
         // never inherits the parent run's escalation state.
         using var escalationScope = TierEscalationContext.Set(
@@ -1724,12 +1728,15 @@ public sealed partial class AgentLoopRunner(
                             ? textResultStr[..500] + "…"
                             : textResultStr;
                     }
+                    var textSucceeded = textToolStatus == "ok"
+                        && !ToolResultClassifier.IsError(textResultStr)
+                        && textOutcome.Succeeded != false;
                     LoopToolCallLedgerContext.Value?.Record(
                         toolName, TruncateLedgerArgs(argsJson),
-                        succeeded: textToolStatus == "ok"
-                            && !ToolResultClassifier.IsError(textResultStr)
-                            && textOutcome.Succeeded != false,
+                        succeeded: textSucceeded,
                         rawArguments: args, outcome: textOutcome);
+                    // #847: a repeat of a fetch this run already made gets a note saying where that data is.
+                    var textDuplicateNote = RunFetchRegistryContext.ObserveLoopCall(toolName, args, textSucceeded);
                     if (textToolStatus != ConsequentialActionGatedStatus)
                         await NotifyToolCallFinishedAsync(textCallId, toolName, textToolStatus, textResultStr,
                             textOutcome, toolSw.ElapsedMilliseconds, cancellationToken);
@@ -1753,6 +1760,8 @@ public sealed partial class AgentLoopRunner(
                             ttl: ttl,
                             logger: logger);
                     }
+                    if (textDuplicateNote is not null)
+                        textResultStr += textDuplicateNote;
                     chatMessages.Add(new ChatMessage(ChatRole.User,
                         $"[Tool result for {toolName}]: {textResultStr}"));
 
@@ -1916,12 +1925,15 @@ public sealed partial class AgentLoopRunner(
                         ? nativeResultStr[..500] + "…"
                         : nativeResultStr;
                 }
+                var nativeSucceeded = toolStatus == "ok"
+                    && !ToolResultClassifier.IsError(nativeResultStr)
+                    && nativeOutcome.Succeeded != false;
                 LoopToolCallLedgerContext.Value?.Record(
                     fc.Name, TruncateLedgerArgs(argsSummary),
-                    succeeded: toolStatus == "ok"
-                        && !ToolResultClassifier.IsError(nativeResultStr)
-                        && nativeOutcome.Succeeded != false,
+                    succeeded: nativeSucceeded,
                     rawArguments: fc.Arguments, outcome: nativeOutcome);
+                // #847: a repeat of a fetch this run already made gets a note saying where that data is.
+                var nativeDuplicateNote = RunFetchRegistryContext.ObserveLoopCall(fc.Name, fc.Arguments, nativeSucceeded);
                 if (toolStatus != ConsequentialActionGatedStatus)
                     await NotifyToolCallFinishedAsync(nativeCallId, fc.Name, toolStatus, nativeResultStr,
                         nativeOutcome, toolSw.ElapsedMilliseconds, cancellationToken);
@@ -1948,6 +1960,8 @@ public sealed partial class AgentLoopRunner(
                     // between this batch's tool results.
                 }
 
+                if (nativeDuplicateNote is not null)
+                    nativeResultStr += nativeDuplicateNote;
                 chatMessages.Add(new ChatMessage(ChatRole.Tool,
                     [new FunctionResultContent(fc.CallId, nativeResultStr)]));
 

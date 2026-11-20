@@ -84,7 +84,9 @@ internal sealed class AgentTaskListTools
         "Update the status of a single task in the current task list. Statuses: " +
         "'pending' (not started), 'in_progress' (currently working), 'completed' (done). " +
         "Mark a task in_progress when you start it and completed when finished — keeping the " +
-        "list accurate is what makes it useful across many iterations.")]
+        "list accurate is what makes it useful across many iterations. A call on its own costs a " +
+        "full model round-trip with the whole context, so send it in the same response as your " +
+        "next real tool call, not as a step of its own.")]
     public string TaskUpdate(
         [Description("The task id as returned by task_create (1, 2, 3, …)")] int id,
         [Description("New status: 'pending', 'in_progress', or 'completed'")] string status)

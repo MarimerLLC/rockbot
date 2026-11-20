@@ -39,6 +39,11 @@ internal sealed class WorkerToolRegistrar(
                     "type": "string",
                     "description": "Optional override for the working-memory key the worker writes findings to. Defaults to worker/<task-id>/result. A bare key (no '/') is placed under worker/<task-id>/; include a '/' (e.g. shared/patrol/calendar-latest) for an exact path. The receipt reports the resolved key."
                   },
+                  "input_keys": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional data the worker works from instead of fetching it: wisp:<wisp-id>/<step-id> for a wisp step's output (the spawn_wisps result lists each wisp's output key), or a full working-memory key containing '/'. The worker gets the content as input and is told not to refetch it. Use this to filter a wisp's raw output on a cheap model — never brief a worker to re-run a fetch a wisp already did. Every key must exist, or no worker starts."
+                  },
                   "timeout_minutes": {
                     "type": "integer",
                     "description": "Soft wall-clock cap in minutes. Defaults to WorkerOptions.DefaultTimeoutMinutes (5)."
@@ -76,6 +81,10 @@ internal sealed class WorkerToolRegistrar(
                 (counts, blocked items, converged patterns, result_key). Read the inlined findings
                 directly — only when the receipt says a result was truncated do you need to call
                 get_from_working_memory with the result_key to read the rest.
+
+                To filter data a wisp (or you) already fetched, pass its key in input_keys. The
+                worker reads that data instead of running the same searches again: fetch once with
+                spawn_wisps, filter cheaply with spawn_workers.
 
                 Workers cannot spawn other workers, subagents, or A2A calls. They cannot save_memory
                 or promote_skill_asset — if a worker observes a tool-call pattern worth keeping, it

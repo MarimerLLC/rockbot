@@ -739,7 +739,12 @@ internal sealed class SpawnWispsExecutor(
             {
                 var lastStep = result.StepResults.LastOrDefault(s => s.IsSuccess && s.Content is not null);
                 if (lastStep?.Content is not null)
+                {
                     sb.AppendLine($"  Output: {CapIteratedOutput(result.WispId, lastStep)}");
+                    // #847: name the key, so filtering this output goes to a worker as input
+                    // instead of a worker fetching the same data again.
+                    sb.AppendLine($"  Output key: `{OutputKey(result.WispId, lastStep.StepId)}` (to filter it, pass this key to spawn_workers as input_keys; do not fetch the same data again)");
+                }
             }
         }
 
@@ -762,8 +767,11 @@ internal sealed class SpawnWispsExecutor(
             return content;
         return content[..MaxIteratedOutputChars] +
                $"\n  ... (truncated, {content.Length:N0} chars total; the full result is in working memory at " +
-               $"`wisp/{wispId}/{step.StepId}/output`)";
+               $"`{OutputKey(wispId, step.StepId)}`)";
     }
+
+    /// <summary>The working-memory key of a wisp step's output (see <c>WispExecutor</c>).</summary>
+    internal static string OutputKey(string wispId, string stepId) => $"wisp/{wispId}/{stepId}/output";
 
     private static string FormatIndices(IReadOnlyList<int> indices, int max = 10) =>
         indices.Count <= max

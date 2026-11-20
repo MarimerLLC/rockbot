@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -120,6 +121,12 @@ internal sealed class WorkerRunner(
         if (!string.IsNullOrEmpty(definition.Context))
             chatMessages.Add(new ChatMessage(ChatRole.System, $"Context: {definition.Context}"));
 
+        // #847: data the spawner already fetched (a wisp's output, a saved result). The worker
+        // filters it instead of fetching it again.
+        if (await BuildInputDataMessageAsync(definition.InputKeys, workingMemory, workerNamespace,
+                options.Value.MaxInlineInputChars, logger) is { } inputData)
+            chatMessages.Add(new ChatMessage(ChatRole.System, inputData));
+
         chatMessages.Add(new ChatMessage(ChatRole.User, definition.Description));
 
         // Working memory tools scoped to the worker's namespace.
@@ -194,7 +201,10 @@ internal sealed class WorkerRunner(
                 enableReasoningScaffolding: false,
                 maxIterationsOverride: maxIterations,
                 diagnostics: diagnostics,
-                cancellationToken: ct);
+                cancellationToken: ct,
+                // #847: the spawner's fetches (its own and its wisps') count for the worker too,
+                // so a worker re-running one is told the data is already in working memory.
+                fetchRegistry: RunFetchRegistryContext.Value);
             isSuccess = true;
             workerActivity?.SetStatus(ActivityStatusCode.Ok);
         }
@@ -260,6 +270,92 @@ internal sealed class WorkerRunner(
         return result;
     }
 
+    /// <summary>Chunk size for input data too large to inline (#847); matches wisp LLM-step input.</summary>
+    internal const int InputChunkMaxLength = 20_000;
+
+    private static readonly TimeSpan InputChunkTtl = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// The system message carrying a worker's <see cref="WorkerDefinition.InputKeys"/> data (#847),
+    /// or null when it has none. Each key's content is inlined while the running total stays within
+    /// <paramref name="maxInlineChars"/>; a key that doesn't fit is chunked into the worker's
+    /// namespace and listed by chunk key. A key that can't be read is named as missing, so the
+    /// worker reports it as blocked instead of silently fetching the data itself.
+    /// </summary>
+    internal static async Task<string?> BuildInputDataMessageAsync(
+        IReadOnlyList<string>? inputKeys,
+        IWorkingMemory workingMemory,
+        string workerNamespace,
+        int maxInlineChars,
+        ILogger logger)
+    {
+        if (inputKeys is not { Count: > 0 })
+            return null;
+
+        var keys = inputKeys
+            .Select(WorkerDefinition.ResolveInputKey)
+            .Where(k => k is not null)
+            .Select(k => k!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (keys.Count == 0)
+            return null;
+
+        var sb = new StringBuilder();
+        sb.AppendLine("Input data — already fetched by the spawning agent. It is complete and current for this task:");
+        sb.AppendLine("work from it. Do NOT call tools to fetch this same data again (no repeat searches, listings or");
+        sb.AppendLine("detail reads of what is below). Call a tool only for data that is not here.");
+
+        var budget = maxInlineChars;
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var key = keys[i];
+            sb.AppendLine();
+
+            string? content;
+            try
+            {
+                content = await workingMemory.GetAsync(key);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Worker input key '{Key}' could not be read", key);
+                content = null;
+            }
+
+            if (content is null)
+            {
+                sb.AppendLine($"### {key} — MISSING");
+                sb.AppendLine("This key could not be read (it may have expired). Report it as blocked; do not refetch it.");
+                continue;
+            }
+
+            if (maxInlineChars <= 0 || content.Length <= budget)
+            {
+                sb.AppendLine($"### {key}");
+                sb.AppendLine(content);
+                budget -= content.Length;
+                continue;
+            }
+
+            var chunks = ContentChunker.Chunk(content, InputChunkMaxLength);
+            var stored = await ChunkedContentStore.StoreAsync(
+                workingMemory, $"{workerNamespace}/input-{i}", chunks, InputChunkTtl, category: "worker-input");
+
+            sb.AppendLine($"### {key} — {content.Length:N0} chars, split into {chunks.Count} chunk(s)");
+            if (stored.ShortfallNote is { } shortfall)
+                sb.AppendLine(shortfall);
+            sb.AppendLine("Read the chunks you need with get_from_working_memory(key):");
+            for (var c = 0; c < stored.StoredKeys.Count; c++)
+            {
+                var label = string.IsNullOrWhiteSpace(chunks[c].Heading) ? $"Part {c}" : chunks[c].Heading;
+                sb.AppendLine($"- `{stored.StoredKeys[c]}` — {label}");
+            }
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
     private string BuildSystemPrompt(string taskId, string workerNamespace, string resultKey)
     {
         // Slim preamble — see design/worker-subagents.md. Substitute runtime values
@@ -271,6 +367,7 @@ internal sealed class WorkerRunner(
             $"Your working memory namespace: {workerNamespace}\n" +
             $"Your result key: {resultKey}\n\n" +
             "- Read the task description and any context the spawning agent provided. Treat that context as ground truth.\n" +
+            "- When the spawning agent supplied input data, work from it. Never call a tool to fetch that same data again.\n" +
             "- Use the available tools (MCP data calls, spawn_wisps for deterministic multi-step sequences, " +
             "working memory) to gather facts.\n" +
             "- Save your structured findings to the result key listed above using save_to_working_memory.\n" +

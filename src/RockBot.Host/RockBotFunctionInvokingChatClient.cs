@@ -432,6 +432,14 @@ public class RockBotFunctionInvokingChatClient : FunctionInvokingChatClient
 
         TierEscalationContext.Value?.ObserveToolResult(callContent.Name, isError: status != "ok");
 
+        // #847: a repeat of a fetch this run already made gets a note saying where that data is.
+        if (RunFetchRegistryContext.ObserveLoopCall(callContent.Name, callContent.Arguments, status == "ok") is { } duplicateNote)
+        {
+            _logger.LogInformation("Tool {Name} repeated a fetch this run already made; appending a note", callContent.Name);
+            result = (resultStr ?? string.Empty) + duplicateNote;
+            resultStr = (string?)result;
+        }
+
         // Track consecutive identical (tool, args, result) triples to detect stuck loops.
         if (callState.RepetitiveCallDetector.Track(callContent.Name, argsSummary ?? string.Empty, resultStr ?? string.Empty))
         {
