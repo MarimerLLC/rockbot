@@ -12,6 +12,7 @@ using RockBot.Agent.McpBridge.ArgGuards;
 using RockBot.Agent.McpBridge.Attachments;
 using RockBot.Agent.McpBridge.Handback;
 using RockBot.Agent.McpBridge.Tasks;
+using RockBot.Agent.McpBridge.Watches;
 using RockBot.Host;
 using RockBot.Messaging;
 using RockBot.Agent.McpBridge.Auth;
@@ -2056,6 +2057,12 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             CallCts = handback?.Cts ?? CancellationTokenSource.CreateLinkedTokenSource(ct),
             ElicitationScope = server.Elicitation
                 ?.BeginCall(request.ToolName, request.Arguments, request.SessionId, handback),
+            // A call that may change the server's resources, for telling a watch's echo (#853).
+            EchoCall = request.SessionId is { Length: > 0 } callerSession
+                       && toolDefinition.Tool?.ProtocolTool.Annotations?.ReadOnlyHint != true
+                ? _recentCalls.Start(callerSession, serverName, request.ToolName)
+                : null,
+            RecentCalls = _recentCalls,
         };
         if (handback is null)
             state.CallCts.CancelAfter(timeoutMs);
@@ -2137,8 +2144,17 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         /// <summary>Held only while parked: the invoke handler's own lease ends with the message.</summary>
         public ServerLease? Lease { get; set; }
 
+        /// <summary>The call as the session's recent calls know it (#853), so a watch can tell its echo.</summary>
+        public McpRecentCalls.Call? EchoCall { get; init; }
+
+        /// <summary>Where <see cref="EchoCall"/> ends.</summary>
+        public McpRecentCalls? RecentCalls { get; init; }
+
         public void Dispose()
         {
+            // A call that became a background task ends with the task (which holds it), not with this message.
+            if (Task?.Entry is null)
+                RecentCalls?.End(EchoCall);
             ReleaseTask?.Invoke();
             ElicitationScope?.Dispose();
             if (Handback is not null)
@@ -3270,6 +3286,20 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             if (req is null) return MessageResult.DeadLetter;
 
             await PublishResponseAsync(await UnwatchResourceAsync(req, ct), replyTo, envelope.CorrelationId, ct);
+        }
+        else if (envelope.MessageType == typeof(McpListWatchesRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpListWatchesRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            await PublishResponseAsync(await ListWatchesAsync(req, ct), replyTo, envelope.CorrelationId, ct);
+        }
+        else if (envelope.MessageType == typeof(McpSetWatchRuleRequest).FullName)
+        {
+            var req = envelope.GetPayload<McpSetWatchRuleRequest>();
+            if (req is null) return MessageResult.DeadLetter;
+
+            await PublishResponseAsync(await SetWatchRuleAsync(req, ct), replyTo, envelope.CorrelationId, ct);
         }
         else
         {

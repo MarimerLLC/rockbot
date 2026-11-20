@@ -119,19 +119,22 @@ public sealed class McpServersIndexedHandler(
     }
 
     /// <summary>
-    /// <c>mcp_watch_resource</c> and <c>mcp_unwatch_resource</c> are offered only while some
-    /// connected server lets the agent watch its resources, for the same reason.
+    /// <c>mcp_watch_resource</c>, <c>mcp_unwatch_resource</c>, <c>mcp_list_watches</c> and
+    /// <c>mcp_set_watch_rule</c> are offered only while some connected server lets the agent watch
+    /// its resources, for the same reason.
     /// </summary>
     private void SyncWatchTools()
     {
         var wanted = index.Servers.Any(s => s.Subscriptions);
-        (string Name, string Description)[] tools =
+        (string Name, string Description, string Schema)[] tools =
         [
-            (McpManagementExecutor.WatchResourceToolName, WatchResourceToolDescription),
-            (McpManagementExecutor.UnwatchResourceToolName, UnwatchResourceToolDescription),
+            (McpManagementExecutor.WatchResourceToolName, WatchResourceToolDescription, WatchResourceToolSchema),
+            (McpManagementExecutor.UnwatchResourceToolName, UnwatchResourceToolDescription, WatchToolSchema),
+            (McpManagementExecutor.ListWatchesToolName, ListWatchesToolDescription, EmptySchema),
+            (McpManagementExecutor.SetWatchRuleToolName, SetWatchRuleToolDescription, SetWatchRuleToolSchema),
         ];
 
-        foreach (var (name, description) in tools)
+        foreach (var (name, description, schema) in tools)
         {
             var registered = registry.GetExecutor(name) is not null;
             if (wanted && !registered)
@@ -140,7 +143,7 @@ public sealed class McpServersIndexedHandler(
                 {
                     Name = name,
                     Description = description,
-                    ParametersSchema = WatchToolSchema,
+                    ParametersSchema = schema,
                     Source = "mcp:management"
                 }, executor);
                 logger.LogInformation("Registered {Tool}: a connected MCP server lets the agent watch resources", name);
@@ -159,16 +162,40 @@ public sealed class McpServersIndexedHandler(
         "meeting poll's status, say). Take the URI from mcp_list_resources, any template filled in, or from a tool " +
         "result. Only some servers allow it. Don't wait to be asked: when you start something whose outcome comes " +
         "later and the server has a resource for its status, watch it in the same turn (right after organizing a " +
-        "scheduler poll, watch scheduler://events/{shortCode}/status) and tell the user you'll report back. When a " +
-        "change arrives, report it; ask before acting on it (finalizing, say). Stop the watch with " +
-        "mcp_unwatch_resource once you no longer need it; it also ends when the resource is gone.";
+        "scheduler poll, watch scheduler://events/{shortCode}/status) and tell the user you'll report back. If the " +
+        "user's message says what to do when it changes, put that in on_change, in their words; the instructions then " +
+        "arrive with every change. Calling this again for a resource already watched replaces its on_change (empty " +
+        "clears it) and keeps the watch for its full lifetime again. Unless the user gave instructions for the watch " +
+        "or a standing watch rule covers it (mcp_set_watch_rule), when a change arrives, report it; ask before acting " +
+        "on it (finalizing, say). Stop the watch with mcp_unwatch_resource once you no longer need it; it also ends " +
+        "when the resource is gone.";
 
     internal const string UnwatchResourceToolDescription =
         "Stop watching an MCP server resource this conversation watches (see mcp_watch_resource), for example once " +
         "what you were waiting for has happened. No more updates about it arrive afterwards.";
 
+    internal const string ListWatchesToolDescription =
+        "List the MCP resources this conversation watches (with each watch's instructions and when it ends) and the " +
+        "user's standing watch rules. Use it when the user asks what is being watched or what happens on a change.";
+
+    internal const string SetWatchRuleToolDescription =
+        "Set the user's standing instructions for a whole class of watched resources, so they apply to every matching " +
+        "watch without restating them each time (e.g. every scheduler poll: server_name 'scheduler', uri_pattern " +
+        "'scheduler://events/*/status'). In uri_pattern, * stands for any run of characters other than '/'. Only when " +
+        "the user asks for it in their own message; put their instructions in on_change, in their words. Setting the " +
+        "same server and pattern again replaces the rule; an empty on_change removes it. A watch's own on_change takes " +
+        "precedence over a rule where they differ.";
+
     internal const string WatchToolSchema =
         """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"},"uri":{"type":"string","description":"The resource URI, any template expanded (e.g. 'scheduler://events/AB12CD/status')"}},"required":["server_name","uri"]}""";
+
+    internal const string WatchResourceToolSchema =
+        """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"},"uri":{"type":"string","description":"The resource URI, any template expanded (e.g. 'scheduler://events/AB12CD/status')"},"on_change":{"type":"string","description":"Optional: what the user said to do when this resource changes, in their words. Only from the user's own message. Empty clears it on a watch that has it; leave it out to keep what is there."}},"required":["server_name","uri"]}""";
+
+    internal const string SetWatchRuleToolSchema =
+        """{"type":"object","properties":{"server_name":{"type":"string","description":"Name of the MCP server"},"uri_pattern":{"type":"string","description":"The URIs the rule covers; * stands for any run of characters other than '/' (e.g. 'scheduler://events/*/status')"},"on_change":{"type":"string","description":"What the user said to do when a matching watched resource changes, in their words. Empty removes the rule."}},"required":["server_name","uri_pattern","on_change"]}""";
+
+    internal const string EmptySchema = """{"type":"object","properties":{}}""";
 
     internal const string CancelTaskToolDescription =
         "Stop a background task an MCP tool started. Some long-running MCP tools return \"started as a background " +

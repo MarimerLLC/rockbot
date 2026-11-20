@@ -320,6 +320,60 @@ public sealed record McpWatchResourceRequest
 
     /// <summary>With a user-turn <see cref="RunOrigin"/>: what the originating request asked for.</summary>
     public string? UserAskedFor { get; init; }
+
+    /// <summary>
+    /// The user's instructions for what to do when the resource changes (#853): null leaves a
+    /// watch's instructions as they are, empty clears them. Only honoured with
+    /// <see cref="InstructionsAllowed"/>.
+    /// </summary>
+    public string? OnChange { get; init; }
+
+    /// <summary>
+    /// The run asking was started by the user's own message, so it may set <see cref="OnChange"/>.
+    /// The agent side decides; the bridge refuses instructions without it.
+    /// </summary>
+    public bool InstructionsAllowed { get; init; }
+}
+
+/// <summary>
+/// <c>mcp_list_watches</c>: the resources this session watches and the agent's standing watch
+/// rules. Published to <c>mcp.manage</c>; answered with <see cref="McpWatchResourceResponse"/>.
+/// </summary>
+public sealed record McpListWatchesRequest
+{
+    public string? SessionId { get; init; }
+}
+
+/// <summary>
+/// <c>mcp_set_watch_rule</c>: set, replace or (with empty <see cref="OnChange"/>) remove a standing
+/// rule for every watched resource on <see cref="ServerName"/> whose URI matches
+/// <see cref="UriPattern"/> (#853). Published to <c>mcp.manage</c>; answered with
+/// <see cref="McpWatchResourceResponse"/> (its <c>Uri</c> is the pattern, its <c>WatchId</c> the rule id).
+/// </summary>
+public sealed record McpSetWatchRuleRequest
+{
+    public required string ServerName { get; init; }
+
+    /// <summary>A URI, where <c>*</c> stands for any run of characters other than <c>/</c>.</summary>
+    public required string UriPattern { get; init; }
+
+    /// <summary>The user's instructions; empty removes the rule.</summary>
+    public string OnChange { get; init; } = "";
+
+    public string? SessionId { get; init; }
+
+    /// <summary>The run asking was started by the user's own message (see <see cref="McpWatchResourceRequest.InstructionsAllowed"/>).</summary>
+    public bool InstructionsAllowed { get; init; }
+}
+
+/// <summary>A standing watch rule as an update carries it (#853).</summary>
+public sealed record McpWatchRuleText
+{
+    public required string RuleId { get; init; }
+
+    public required string UriPattern { get; init; }
+
+    public required string Instructions { get; init; }
 }
 
 /// <summary>
@@ -404,6 +458,12 @@ public sealed record McpTaskResult
     /// </summary>
     public const string KindWatchEnded = "watch-ended";
 
+    /// <summary>
+    /// A watch is about to reach its maximum lifetime (#853): <see cref="Content"/> says when and
+    /// how to keep it. <see cref="TaskId"/> is the watch id.
+    /// </summary>
+    public const string KindWatchExpiring = "watch-expiring";
+
     /// <summary>The run namespace that started the task: <c>session/{id}</c> or <c>subagent/{id}</c>.</summary>
     public required string SessionId { get; init; }
 
@@ -469,4 +529,16 @@ public sealed record McpTaskResult
     /// handled once although delivery is at least once.
     /// </summary>
     public string? ContentHash { get; init; }
+
+    /// <summary>For a watch's delivery: the user's instructions for this watch (#853), if any.</summary>
+    public string? OnChange { get; init; }
+
+    /// <summary>For a watch's delivery: the user's standing watch rules that match it (#853).</summary>
+    public IReadOnlyList<McpWatchRuleText>? WatchRules { get; init; }
+
+    /// <summary>
+    /// For <see cref="KindResourceUpdated"/>: the session's own tool call on the same server that
+    /// most likely caused this change (#853). Such an update is recorded without a reply.
+    /// </summary>
+    public string? CausedByTool { get; init; }
 }

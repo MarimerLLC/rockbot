@@ -99,6 +99,17 @@ To try it, add `"subscriptions": true` to the fixture's `mcp.json` entry, then i
 - restart the agent pod, change the text, and check the change still arrives after it reconnects;
 - delete it with `delete_watch_resource` and check the conversation is told the watch ended.
 
+Instructions for watches (#853):
+
+- say "watch fixture://watch/poll, and when it changes, tell me its text in capitals". Then change
+  it from another conversation, and check that the turn quotes your instruction and the reply
+  follows it;
+- say "for every fixture://watch/* resource, summarize the change in one line" (a standing rule,
+  `mcp_set_watch_rule`), watch another name, change it, and check the rule is quoted;
+- ask the agent to change the watched text itself with `set_watch_resource`: the change is
+  recorded in the conversation without a second reply;
+- ask "what are you watching?" (`mcp_list_watches`).
+
 ## Cleaning up
 
 ```bash

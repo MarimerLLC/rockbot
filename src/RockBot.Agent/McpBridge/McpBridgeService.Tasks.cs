@@ -171,6 +171,9 @@ public sealed partial class McpBridgeService
         // it running on the server with nobody polling it.
         await _taskLedger.AddAsync(entry, CancellationToken.None);
 
+        // The call that started it ends with the task (#853). Handed over before the poll loop
+        // starts, so a task that ends at once still ends the call.
+        task.EchoCall = state.EchoCall;
         LaunchTask(task, entry, request.Arguments, resumed: false);
         McpTaskDiagnostics.Record(server.Name, "started");
         _logger.LogInformation("← MCP {Server}/{Tool} started as background task {TaskId} (server task {ServerTaskId}) for {Session}",
@@ -504,6 +507,7 @@ public sealed partial class McpBridgeService
         entry.Reason = reason;
         entry.CancelledByAgent |= task.CancelledByAgent;
         entry.EndedAt ??= _time.GetUtcNow();
+        _recentCalls.End(task.EchoCall);
 
         try
         {

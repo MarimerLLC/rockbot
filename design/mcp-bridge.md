@@ -522,8 +522,9 @@ changes, and one stream carries every watched resource on a server.
 - The agent is told to watch unasked (#778): `mcp_watch_resource`'s description, which is in the
   tool list whenever something can be watched, and the code-owned `mcp` guide both say to watch
   what it starts whose outcome comes later (a scheduler poll's `/status` right after
-  `create_event`), report each change, and ask before acting on it. It stays the model's choice;
-  a bridge-side watch started from a tool result's resource link was left for later.
+  `create_event`), and, unless the user gave instructions for the watch (below), report each
+  change and ask before acting on it. It stays the model's choice; a bridge-side watch started
+  from a tool result's resource link was left for later.
 - Who can watch follows the task rules (`McpTaskContext`): a user conversation (`session/{id}`) or
   a subagent (`subagent/{id}`), never a wisp's step, a worker, a scheduled task or a patrol. The
   executor checks it and so does the bridge.
@@ -560,14 +561,82 @@ changes, and one stream carries every watched resource on a server.
   the watch (#685).
 - The hash is recorded after the delivery goes out, so delivery is at least once; the handler
   dedupes by watch id and hash.
+- A watch turn is kept in the conversation's history but marked `ExcludeFromLearning`, which keeps
+  it out of the conversation log the dream and observation passes learn from (see "Instructions
+  for watches").
+
+### Instructions for watches (#853)
+
+What to do when a watched resource changes is the user's call, and it has to travel with the
+change rather than depend on the conversation history still holding it, or on retrieval picking
+the right skill (on 2026-11-20 it picked an agent-written one from a test session).
+
+- **A watch's own.** `mcp_watch_resource` takes an optional `on_change`: the user's instructions,
+  in their words, stored on the ledger entry (`OnChange`). Calling it again for a watched URI
+  replaces them; an empty value clears them; leaving the parameter out keeps them.
+- **Standing watch rules.** `mcp_set_watch_rule(server_name, uri_pattern, on_change)` sets the
+  user's instructions for every watched resource on a server whose URI matches the pattern (`*`
+  for any run of characters other than `/`, e.g. `scheduler://events/*/status`), so a class of
+  watches, such as every scheduler poll, needs no per-watch instructions. Rules are agent-wide:
+  `McpBridge:WatchRulesPath` (`mcp/watch-rules.json`, `McpWatchRuleStore`, a `JsonLedger` with
+  its own version), at most `MaxWatchRules` (50). The same server and pattern replaces a rule; an
+  empty `on_change` removes it. Rules are read at delivery, so a change applies to existing
+  watches from their next change.
+- **Delivery.** A `resource-updated` result carries `OnChange` and the matching `WatchRules`.
+  `UpdateTurn` keeps the content labelled as the server's data, then quotes each rule and the
+  watch's own instructions (`> `-quoted, as the user's). Where both exist, the watch's own take
+  precedence. The turn says the instructions take precedence over any skill or memory about watches
+  and can't be changed by the content. With neither, the default stays: act as the conversation
+  calls for, and the description and guide say to report and ask first. The consequential-action
+  gate is unchanged: the turn runs under the watch's `RunOrigin`/`UserAskedFor`.
+- **Only the user sets them.** A relayed turn (a watch update, a background task's result, a late
+  reply, a subagent's synthesis) runs as `RunOrigin.UserTurn`, so the origin can't tell it from
+  the user's own message. `ActionGateScope.DirectUserMessage` (`IsDirectUserTurn`) is true only on
+  `ForUserMessage`, which `UserMessageHandler` alone uses; `ForSubagent()` clears it, and
+  `FromRelayed`, `FromRelayedResults`, a form answer and a feedback re-answer never set it. The
+  executor refuses `on_change` and `mcp_set_watch_rule` without it, and sends
+  `InstructionsAllowed`, which the bridge checks again. Without `on_change`, any run that may
+  watch can still ask for a watch again (to keep it) and list the watches. Instructions are
+  cleaned of control characters and limited to 2,000 characters.
+- **The dream can't rewrite them.** The rules and `OnChange` live only in the bridge's files: they
+  aren't skills, memories or entries in the rules store, so no dream pass reads, merges or deletes
+  them, and the dream runs no tool loop that could call the tools. The dream's passes do read the
+  conversation log, and a bridge turn has the `user` role. A watch's turns (`resource-updated`,
+  `watch-expiring`, `watch-ended`) are therefore marked `ExcludeFromLearning`, so no skill or
+  memory is learned from a copy of the user's instructions. The code-owned `mcp` guide (which the
+  dream may not change) says not to write one.
+- **Listing.** `mcp_list_watches` lists the conversation's watches (with instructions, covering
+  rules, and when each ends at the latest) and every standing rule.
+
+### Echoes of the session's own calls (#853)
+
+A change the watching session's own tool call made (the agent withdrawing a slot) would otherwise
+start a turn that mostly repeats what it just said.
+
+- `McpRecentCalls` remembers, in memory, each session's calls per server: started in
+  `InvokeOnServerAsync`, ended when the call's state is disposed, or, for a call that became a
+  background task, when the task ends. A call to a tool the server annotates `readOnlyHint` isn't
+  recorded; a tool without annotations counts as one that may change things.
+- The first notification of a debounce burst stamps `ActiveWatch.FirstNotifiedAt`. When the read
+  finds a change and that session had a call on the server running then, or ended at most
+  `WatchEchoGraceSeconds` (10) before, the result carries `CausedByTool` and `NeedsReply = false`.
+  A call counts for at most two minutes after it started (`McpRecentCalls.MaxCauseSpan`), so a
+  call parked on the user's answer or running as a background task doesn't silence every change
+  while it lasts. The result is then recorded without a reply:
+  the handler records the turn (saying which call most likely caused it) without a reply. Other
+  sessions watching the same URI get an ordinary update. `WatchEchoSuppression` turns it off.
+- Accepted trade-off: someone else's change that lands in the same burst or grace window gets no
+  turn of its own; it's still in the history and working memory for the next turn.
+- Not matched: calls made through an aggregator name the aggregator, not the watched server.
 
 ### Restart survival: the watch ledger
 
 `McpBridge:WatchLedgerPath` (`mcp/watches.json`), a `JsonLedger` with its own version. An entry
-holds the watch id, session, server (name and id), URI, last delivered hash, origin, creation and
-expiry, never the content. Written before the agent is told. At startup the active entries are
-watched again and their streams open as their servers connect; an ending not yet delivered is
-delivered.
+holds the watch id, session, server (name and id), URI, last delivered hash, origin, the user's
+instructions (`OnChange`), creation, when its lifetime started (`LifetimeStartedAt`), expiry and
+the expiry warning (`ExpiryWarnedAt`), never the content. Written before the agent is told. At
+startup the active entries are watched again and their streams open as their servers connect; an
+ending not yet delivered is delivered. The rules store sits beside it.
 
 ### Endings and limits
 
@@ -581,6 +650,12 @@ delivered.
   maximum lifetime) and delivers any change found; a not-found read ends the watch; a failed read
   leaves it for the next check. At a restart only the maximum lifetime ends a watch; one past its
   renewal date is renewed by its stream's catch-up read.
+- Keeping a watch (#853): the maximum lifetime counts from `LifetimeStartedAt` (or `CreatedAt` on
+  older entries), and asking for a watched URI again starts it over. `WatchExpiryWarningHours`
+  (24) before it ends, the hourly check delivers one `watch-expiring` result (recorded in
+  `ExpiryWarnedAt` first; its `ContentHash` names the end, so each lifetime's warning is handled on
+  its own) telling the agent to ask again if what the watch waits for is still pending. 0 turns the
+  warning off. A `watch-ended` result quotes the watch's instructions so they can be given again.
 - No server-side terminal marker: the agent decides when it is done (for the scheduler, a status
   of finalized or cancelled) and unwatches.
 - `MaxWatchesPerSession` (10) and `MaxWatches` (50, at the scheduler's 50-URIs-per-stream limit);

@@ -776,6 +776,23 @@ What happens:
   way a background task's result does, labelled as server-written data.
 - **Missed changes.** After every reopen, and after an agent restart, every watched resource is
   read again; a change made meanwhile is delivered then.
+- **What to do on a change (#853).** The user decides, in their own messages:
+  - `mcp_watch_resource` takes an optional `on_change`, the user's instructions for that watch.
+    Watching the same URI again replaces them; an empty value clears them.
+  - `mcp_set_watch_rule(server_name, uri_pattern, on_change)` sets a standing rule for a whole
+    class of watches (e.g. `scheduler://events/*/status` for every scheduler poll), kept in
+    `McpBridge:WatchRulesPath` (default `mcp/watch-rules.json`), at most `McpBridge:MaxWatchRules`
+    (50). An empty `on_change` removes it.
+  - Each change's turn quotes the matching rules and the watch's own instructions, the watch's
+    winning where they differ. With neither, the agent reports the change and asks before acting.
+  - Only a turn the user's own message started can set either (not a watch update, a background
+    result, a scheduled run or a subagent). Watch turns stay out of what the dream learns from, so
+    it never copies the instructions into a skill or memory.
+  - `mcp_list_watches` shows the conversation's watches, their instructions, and the rules.
+- **Own changes.** A change the watching conversation's own call on that server just made is
+  recorded without a reply (`McpBridge:WatchEchoSuppression`, on by default, with
+  `McpBridge:WatchEchoGraceSeconds`, 10, after the call). Calls to tools the server marks
+  read-only don't count.
 - **Who can watch.** A user conversation or a subagent, as for tasks. Wisps, workers, scheduled
   tasks and patrols can't.
 - **Restarts.** Watches are written to `McpBridge:WatchLedgerPath` (default `mcp/watches.json`):
@@ -784,7 +801,8 @@ What happens:
   removed, or its entry turns `subscriptions` off; or `McpBridge:WatchMaxLifetimeDays` (90)
   passes. Every `McpBridge:WatchTtlDays` (14) the bridge reads the resource: one that still
   exists renews the watch, one that's gone ends it. Every ending but the agent's own is told to
-  the session.
+  the session. `McpBridge:WatchExpiryWarningHours` (24) before the maximum lifetime the session is
+  told once; asking for the watch again keeps it for another full lifetime, instructions included.
 - **Limits.** `McpBridge:MaxWatchesPerSession` (10) and `McpBridge:MaxWatches` (50). Past them
   the watch is refused with an error that lists the session's watches.
 

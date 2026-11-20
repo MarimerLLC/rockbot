@@ -169,6 +169,24 @@ public class McpOrientationTests
         StringAssert.Contains(description, "ask before acting on it");
     }
 
+    [TestMethod]
+    public void TheWatchTools_OfferTheUsersInstructions_AndTheGuideExplainsThem()
+    {
+        // #853: what to do on a change travels with the watch, or with a standing rule.
+        StringAssert.Contains(McpServersIndexedHandler.WatchResourceToolDescription, "on_change");
+        StringAssert.Contains(McpServersIndexedHandler.WatchResourceToolDescription, "standing watch rule");
+        StringAssert.Contains(McpServersIndexedHandler.WatchResourceToolSchema, "\"on_change\"");
+        Assert.IsFalse(McpServersIndexedHandler.WatchToolSchema.Contains("on_change"), "unwatch takes no instructions");
+        StringAssert.Contains(McpServersIndexedHandler.SetWatchRuleToolSchema, "\"uri_pattern\"");
+        StringAssert.Contains(McpServersIndexedHandler.SetWatchRuleToolDescription, "own message");
+
+        var guide = new McpToolSkillProvider().GetDocument();
+        StringAssert.Contains(guide, McpManagementExecutor.ListWatchesToolName);
+        StringAssert.Contains(guide, McpManagementExecutor.SetWatchRuleToolName);
+        StringAssert.Contains(guide, "take precedence over any");
+        StringAssert.Contains(guide, "don't write a skill or memory that restates them");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /// <summary>Every MCP meta-tool's model-facing description, as the registry carries it.</summary>

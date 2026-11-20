@@ -171,7 +171,7 @@ internal sealed class McpTaskResultHandler(
         if (!message.NeedsReply)
         {
             await conversationMemory.AddTurnAsync(conversationId,
-                new ConversationTurn("user", turn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName }, ct);
+                new ConversationTurn("user", turn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName, ExcludeFromLearning = IsWatchKind(message) }, ct);
             logger.LogInformation("Recorded background task {TaskId}'s {Kind} in {Session} without a reply",
                 message.TaskId, message.Kind, conversationId);
             return;
@@ -180,10 +180,19 @@ internal sealed class McpTaskResultHandler(
         await RespondAsync(message, conversationId, turn, ct);
     }
 
+    /// <summary>
+    /// A delivery about a resource watch. Its turn stays in history but out of what the dream
+    /// learns from (#853): it carries a server's data and the user's watch instructions, which live
+    /// in the bridge's watch ledger and rules and must not be copied into skills or memories.
+    /// </summary>
+    internal static bool IsWatchKind(McpTaskResult message) =>
+        message.Kind is McpTaskResult.KindResourceUpdated or McpTaskResult.KindWatchEnded or McpTaskResult.KindWatchExpiring;
+
     /// <summary>The turn that tells the agent what arrived. The content is the tool's, not an instruction.</summary>
     internal static string SyntheticTurn(McpTaskResult message, string? key)
     {
-        if (message.Kind is McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindWatchEnded)
+        if (message.Kind is McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion
+            or McpTaskResult.KindWatchEnded or McpTaskResult.KindWatchExpiring)
             return message.Content;
         if (message.Kind == McpTaskResult.KindResourceUpdated)
             return McpWatchText.UpdateTurn(message, key, InlineResultMaxChars);
@@ -233,7 +242,7 @@ internal sealed class McpTaskResultHandler(
             await using (await workSerializer.AcquireForUserAsync("MCP task result", ct))
             {
                 await conversationMemory.AddTurnAsync(conversationId,
-                    new ConversationTurn("user", turn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName }, ct);
+                    new ConversationTurn("user", turn, DateTimeOffset.UtcNow) { AgentName = BridgeTurnAgentName, ExcludeFromLearning = IsWatchKind(message) }, ct);
 
                 var chatMessages = await agentContextBuilder.BuildAsync(
                     conversationId, turn, ct, clientCapabilities: clientCapabilityStore.Get(conversationId));
@@ -277,6 +286,7 @@ internal sealed class McpTaskResultHandler(
                                McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion => "is waiting for an answer",
                                McpTaskResult.KindResourceUpdated => "changed",
                                McpTaskResult.KindWatchEnded => "is no longer watched",
+                               McpTaskResult.KindWatchExpiring => "will soon stop being watched",
                                _ => "has finished",
                            }}, " +
                            $"but I couldn't respond to it: {ex.Message}";
@@ -296,7 +306,9 @@ internal sealed class McpTaskResultHandler(
             MessageId = ConversationTurn.NewId(),
         };
         await conversationMemory.AddTurnAsync(conversationId,
-            new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow).Matching(reply), ct);
+            // A reply about a watch tends to restate the user's instructions: kept out of learning too (#853).
+            new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow).Matching(reply)
+                with { ExcludeFromLearning = IsWatchKind(message) }, ct);
 
         await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}",
             reply.ToEnvelope<AgentReply>(source: agent.Name), ct);
@@ -307,7 +319,8 @@ internal sealed class McpTaskResultHandler(
         // #418: keep a finished task's result after conversation history expires. A question is
         // waiting on the user, not a result.
         if (resultArchive is not null && responded
-            && message.Kind is not (McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindWatchEnded))
+            && message.Kind is not (McpTaskResult.KindQuestion or McpTaskResult.KindEscalatedQuestion
+                or McpTaskResult.KindWatchEnded or McpTaskResult.KindWatchExpiring))
             await resultArchive.ArchiveAsync(
                 SavedResponseSources.BackgroundTask,
                 $"{message.ServerName}/{message.ToolName} result",
@@ -319,7 +332,7 @@ internal sealed class McpTaskResultHandler(
     {
         McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindEscalatedResult =>
             $"The {message.ServerName}/{message.ToolName} call subagent {message.TaskId} passed to you",
-        McpTaskResult.KindResourceUpdated or McpTaskResult.KindWatchEnded =>
+        McpTaskResult.KindResourceUpdated or McpTaskResult.KindWatchEnded or McpTaskResult.KindWatchExpiring =>
             $"The watched resource {message.ResourceUri ?? message.ToolName} on {message.ServerName}",
         _ => $"The background task {message.TaskId} ({message.ServerName}/{message.ToolName})",
     };
@@ -346,6 +359,14 @@ internal sealed class McpTaskResultHandler(
             return;
         }
 
+        // Nothing to say (a change the agent's own call made, #853): no turn in the primary either.
+        if (!message.NeedsReply)
+        {
+            logger.LogInformation("Background task {TaskId}'s {Kind} for exited subagent {Session} needs no reply; kept in working memory only",
+                message.TaskId, message.Kind, origin);
+            return;
+        }
+
         var primary = subagentSessions.ResolvePrimarySession(origin);
         if (primary is null || !HandbackSessions.IsUserSession(primary))
         {
@@ -357,7 +378,7 @@ internal sealed class McpTaskResultHandler(
         var subagentTaskId = origin.StartsWith("subagent/", StringComparison.Ordinal) ? origin["subagent/".Length..] : origin;
         var kind = message.Kind is McpTaskResult.KindCompleted or McpTaskResult.KindResourceUpdated && !message.IsError
             ? NotificationKind.Result
-            : NotificationKind.Error;
+            : message.Kind == McpTaskResult.KindWatchExpiring ? NotificationKind.Status : NotificationKind.Error;
         var wmKey = $"{primary}/notifications/mcp/{message.TaskId}/{kind.ToString().ToLowerInvariant()}";
         await workingMemory.SetAsync(wmKey, message.Content, ttl: ResultTtl,
             category: "mcp-task-late-notification", tags: [message.ServerName, message.TaskId]);

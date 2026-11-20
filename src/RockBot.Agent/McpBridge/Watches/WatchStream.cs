@@ -24,6 +24,13 @@ internal sealed class ActiveWatch(McpWatchEntry entry, bool confirmed)
 
     /// <summary>Serializes the watch's reads, so two never deliver the same change twice.</summary>
     public SemaphoreSlim ReadGate { get; } = new(1, 1);
+
+    /// <summary>
+    /// When the server's first change notification of the pending read arrived (#853): what an
+    /// echo of the session's own tool call is judged by. Null for a read no notification asked
+    /// for (a catch-up, a renewal).
+    /// </summary>
+    public DateTimeOffset? FirstNotifiedAt;
 }
 
 /// <summary>What one opening of a server's listen stream asked for and was granted.</summary>

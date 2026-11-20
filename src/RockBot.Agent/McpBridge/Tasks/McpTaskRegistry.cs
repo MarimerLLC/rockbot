@@ -160,6 +160,9 @@ internal sealed class RunningMcpTask(string taskId, string sessionId)
     /// <summary>The server was already asked to cancel it (when its server was removed or reconfigured).</summary>
     public bool CancelledOnServer { get; set; }
 
+    /// <summary>The call that started it, as the session's recent calls know it (#853); it ends with the task.</summary>
+    public RockBot.Agent.McpBridge.Watches.McpRecentCalls.Call? EchoCall { get; set; }
+
     /// <summary>Why the task was cancelled by the bridge or the agent, or null.</summary>
     public string? CancelReason => Volatile.Read(ref _cancelReason);
 

@@ -108,6 +108,29 @@ public class ConsequentialActionGateTests
     }
 
     [TestMethod]
+    public void OnlyARunTheUsersOwnMessageStarted_IsADirectUserTurn()
+    {
+        // #853: what only the user may set (a watch's instructions) asks for this, and a relayed
+        // turn carries the user-turn origin too.
+        Assert.IsTrue(ActionGateScope.ForUserMessage.IsDirectUserTurn);
+        Assert.IsTrue(AgentLoopRunner.ResolveActionGateScope(ActionGateScope.ForUserMessage, null, UserRequestKind.Instruction).IsDirectUserTurn,
+            "classifying the message keeps it");
+
+        Assert.IsFalse(AgentLoopRunner.ResolveActionGateScope(null, ActionGateScope.ForUserMessage, UserRequestKind.Instruction).IsDirectUserTurn,
+            "a nested run (a wisp's step, a worker) inherits the gate, not the user's voice");
+        Assert.AreEqual(RunOrigin.UserTurn,
+            AgentLoopRunner.ResolveActionGateScope(null, ActionGateScope.ForUserMessage, UserRequestKind.Instruction).Origin);
+        Assert.IsFalse(ActionGateScope.ForUserTurn.IsDirectUserTurn, "a form answer or a re-answer isn't the user's own message");
+        Assert.IsFalse(ActionGateScope.ForUserMessage.ForSubagent().IsDirectUserTurn, "a subagent's run isn't");
+        Assert.IsFalse(ActionGateScope.FromRelayed("user-turn", "instruction")!.IsDirectUserTurn, "a relayed watch update or result isn't");
+        Assert.IsFalse(ActionGateScope.FromRelayedResults([Result("user-turn", "instruction")])!.IsDirectUserTurn);
+        Assert.IsFalse(ActionGateScope.ForScheduledTask.IsDirectUserTurn);
+        Assert.IsFalse(ActionGateScope.ForA2AInbound.IsDirectUserTurn);
+        Assert.IsFalse(ActionGateScope.Unknown.IsDirectUserTurn);
+        Assert.IsFalse(new ActionGateScope(RunOrigin.Background).IsDirectUserTurn);
+    }
+
+    [TestMethod]
     public void FromRelayedResults_FoldsTheSubagentScopeBackIntoTheUserTurn()
     {
         Assert.IsNull(ActionGateScope.FromRelayedResults([Result(null, null)]), "older results keep old behaviour");

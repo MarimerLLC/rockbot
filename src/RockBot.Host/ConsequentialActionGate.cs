@@ -41,6 +41,12 @@ public sealed record ActionGateScope(RunOrigin Origin, UserRequestKind? UserAske
     /// <summary>A user chat turn; <see cref="AgentLoopRunner.RunAsync"/> classifies its latest user message.</summary>
     public static ActionGateScope ForUserTurn { get; } = new(RunOrigin.UserTurn);
 
+    /// <summary>
+    /// A turn run for a message the user sent themselves (<see cref="DirectUserMessage"/>), as
+    /// opposed to a turn that relays a result, answers a form, or re-answers on feedback.
+    /// </summary>
+    public static ActionGateScope ForUserMessage { get; } = new(RunOrigin.UserTurn) { DirectUserMessage = true };
+
     /// <summary>A scheduled task or patrol run.</summary>
     public static ActionGateScope ForScheduledTask { get; } = new(RunOrigin.Scheduled);
 
@@ -57,6 +63,17 @@ public sealed record ActionGateScope(RunOrigin Origin, UserRequestKind? UserAske
     /// </summary>
     public ActionGateRequest? Request { get; init; }
 
+    /// <summary>
+    /// True only for a run started by a message the user sent themselves (#853). A relayed turn
+    /// (a watch update, a background task's result, a late reply) carries <see cref="RunOrigin.UserTurn"/>
+    /// too, so the origin alone can't tell them apart. What only the user may set, such as a
+    /// watch's standing instructions, asks for <see cref="IsDirectUserTurn"/>.
+    /// </summary>
+    public bool DirectUserMessage { get; init; }
+
+    /// <summary>A user turn started by the user's own message (<see cref="DirectUserMessage"/>).</summary>
+    public bool IsDirectUserTurn => Origin == RunOrigin.UserTurn && DirectUserMessage;
+
     /// <summary>True when an external change needs the originating user message to have asked for it.</summary>
     public bool RequiresUserInstruction => Origin is RunOrigin.UserTurn or RunOrigin.SubagentOfUserTurn;
 
@@ -65,7 +82,7 @@ public sealed record ActionGateScope(RunOrigin Origin, UserRequestKind? UserAske
 
     /// <summary>The scope a subagent spawned from this run runs under.</summary>
     public ActionGateScope ForSubagent() =>
-        Origin == RunOrigin.UserTurn ? this with { Origin = RunOrigin.SubagentOfUserTurn } : this;
+        Origin == RunOrigin.UserTurn ? this with { Origin = RunOrigin.SubagentOfUserTurn, DirectUserMessage = false } : this;
 
     /// <summary>The <c>origin=</c> value logged and carried on <see cref="SubagentResultMessage.RunOrigin"/>.</summary>
     public static string LogName(RunOrigin origin) => origin switch

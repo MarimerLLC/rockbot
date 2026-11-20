@@ -22,7 +22,7 @@ internal static class McpTaskText
         McpTaskResult.KindEscalatedResult => $"{message.SessionId}/{HandbackText.EscalatedKeyPrefix}{message.QuestionId}/result",
         McpTaskResult.KindResourceUpdated =>
             $"{message.SessionId}/mcp-watch/{message.ServerName}/{message.TaskId}/{(message.ContentHash is { Length: >= 12 } h ? h[..12] : "latest")}",
-        McpTaskResult.KindWatchEnded => null,
+        McpTaskResult.KindWatchEnded or McpTaskResult.KindWatchExpiring => null,
         _ => $"{message.SessionId}/mcp-task/{message.ServerName}/{message.TaskId}/result",
     };
 
@@ -30,7 +30,8 @@ internal static class McpTaskText
     public static string WorkingMemoryCategory(McpTaskResult message) => message.Kind switch
     {
         McpTaskResult.KindEscalatedQuestion or McpTaskResult.KindEscalatedResult => "mcp-escalation",
-        McpTaskResult.KindResourceUpdated or McpTaskResult.KindWatchEnded => Watches.McpWatchText.WorkingMemoryCategory,
+        McpTaskResult.KindResourceUpdated or McpTaskResult.KindWatchEnded or McpTaskResult.KindWatchExpiring =>
+            Watches.McpWatchText.WorkingMemoryCategory,
         _ => "mcp-task-result",
     };
 
