@@ -9,12 +9,14 @@ public class SubagentResultGateTests
 {
     private static SubagentResultGate CreateGate(
         int interactiveCeilingSec = 60,
-        int backgroundCeilingSec = 60)
+        int backgroundCeilingSec = 60,
+        int arrivalGraceSec = 60)
     {
         var opts = Options.Create(new SubagentOptions
         {
             InteractiveConsolidationTimeoutSeconds = interactiveCeilingSec,
-            BackgroundConsolidationTimeoutSeconds = backgroundCeilingSec
+            BackgroundConsolidationTimeoutSeconds = backgroundCeilingSec,
+            ResultArrivalGraceSeconds = arrivalGraceSec
         });
         return new SubagentResultGate(opts, NullLogger<SubagentResultGate>.Instance);
     }
@@ -293,6 +295,88 @@ public class SubagentResultGateTests
             .SequenceEqual(new[] { "task-1", "task-2", "task-3" }));
     }
 
+    // ── #858: a sibling that finished but whose result hasn't arrived is still pending ─
+
+    [TestMethod]
+    public async Task AccumulateAsync_SiblingFinishedButResultNotYetArrived_WaitsForIt()
+    {
+        // task-2 has left the active set (its run published its result and returned), but the
+        // result is still crossing the broker. task-1 must not fire alone.
+        var gate = CreateGate(interactiveCeilingSec: 30);
+        var manager = new FakeSubagentManager([], [MakeFinished("task-2")]);
+
+        var task1 = Task.Run(() => gate.AccumulateAsync(MakeResult("task-1"), manager, CancellationToken.None));
+
+        await Task.Delay(300);
+        Assert.IsFalse(task1.IsCompleted, "task-1 must wait for the finished sibling's result.");
+
+        var batch2 = await gate.AccumulateAsync(MakeResult("task-2"), manager, CancellationToken.None);
+        var batch1 = await task1;
+
+        var winners = new[] { batch1, batch2 }.Where(b => b is not null).ToList();
+        Assert.AreEqual(1, winners.Count, "Exactly one handler should be the synthesis winner.");
+        Assert.AreEqual(2, winners[0]!.Count, "Winner's batch must contain both results.");
+    }
+
+    [TestMethod]
+    public async Task AccumulateAsync_FinishedSiblingResultNeverArrives_FiresAfterArrivalGrace()
+    {
+        var gate = CreateGate(interactiveCeilingSec: 30, arrivalGraceSec: 1);
+        var manager = new FakeSubagentManager([], [MakeFinished("task-2")]);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var batch = await gate.AccumulateAsync(MakeResult("task-1"), manager, CancellationToken.None);
+        sw.Stop();
+
+        Assert.IsNotNull(batch);
+        Assert.AreEqual(1, batch.Count);
+        Assert.AreEqual("task-1", batch[0].TaskId);
+        Assert.IsTrue(sw.Elapsed >= TimeSpan.FromMilliseconds(800),
+            $"Expected the gate to wait out the arrival grace, fired after {sw.Elapsed.TotalSeconds:F1}s");
+        Assert.IsTrue(sw.Elapsed < TimeSpan.FromSeconds(4),
+            $"Expected to fire when the 1s grace ran out (not at the 5s poll tick), got {sw.Elapsed.TotalSeconds:F1}s");
+    }
+
+    [TestMethod]
+    public async Task AccumulateAsync_FinishedSiblingGraceAlreadyPassed_FiresImmediately()
+    {
+        var gate = CreateGate(interactiveCeilingSec: 30, arrivalGraceSec: 60);
+        var manager = new FakeSubagentManager([],
+            [MakeFinished("task-2", finishedAt: DateTimeOffset.UtcNow - TimeSpan.FromMinutes(5))]);
+
+        var batch = await gate.AccumulateAsync(MakeResult("task-1"), manager, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.IsNotNull(batch);
+        Assert.AreEqual(1, batch.Count);
+    }
+
+    [TestMethod]
+    public async Task AccumulateAsync_FinishedSubagentOfOtherBatchOrSession_DoesNotHoldBatch()
+    {
+        var gate = CreateGate(interactiveCeilingSec: 30);
+        var manager = new FakeSubagentManager([],
+        [
+            MakeFinished("other-batch", batchId: "batch-2"),
+            MakeFinished("other-session", primarySessionId: "session/session-2"),
+            MakeFinished("solo", consolidate: false),
+        ]);
+
+        var batch = await gate.AccumulateAsync(MakeResult("task-1"), manager, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.IsNotNull(batch);
+        Assert.AreEqual(1, batch.Count);
+    }
+
+    private static FinishedSubagent MakeFinished(
+        string taskId,
+        string primarySessionId = "session/session-1",
+        string? batchId = "batch-1",
+        bool consolidate = true,
+        DateTimeOffset? finishedAt = null) =>
+        new(taskId, primarySessionId, batchId, consolidate, finishedAt ?? DateTimeOffset.UtcNow);
+
     // ── Duplicate result (already fired) returns null ───────────────────────
 
     [TestMethod]
@@ -333,9 +417,14 @@ public class SubagentResultGateTests
 
     // ── Fake ────────────────────────────────────────────────────────────────
 
-    private sealed class FakeSubagentManager(IReadOnlyList<SubagentEntry> activeEntries) : ISubagentManager
+    private sealed class FakeSubagentManager(
+        IReadOnlyList<SubagentEntry> activeEntries,
+        IReadOnlyList<FinishedSubagent>? finished = null) : ISubagentManager
     {
         private readonly List<SubagentEntry> _active = activeEntries.ToList();
+        private readonly List<FinishedSubagent> _finished = finished?.ToList() ?? [];
+
+        public IReadOnlyList<FinishedSubagent> ListRecentlyFinished() => _finished.ToList();
         public List<string> CancelledTaskIds { get; } = new();
 
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
@@ -359,6 +448,7 @@ public class SubagentResultGateTests
     {
         private readonly object _lock = new();
         private readonly List<SubagentEntry> _active = activeEntries.ToList();
+        private readonly List<FinishedSubagent> _finished = [];
 
         public Task<string> SpawnAsync(string description, string? context, int? timeoutMinutes,
             string primarySessionId, CancellationToken ct,
@@ -381,9 +471,20 @@ public class SubagentResultGateTests
             lock (_lock) return _active.ToList();
         }
 
+        public IReadOnlyList<FinishedSubagent> ListRecentlyFinished()
+        {
+            lock (_lock) return _finished.ToList();
+        }
+
+        /// <summary>Like the real manager: the run ends and the entry moves to the finished list.</summary>
         public void MarkComplete(string taskId)
         {
-            lock (_lock) _active.RemoveAll(e => e.TaskId == taskId);
+            lock (_lock)
+            {
+                foreach (var e in _active.Where(e => e.TaskId == taskId))
+                    _finished.Add(new FinishedSubagent(e.TaskId, e.PrimarySessionId, e.BatchId, e.Consolidate, DateTimeOffset.UtcNow));
+                _active.RemoveAll(e => e.TaskId == taskId);
+            }
         }
     }
 }

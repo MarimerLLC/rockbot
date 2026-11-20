@@ -28,4 +28,21 @@ public interface ISubagentManager
     /// Lists currently active (running) subagent entries.
     /// </summary>
     IReadOnlyList<SubagentEntry> ListActive();
+
+    /// <summary>
+    /// Subagents that finished (or were cancelled) recently and have left the active set (#858).
+    /// A finished subagent's result is still on its way to the primary: it crosses the broker and
+    /// the result handler's per-result work before it reaches the consolidation gate, so the gate
+    /// reads this list to keep waiting for it. Call <see cref="ListActive"/> first: an entry
+    /// leaves the active set only after it appears here.
+    /// </summary>
+    IReadOnlyList<FinishedSubagent> ListRecentlyFinished() => [];
 }
+
+/// <summary>A subagent that has left the active set, and when (#858).</summary>
+public sealed record FinishedSubagent(
+    string TaskId,
+    string PrimarySessionId,
+    string? BatchId,
+    bool Consolidate,
+    DateTimeOffset FinishedAt);
