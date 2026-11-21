@@ -15,6 +15,10 @@ internal static class McpTaskText
     /// Where a delivery's content is kept in its session's working memory, or null for a background
     /// task's question (the hand-back text is the turn itself).
     /// </summary>
+    /// <remarks>
+    /// A watch's ending or expiry warning is kept only for a subagent: a running one has nothing
+    /// but its working memory to learn it from (#854). A user conversation's turn is the text itself.
+    /// </remarks>
     public static string? WorkingMemoryKey(McpTaskResult message) => message.Kind switch
     {
         McpTaskResult.KindQuestion => null,
@@ -22,6 +26,11 @@ internal static class McpTaskText
         McpTaskResult.KindEscalatedResult => $"{message.SessionId}/{HandbackText.EscalatedKeyPrefix}{message.QuestionId}/result",
         McpTaskResult.KindResourceUpdated =>
             $"{message.SessionId}/mcp-watch/{message.ServerName}/{message.TaskId}/{(message.ContentHash is { Length: >= 12 } h ? h[..12] : "latest")}",
+        McpTaskResult.KindWatchEnded when HandbackSessions.IsSubagentSession(message.SessionId) =>
+            $"{message.SessionId}/mcp-watch/{message.ServerName}/{message.TaskId}/ended",
+        // A watch kept past its first lifetime is warned again: the latest warning replaces the last.
+        McpTaskResult.KindWatchExpiring when HandbackSessions.IsSubagentSession(message.SessionId) =>
+            $"{message.SessionId}/mcp-watch/{message.ServerName}/{message.TaskId}/expiring",
         McpTaskResult.KindWatchEnded or McpTaskResult.KindWatchExpiring => null,
         _ => $"{message.SessionId}/mcp-task/{message.ServerName}/{message.TaskId}/result",
     };
