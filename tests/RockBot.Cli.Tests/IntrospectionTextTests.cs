@@ -111,6 +111,48 @@ public sealed class IntrospectionTextTests
     }
 
     [TestMethod]
+    public void Usage_ScheduledTask_ShowsGateAndOptimization()
+    {
+        // #848
+        var totals = new UsageTotalsIntrospection();
+        var response = Response() with
+        {
+            Usage = new UsageIntrospection
+            {
+                TimeZone = "UTC",
+                Today = "2026-11-15",
+                TodayTotals = totals,
+                Last7Days = totals,
+                Last30Days = totals,
+                ScheduledTasks =
+                [
+                    new ScheduledTaskUsageIntrospection
+                    {
+                        TaskName = "weekly", Runs = 5, LastRunAt = DateTimeOffset.UtcNow, LastCostUsd = 0.02,
+                        MedianCostUsd = 0.9, LastRunTier = "Balanced",
+                        LastOptimizedAt = new DateTimeOffset(2026, 11, 2, 9, 0, 0, TimeSpan.Zero),
+                        MedianBeforeOptimizationUsd = 1.5, MedianSinceOptimizationUsd = 0.02,
+                        OptimizationNote = "gated on wisp mail/new.json (nonEmpty)",
+                        Gate = "mail/new.json", GatedSkips = 2,
+                    },
+                    new ScheduledTaskUsageIntrospection
+                    {
+                        TaskName = "daily", Runs = 3, LastRunAt = DateTimeOffset.UtcNow, LastCostUsd = 1,
+                        LastOptimizedAt = new DateTimeOffset(2026, 11, 14, 9, 0, 0, TimeSpan.Zero),
+                        MedianBeforeOptimizationUsd = 1,
+                    },
+                ],
+            },
+        };
+
+        var text = Render(response, IntrospectionSections.Usage);
+
+        StringAssert.Contains(text, "      gated on wisp mail/new.json; 2 recent run(s) skipped\n");
+        StringAssert.Contains(text, "      optimized 2026-11-02: usual $1.50 -> $0.02 (gated on wisp mail/new.json (nonEmpty))\n");
+        StringAssert.Contains(text, "      optimized 2026-11-14: usual $1.00 -> no runs yet\n");
+    }
+
+    [TestMethod]
     public void HealthSections_ReadAsPlainLines()
     {
         var response = Response() with

@@ -60,6 +60,56 @@ public sealed class FileScheduledTaskStoreTests
         Assert.IsFalse(await CreateStore().UpdateMaxTierAsync("nope", ModelTier.Balanced, "x"));
     }
 
+    // ── Gate (#848) ───────────────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task UpdateGateAsync_SetsAndClears_KeepingOtherFields()
+    {
+        var store = CreateStore();
+        var original = MakeTask("weekly") with { Directive = "checklist", MaxTier = ModelTier.Balanced, TimeZone = "home" };
+        await store.SaveAsync(original);
+        var gate = new TaskGate("mail", "new.json", TaskGateMode.Changed, 4, "optimizer", "nothing new for weeks");
+
+        Assert.IsTrue(await store.UpdateGateAsync("weekly", gate));
+        var reloaded = (await CreateStore().GetAsync("weekly"))!;
+        Assert.AreEqual(original with { Gate = gate }, reloaded);
+        var json = await File.ReadAllTextAsync(Path.Combine(_tempDir, "scheduled-tasks.json"));
+        StringAssert.Contains(json, "\"mode\": \"Changed\"");
+        Assert.IsFalse(json.Contains("\"target\""), "the computed Target is not persisted");
+
+        Assert.IsTrue(await store.UpdateGateAsync("weekly", null));
+        Assert.AreEqual(original, await store.GetAsync("weekly"));
+        Assert.IsFalse(await store.UpdateGateAsync("nope", gate));
+    }
+
+    [TestMethod]
+    public async Task RecordGateResultAsync_UpdatesOnlyTheGateState()
+    {
+        var store = CreateStore();
+        var gate = new TaskGate("mail", "new.json", EnabledBy: "user");
+        await store.SaveAsync(MakeTask("weekly") with { Directive = "checklist", Gate = gate });
+        await store.SaveAsync(MakeTask("ungated"));
+
+        Assert.IsTrue(await store.RecordGateResultAsync("weekly", "abc", 2));
+        Assert.IsFalse(await store.RecordGateResultAsync("ungated", "abc", 2), "no gate, nothing to record");
+
+        var task = (await CreateStore().GetAsync("weekly"))!;
+        Assert.AreEqual(gate with { LastResultHash = "abc", ConsecutiveSkips = 2 }, task.Gate);
+        Assert.AreEqual("checklist", task.Directive);
+        Assert.IsNull((await store.GetAsync("ungated"))!.Gate);
+    }
+
+    [TestMethod]
+    public async Task Get_TaskWrittenBeforeGate_HasNoGate()
+    {
+        Directory.CreateDirectory(_tempDir);
+        await File.WriteAllTextAsync(Path.Combine(_tempDir, "scheduled-tasks.json"), """
+            [{"name":"old","cronExpression":"0 8 * * *","description":"d","createdAt":"2026-01-01T00:00:00+00:00"}]
+            """);
+
+        Assert.IsNull((await CreateStore().GetAsync("old"))!.Gate);
+    }
+
     [TestMethod]
     public async Task Get_TaskWrittenBeforeMaxTier_HasNoCeiling()
     {

@@ -16,7 +16,7 @@ namespace RockBot.Host;
 /// Periodic background service that consolidates the agent's long-term memory corpus —
 /// finding duplicates, merging them into better entries, refining categories, and pruning noise.
 /// </summary>
-internal sealed class DreamService : IHostedService, IDisposable
+internal sealed partial class DreamService : IHostedService, IDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -137,8 +137,12 @@ internal sealed class DreamService : IHostedService, IDisposable
         IMcpToolDirectory? mcpToolDirectory = null,
         IScheduledTaskStore? scheduledTaskStore = null,
         ScheduledTaskRunCosts? scheduledTaskRunCosts = null,
-        IOptions<ScheduledTaskCostOptions>? scheduledTaskCostOptions = null)
+        IOptions<ScheduledTaskCostOptions>? scheduledTaskCostOptions = null,
+        ISavedWispRunner? savedWispRunner = null,
+        ISavedResponseStore? savedResponseStore = null)
     {
+        _savedWispRunner = savedWispRunner;
+        _savedResponseStore = savedResponseStore;
         _scheduledTaskStore = scheduledTaskStore;
         _scheduledTaskRunCosts = scheduledTaskRunCosts;
         _scheduledTaskCostOptions = scheduledTaskCostOptions?.Value ?? new ScheduledTaskCostOptions();
@@ -557,6 +561,8 @@ internal sealed class DreamService : IHostedService, IDisposable
                 _logger.LogDebug("DreamService: loaded wisp success directive from {Path}", wispSuccessPath);
         }
 
+        LoadScheduledTaskEfficiencyDirective();
+
         if (_options.ToolSuccessLearningEnabled && _toolCallLog is not null)
         {
             var path = ResolvePath(_options.ToolSuccessLearningDirectivePath, _profileOptions.BasePath);
@@ -827,6 +833,7 @@ internal sealed class DreamService : IHostedService, IDisposable
             ct.ThrowIfCancellationRequested(); await RunTierRoutingReviewPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunScheduledTaskTierPassAsync(ct);
+            ct.ThrowIfCancellationRequested(); await RunScheduledTaskEfficiencyPassAsync(ct);
 
             ct.ThrowIfCancellationRequested(); await RunDlqReviewPassAsync(ct);
 
@@ -5229,8 +5236,14 @@ internal sealed class DreamService : IHostedService, IDisposable
             var threshold = Math.Max(1, _options.WispSuccessFrequencyThreshold);
             // Uncapped: QueryRecentAsync keeps the oldest records when capped, which could
             // drop a group's recent failure and promote it anyway (#791).
-            var records = await _wispExecutionLog.QueryRecentAsync(
-                DateTimeOffset.UtcNow.AddDays(-7), maxResults: int.MaxValue);
+            // Scheduled-task runs are read over a longer window, so a weekly task's runs can add
+            // up to the threshold (#848); everything else keeps the 7-day window.
+            var now = DateTimeOffset.UtcNow;
+            var scheduledLookback = _options.ScheduledWispSuccessLookback;
+            var widest = scheduledLookback > WispSuccessLookback ? scheduledLookback : WispSuccessLookback;
+            var records = (await _wispExecutionLog.QueryRecentAsync(now - widest, maxResults: int.MaxValue))
+                .Where(r => InWispSuccessWindow(r, now, scheduledLookback))
+                .ToList();
 
             if (records.Count < threshold)
             {
@@ -5306,7 +5319,7 @@ internal sealed class DreamService : IHostedService, IDisposable
                 candidates.Add(new WispSuccessCandidate(
                     DefinitionHash: hash,
                     Frequency: group.Count(),
-                    DistinctSessions: group.Select(r => r.SessionId).Where(s => !string.IsNullOrEmpty(s)).Distinct().Count(),
+                    DistinctSessions: group.Select(SuccessRunKey).OfType<string>().Distinct().Count(),
                     Description: representative.Description,
                     InvokingSkill: invokingSkill,
                     Body: body));
@@ -5812,10 +5825,12 @@ internal sealed class DreamService : IHostedService, IDisposable
                 ConsecutiveFailureCount: failureThreshold);
         }
 
-        // Promotion: count distinct-session signals.
+        // Promotion: count distinct runs. That is distinct sessions, except a scheduled task, whose
+        // every run shares one session id: each day it ran counts once (#848).
         var distinctSuccessSessions = wispRecords
-            .Where(r => r.Succeeded && !string.IsNullOrEmpty(r.SessionId))
-            .Select(r => r.SessionId!)
+            .Where(r => r.Succeeded)
+            .Select(SuccessRunKey)
+            .OfType<string>()
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();
 
@@ -5850,6 +5865,36 @@ internal sealed class DreamService : IHostedService, IDisposable
 
         return new ProvisionalDecision(ProvisionalAction.Keep, distinctSuccessSessions, 0);
     }
+
+    /// <summary>
+    /// What counts as one independent run of a wisp, for promotion (#848): its session, except a
+    /// scheduled task's, which every run of the task shares, so that one is split by UTC day. Null
+    /// for a record with no session.
+    /// </summary>
+    internal static string? SuccessRunKey(WispExecutionRecord record)
+    {
+        if (string.IsNullOrEmpty(record.SessionId))
+            return null;
+        return WellKnownSessions.ScheduledTaskName(record.SessionId) is null
+            ? record.SessionId
+            : $"{record.SessionId}@{record.Timestamp.UtcDateTime:yyyy-MM-dd}";
+    }
+
+    /// <summary>
+    /// Whether a wisp run falls in the success pass's window (#848): the last 7 days, or for a
+    /// scheduled task's run the longer <paramref name="scheduledLookback"/>, so a weekly task can
+    /// reach the frequency threshold.
+    /// </summary>
+    internal static bool InWispSuccessWindow(WispExecutionRecord record, DateTimeOffset now, TimeSpan scheduledLookback)
+    {
+        var lookback = WellKnownSessions.ScheduledTaskName(record.SessionId) is null
+            ? WispSuccessLookback
+            : (scheduledLookback > WispSuccessLookback ? scheduledLookback : WispSuccessLookback);
+        return record.Timestamp >= now - lookback;
+    }
+
+    /// <summary>The success pass's window for runs not made by a scheduled task.</summary>
+    internal static readonly TimeSpan WispSuccessLookback = TimeSpan.FromDays(7);
 
     internal enum ProvisionalAction { Keep, Promote, Remove, MarkStale }
 

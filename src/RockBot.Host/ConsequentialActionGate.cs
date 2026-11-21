@@ -216,6 +216,8 @@ public static partial class ConsequentialActions
     private static readonly HashSet<string> AutomationTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "schedule_task", "cancel_scheduled_task",
+        // #848: a gate decides whether a task's LLM turn runs at all.
+        "set_task_gate",
     };
 
     private const string TypedToolSeparator = "__";

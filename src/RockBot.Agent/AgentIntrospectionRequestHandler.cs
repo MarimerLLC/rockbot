@@ -230,9 +230,26 @@ internal sealed class AgentIntrospectionRequestHandler(
                     LastRunTier = s.LastRun.HighestTier?.ToString(),
                     MaxTier = task?.MaxTier?.ToString(),
                     MaxTierReason = task?.MaxTierReason,
+                    LastOptimizedAt = s.LastOptimization?.At,
+                    MedianBeforeOptimizationUsd = s.LastOptimization?.BaselineMedianUsd,
+                    MedianSinceOptimizationUsd = s.MedianSinceOptimizationUsd,
+                    OptimizationNote = OptimizationNote(s.LastOptimization),
+                    Gate = task?.Gate?.Target,
+                    GatedSkips = s.GatedSkips,
                 };
             }),
         ];
+    }
+
+    /// <summary>One line for an efficiency change (#848): what it changed, and any gate it only suggested.</summary>
+    internal static string? OptimizationNote(ScheduledTaskOptimization? optimization)
+    {
+        if (optimization is null)
+            return null;
+        var parts = new List<string>(optimization.Changes);
+        if (optimization.SuggestedGate is { } suggested)
+            parts.Add($"suggested gate {suggested} (its wisp may write, so it was not switched on; set_task_gate can)");
+        return parts.Count == 0 ? null : string.Join("; ", parts);
     }
 
     private static UsageTotalsIntrospection Totals(LlmUsageTotals t) => new()

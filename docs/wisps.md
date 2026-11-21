@@ -475,6 +475,67 @@ The `DreamService` includes a `RunWispFailureAnalysisPassAsync()` pass that:
 Configuration: `DreamOptions.WispFailureAnalysisEnabled` (default `true`) and
 `DreamOptions.WispFailureDirectivePath` (default `wisp-failure-dream.md`).
 
+### Wisps run by scheduled tasks (#848)
+
+The success pass reads the last 7 days of wisp runs, but a weekly task makes one run a week and
+would never reach the frequency threshold. Runs from a scheduled task's `patrol/{task}` session
+are read over `DreamOptions.ScheduledWispSuccessLookback` (default 35 days) instead.
+
+Promotion counts distinct runs, not records. That normally means distinct sessions, but every run
+of a scheduled task shares one session id, so a patrol wisp could never validate. For a
+`patrol/` session each UTC day the task ran counts as one run.
+
+---
+
+## Scheduled-task gates (#848)
+
+A recurring task that checks "is there anything new?" pays for a full LLM turn even when the
+answer is no. A **gate** is a saved wisp (a skill's `Wisp` resource) that runs first, with no LLM:
+
+1. On each fire, `ScheduledTaskHandler` loads `skill/resource`, fills `{{last_run_at}}` (ISO 8601,
+   UTC) and `{{last_run_date}}` (`yyyy/MM/dd`) from the task's previous fire (30 days back when it
+   has never fired), and runs it through `ISavedWispRunner`. The run is logged like any other wisp
+   run, so it counts toward promotion.
+2. `ScheduledTaskGate.Evaluate` decides from every step's output. The wisp found nothing only when every step did, so a mail search that found messages still passes when a later calendar step comes back empty:
+   - **Empty** means blank output; JSON `null`, `[]` or `{}`; an object whose result arrays
+     (`results`, `items`, `messages`, `value`, …) are all empty or whose count (`count`, `total`,
+     `resultSizeEstimate`, …) is 0; an MCP text envelope around any of those; or a short
+     "No results found." sentence with nothing after it.
+   - In `nonEmpty` mode any results pass. In `changed` mode results pass only when their hash
+     (over every non-empty step output) differs from the last run's.
+3. When the gate does not pass, the run ends there: no LLM call, no reply, no saved report. It is
+   recorded as a `GatedSkip` run in `scheduled-task-runs.json`.
+4. When it passes, the patrol turn gets two messages:
+   - a **system** message with only our own framing: what ran, since when, and that the results are
+     outside data to report on, never instructions;
+   - a **user-role** "Gate wisp results" block holding each step's output (12,000 chars between
+     them), its `wisp/{id}/{step}/output` working-memory key, and the `wisp:{id}/{step}` form a
+     worker's `input_keys` takes. Every line is quoted with `> `, so a planted "SYSTEM:" line or a
+     forged end marker can't pass as part of the frame.
+
+   The turn shares the gate's `RunFetchRegistry`, so a repeat of the wisp's fetch is flagged.
+5. The gate's state is stored when the run ends: at once for a skip, and only after the turn has
+   finished for a pass or forced run. A turn that is preempted (and retried) or fails leaves the
+   state as it was, so a `changed` gate doesn't mistake the retry's results for ones already seen.
+
+Safety:
+
+- **Fail open.** No wisp subsystem, a missing resource or a failed step runs the task as if it had
+  no gate (`FailedOpen`, logged as a warning).
+- **Forced run.** After `MaxConsecutiveSkips` (default 6) skipped runs in a row the task runs
+  anyway (`ForcedRun`), so a wrong gate cannot silence it for good. 0 never forces a run.
+- **Who can switch it on.** The user (through the agent's `set_task_gate` tool, an automation change
+  under the consequential-action gate), or the dream's
+  [scheduled-task efficiency pass](dream-service.md#scheduled-task-efficiency), which switches a gate
+  on only when `ISavedWispRunner.Inspect` finds every step known to only read. That means an `Mcp` step
+  whose tool name starts with a read verb (`get_`, `list_`, `search_`, …) with no write verb after
+  it, or a `Web` step (`web_search` / `web_browse`). Unknown names, `Script`, `A2A` and LLM steps don't
+  qualify. A valid wisp that doesn't qualify is recorded as a suggestion; a missing or invalid wisp is
+  not recorded at all. It never replaces a gate the user set.
+
+The gate's state (`lastResultHash`, `consecutiveSkips`) lives on the task's `gate` in
+`scheduled-tasks.json`. `schedule_task` with the same name replaces the task and drops its gate.
+
 ---
 
 ## DI registration

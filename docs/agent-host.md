@@ -270,6 +270,12 @@ whether it was applied or capped). For **scheduled tasks** (#846):
   the task's last `BaselineRuns` (8) runs — once it has `MinBaselineRuns` (3), and above
   `MinAnomalyCostUsd` ($0.25) — gets a cost note on its saved response and a warning log line,
   and is marked on the Usage tab.
+- Each run also records how it ended (`Replied`, `Empty`, `GatedSkip`), a hash of its report,
+  its tool calls, repeated fetches, the skills it loaded, and what its gate did (#848). The
+  dream's [scheduled-task efficiency](dream-service.md#scheduled-task-efficiency) pass reads them
+  to pick tasks that cost real money while reporting the same thing.
+- A task may have a **gate**: a saved wisp that runs before the patrol turn and skips it when it
+  finds nothing new (`set_task_gate`; see [Wisps — Scheduled-task gates](wisps.md#scheduled-task-gates-848)).
 
 A turn routed Low that makes a side-effecting tool call (by verb in the tool name — see
 `ToolSideEffects`) or hits two tool errors finishes its loop on Balanced

@@ -98,6 +98,42 @@ internal sealed class SpawnWispsExecutor(
         };
     }
 
+    /// <summary>
+    /// Runs one saved wisp outside an LLM turn (#848), through the same path as a
+    /// <c>spawn_wisps</c> call: shorthand canonicalized, circuit breaker checked, run logged.
+    /// </summary>
+    internal async Task<WispExecutionResult> ExecuteSavedAsync(
+        WispDefinition definition, string? sessionId, CancellationToken ct)
+    {
+        var batchId = $"batch-{Guid.NewGuid():N}"[..18];
+        using var semaphore = new SemaphoreSlim(1);
+        return await ExecuteOneAsync(definition, batchId, sessionId, semaphore, ct);
+    }
+
+    /// <summary>Parses one wisp definition from <paramref name="json"/> (an object, or a one-element array).</summary>
+    internal static WispDefinition? ParseDefinition(string json, out string? error)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var defs = ParseDefinitions(
+                new Dictionary<string, JsonElement> { ["definitions"] = doc.RootElement.Clone() }, out error);
+            if (defs is null)
+                return null;
+            if (defs.Count != 1)
+            {
+                error = $"Expected one wisp definition, found {defs.Count}";
+                return null;
+            }
+            return defs[0];
+        }
+        catch (JsonException ex)
+        {
+            error = $"Invalid wisp JSON: {ex.Message}";
+            return null;
+        }
+    }
+
     private async Task<WispExecutionResult> ExecuteOneAsync(
         WispDefinition definition,
         string batchId,

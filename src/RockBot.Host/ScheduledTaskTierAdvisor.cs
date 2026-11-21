@@ -22,7 +22,9 @@ public static class ScheduledTaskTierAdvisor
         if (task.MaxTier is not null || task.RunOnce)
             return null;
 
-        var recent = runs.TakeLast(options.BaselineRuns).Where(r => r.HighestTier is not null).ToList();
+        // A gated skip (#848) ran no LLM turn, so it says nothing about which tier does the job.
+        var recent = runs.Where(r => r.Outcome != ScheduledRunOutcome.GatedSkip)
+            .TakeLast(options.BaselineRuns).Where(r => r.HighestTier is not null).ToList();
         var high = recent.Where(r => r.HighestTier == ModelTier.High).Select(r => r.CostUsd).ToList();
         var balanced = recent.Where(r => r.HighestTier is ModelTier.Low or ModelTier.Balanced).Select(r => r.CostUsd).ToList();
         if (high.Count == 0 || balanced.Count < options.TierCeilingMinBalancedRuns)

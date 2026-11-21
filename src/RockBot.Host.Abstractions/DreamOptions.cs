@@ -612,6 +612,45 @@ public sealed class DreamOptions
     public int WispSuccessFrequencyThreshold { get; set; } = 3;
 
     /// <summary>
+    /// How far back the wisp success pass looks for wisp runs made by a scheduled task (#848).
+    /// Other runs are read over the last 7 days, but a weekly task makes only one run a week, so it
+    /// would never reach <see cref="WispSuccessFrequencyThreshold"/> in 7 days. The default fits
+    /// four weekly runs. (Provisional validation is not windowed this way: it reads every run since
+    /// the resource was created.)
+    /// </summary>
+    public TimeSpan ScheduledWispSuccessLookback { get; set; } = TimeSpan.FromDays(35);
+
+    /// <summary>
+    /// Whether the scheduled-task efficiency pass is enabled (#848). It reviews recurring tasks that
+    /// cost real money per run while reporting the same thing (or repeating fetches, or making many
+    /// tool calls), and may rewrite the skill they use, update the task's directive, save a wisp for
+    /// the fixed fetch steps, and put a read-only wisp in front of the task as its gate.
+    /// Requires the scheduled-task store and run history.
+    /// </summary>
+    public bool ScheduledTaskEfficiencyEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Path to the scheduled-task efficiency directive, relative to <see cref="AgentProfileOptions.BasePath"/>.
+    /// When the file does not exist, a built-in fallback directive is used.
+    /// </summary>
+    public string ScheduledTaskEfficiencyDirectivePath { get; set; } = "scheduled-task-efficiency.md";
+
+    /// <summary>Median cost per run below which the efficiency pass leaves a task alone.</summary>
+    public double EfficiencyMinMedianCostUsd { get; set; } = 0.10;
+
+    /// <summary>Median tool calls per run that by itself makes a task an efficiency candidate.</summary>
+    public int EfficiencyMinToolCalls { get; set; } = 15;
+
+    /// <summary>
+    /// Runs a task needs since it was created or last optimized before the efficiency pass looks
+    /// at it, so each change is judged on runs made after it.
+    /// </summary>
+    public int EfficiencyMinRuns { get; set; } = 3;
+
+    /// <summary>Most tasks the efficiency pass reviews per cycle, costliest first.</summary>
+    public int EfficiencyMaxTasksPerCycle { get; set; } = 3;
+
+    /// <summary>
     /// Whether the provisional skill-resource validation/demotion pass is enabled.
     /// Reads recent wisp records and resource checkouts, then flips provisional
     /// resources to non-provisional after repeated success or removes them after

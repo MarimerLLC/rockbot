@@ -191,6 +191,61 @@ public sealed class AgentIntrospectionRequestHandlerTests
         }
     }
 
+    [TestMethod]
+    public async Task ScheduledTaskUsage_ShowsTheLastOptimization_AndTheGate()
+    {
+        // #848: the efficiency pass's change, the median before it and since, and the gate's skips.
+        using var estimator = Estimator();
+        var dir = Path.Combine(Path.GetTempPath(), $"rb-introspect-opt-{Guid.NewGuid():N}");
+        try
+        {
+            var profile = Options.Create(new AgentProfileOptions { BasePath = dir });
+            using var ledger = new LlmUsageLedger(estimator, Options.Create(new LlmUsageOptions()), profile,
+                NullLogger<LlmUsageLedger>.Instance);
+            var runCosts = new ScheduledTaskRunCosts(Options.Create(new ScheduledTaskCostOptions()), profile,
+                NullLogger<ScheduledTaskRunCosts>.Instance, ledger);
+            var usage = new Microsoft.Extensions.AI.UsageDetails { InputTokenCount = 1_000_000, OutputTokenCount = 1_000_000 };
+
+            runCosts.BeginRun("weekly", ModelTier.Balanced);
+            ledger.Record("patrol/weekly", "scheduled", "claude-haiku-5-5", usage);
+            await runCosts.EndRunAsync("weekly", ScheduledRunOutcome.Replied, "Nothing new.");
+
+            var at = DateTimeOffset.UtcNow;
+            await runCosts.RecordOptimizationAsync("weekly",
+                new ScheduledTaskOptimization(at, ["gated on wisp mail/new.json (nonEmpty)"], 0.60,
+                    SuggestedGate: "mail/send.json"));
+            await Task.Delay(5);
+
+            runCosts.BeginRun("weekly", ModelTier.Balanced);
+            await runCosts.EndRunAsync("weekly", ScheduledRunOutcome.GatedSkip, null);
+
+            var store = new InMemoryTaskStore(new ScheduledTask("weekly", "0 7 * * 1", "sweep", DateTimeOffset.UtcNow,
+                Gate: new TaskGate("mail", "new.json", EnabledBy: "optimizer")));
+            var row = (await AgentIntrospectionRequestHandler.ScheduledTaskUsageAsync(runCosts, store)).Single();
+
+            Assert.AreEqual(at, row.LastOptimizedAt);
+            Assert.AreEqual(0.60, row.MedianBeforeOptimizationUsd!.Value, 1e-9);
+            Assert.AreEqual(0.0, row.MedianSinceOptimizationUsd!.Value, 1e-9, "the gated run cost nothing");
+            Assert.AreEqual("mail/new.json", row.Gate);
+            Assert.AreEqual(1, row.GatedSkips);
+            Assert.AreEqual(
+                "gated on wisp mail/new.json (nonEmpty); suggested gate mail/send.json (its wisp may write, so it was not switched on; set_task_gate can)",
+                row.OptimizationNote);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [TestMethod]
+    public void OptimizationNote_NullWithoutOptimizationOrChanges()
+    {
+        Assert.IsNull(AgentIntrospectionRequestHandler.OptimizationNote(null));
+        Assert.IsNull(AgentIntrospectionRequestHandler.OptimizationNote(
+            new ScheduledTaskOptimization(DateTimeOffset.UtcNow, [], 1.0)));
+    }
+
     private sealed class InMemoryTaskStore(params ScheduledTask[] tasks) : IScheduledTaskStore
     {
         public Task SaveAsync(ScheduledTask task) => Task.CompletedTask;

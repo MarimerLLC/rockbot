@@ -1197,6 +1197,7 @@ Three tools for managing recurring and one-time scheduled tasks.
 | `schedule_task(name, cron, description, run_once?, timeZone)` | Create or replace a scheduled task. `timeZone` exists only when the agent follows the user's location, and is then required |
 | `list_scheduled_tasks()` | Markdown table of all tasks with next-fire times |
 | `cancel_scheduled_task(name)` | Remove a task by name |
+| `set_task_gate(name, skill, resource, mode?, maxConsecutiveSkips?, clear?)` | Put a saved wisp in front of an existing task (or remove it): the wisp runs first on every fire and the LLM turn is skipped when it finds nothing new. Keeps everything else about the task. See [Scheduled-task gates](wisps.md#scheduled-task-gates-848) |
 | `set_task_time_zone(name, timeZone)` | Change only an existing task's zone, keeping its cron, description, output format and directive. Registered only when the agent follows the user's location |
 
 ### Cron format

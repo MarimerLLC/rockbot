@@ -206,6 +206,19 @@ public static partial class ToolSideEffects
         return IsSideEffectingName(effectiveName);
     }
 
+    /// <summary>
+    /// True only when <paramref name="toolName"/> (unwrapped from a typed <c>{server}__{tool}</c>
+    /// name) starts with a read verb (<c>get</c>, <c>list</c>, <c>search</c>, …) and has no write
+    /// verb after it. Stricter than <c>!IsSideEffectingName</c>, which lets an unknown name with no
+    /// verb pass as read-only: use this where nobody reviews the call before it runs (#848).
+    /// </summary>
+    public static bool IsKnownReadOnlyName(string toolName)
+    {
+        if (string.IsNullOrWhiteSpace(toolName)) return false;
+        var words = SplitWords(EffectiveToolName(toolName, null));
+        return words.Count > 0 && ReadVerbs.Contains(words[0]) && !words.Skip(1).Any(WriteVerbs.Contains);
+    }
+
     /// <summary>True when the tool name alone (already unwrapped) marks a side-effecting call.</summary>
     public static bool IsSideEffectingName(string toolName)
     {

@@ -434,7 +434,13 @@
                         @foreach (var task in usage.ScheduledTasks)
                         {
                             <tr>
-                                <th scope="row"><code>@task.TaskName</code></th>
+                                <th scope="row">
+                                    <code>@task.TaskName</code>
+                                    @if (task.Gate is { } gate)
+                                    {
+                                        <span class="info-muted" title="Runs the wisp @gate first and skips its LLM turn when that finds nothing new; @task.GatedSkips recent run(s) skipped"> (gated)</span>
+                                    }
+                                </th>
                                 <td class="narrow-hide">@AgentInfoFormat.When(task.LastRunAt, DisplayZone)</td>
                                 <td class="num">
                                     @AgentInfoFormat.Cost(task.LastCostUsd)
@@ -443,7 +449,18 @@
                                         <span class="info-alert" title="Far above this task's recent runs"> (@((task.LastCostUsd / median).ToString("0.#"))×)</span>
                                     }
                                 </td>
-                                <td class="num">@(task.MedianCostUsd is { } m ? AgentInfoFormat.Cost(m) : "—")</td>
+                                <td class="num">
+                                    @if (task.LastOptimizedAt is { } optimizedAt && task.MedianBeforeOptimizationUsd is { } before)
+                                    {
+                                        <span title="Optimized @AgentInfoFormat.When(optimizedAt, DisplayZone): @task.OptimizationNote">
+                                            @AgentInfoFormat.Cost(before) → @(task.MedianSinceOptimizationUsd is { } after ? AgentInfoFormat.Cost(after) : "…")
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        @(task.MedianCostUsd is { } m ? AgentInfoFormat.Cost(m) : "—")
+                                    }
+                                </td>
                                 <td>
                                     @(task.LastRunTier ?? "—")
                                     @if (task.MaxTier is { } maxTier)

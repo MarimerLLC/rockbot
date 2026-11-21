@@ -131,6 +131,22 @@ public class FileSkillUsageStoreTests
         Assert.AreEqual(0, results.Count);
     }
 
+    [TestMethod]
+    public async Task PatrolSession_IsRecorded_AndReadBack()
+    {
+        // #848: a scheduled run's skill use was never recorded ("patrol/{task}").
+        var store = CreateStore();
+        await store.AppendAsync(MakeEvent("patrol/concert-sweep", "concert-email-calendar-sweep"));
+
+        var bySession = await store.GetBySessionAsync("patrol/concert-sweep");
+        Assert.AreEqual(1, bySession.Count);
+        Assert.AreEqual("concert-email-calendar-sweep", bySession[0].SkillName);
+
+        var recent = await store.QueryRecentAsync(DateTimeOffset.UtcNow.AddHours(-1), 100);
+        Assert.AreEqual(1, recent.Count);
+        Assert.AreEqual("patrol/concert-sweep", recent[0].SessionId);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private FileSkillUsageStore CreateStore()

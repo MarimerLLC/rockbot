@@ -317,7 +317,7 @@ public sealed class SchedulingTimeZoneTests
 
         Assert.AreEqual(SchedulingToolSkillProvider.Document, provider.GetDocument());
         Assert.AreEqual(
-            "Schedule one-time or recurring tasks with cron expressions (schedule_task, cancel_scheduled_task, list_scheduled_tasks).",
+            "Schedule one-time or recurring tasks with cron expressions (schedule_task, cancel_scheduled_task, list_scheduled_tasks, set_task_gate).",
             provider.Summary);
         Assert.IsFalse(provider.GetDocument().Contains("set_task_time_zone"));
         StringAssert.Contains(provider.GetDocument(), SchedulingToolSkillProvider.ZoneAnchor);
@@ -329,7 +329,7 @@ public sealed class SchedulingTimeZoneTests
         var doc = new SchedulingToolSkillProvider(
             new UserLocationState(Options.Create(new UserLocationOptions()))).GetDocument();
 
-        StringAssert.Contains(doc, "Four tools let you");
+        StringAssert.Contains(doc, "Five tools let you");
         Assert.IsFalse(doc.Contains(SchedulingToolSkillProvider.ZoneAnchor), "the old one-zone sentence must go");
         StringAssert.Contains(doc, "### set_task_time_zone");
         StringAssert.Contains(doc, "| `local`");
