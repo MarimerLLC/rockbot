@@ -16,7 +16,8 @@ internal sealed class SchedulingToolRegistrar(
     ILogger<SchedulingToolRegistrar> logger,
     UserLocationState? userLocation = null,
     ISkillStore? skillStore = null,
-    ISavedWispRunner? wispRunner = null) : IHostedService
+    ISavedWispRunner? wispRunner = null,
+    IScheduledTaskStore? taskStore = null) : IHostedService
 {
     private const string ScheduleSchema = """
         {
@@ -194,14 +195,18 @@ internal sealed class SchedulingToolRegistrar(
         }, new ListScheduledTasksExecutor(scheduler, clock, locationEnabled));
         logger.LogInformation("Registered scheduling tool: list_scheduled_tasks");
 
-        registry.Register(new ToolRegistration
+        // #848. It writes the gate through the task store, which AddScheduling always registers.
+        if (taskStore is not null)
         {
-            Name = "set_task_gate",
-            Description = SetGateDescription,
-            ParametersSchema = SetGateSchema,
-            Source = "scheduling"
-        }, new SetTaskGateExecutor(scheduler, skillStore, wispRunner));
-        logger.LogInformation("Registered scheduling tool: set_task_gate");
+            registry.Register(new ToolRegistration
+            {
+                Name = "set_task_gate",
+                Description = SetGateDescription,
+                ParametersSchema = SetGateSchema,
+                Source = "scheduling"
+            }, new SetTaskGateExecutor(scheduler, taskStore, skillStore, wispRunner));
+            logger.LogInformation("Registered scheduling tool: set_task_gate");
+        }
 
         if (locationEnabled)
         {

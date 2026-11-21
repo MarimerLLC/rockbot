@@ -63,10 +63,19 @@ public static partial class ScheduledTaskGate
     /// stored state. A gate that has skipped <see cref="TaskGate.MaxConsecutiveSkips"/> runs in a
     /// row runs anyway, so a wrong gate cannot silence a task for good.
     /// </summary>
-    public static ScheduledTaskGateDecision Evaluate(TaskGate gate, string? output)
+    public static ScheduledTaskGateDecision Evaluate(TaskGate gate, string? output) =>
+        Evaluate(gate, output is null ? [] : [output]);
+
+    /// <summary>
+    /// <see cref="Evaluate(TaskGate, string?)"/> over every step's output: the wisp found nothing
+    /// only when every step did, so a multi-step wisp whose last step comes back empty still passes
+    /// when an earlier one found something. The hash covers every non-empty output.
+    /// </summary>
+    public static ScheduledTaskGateDecision Evaluate(TaskGate gate, IReadOnlyList<string> outputs)
     {
-        var empty = IsEmpty(output);
-        var hash = empty ? gate.LastResultHash : OutputHash(output!);
+        var found = outputs.Where(o => !IsEmpty(o)).ToList();
+        var empty = found.Count == 0;
+        var hash = empty ? gate.LastResultHash : OutputHash(string.Join("\n\u001f\n", found));
 
         string? quiet = null;
         if (empty)

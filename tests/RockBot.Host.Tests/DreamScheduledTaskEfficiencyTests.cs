@@ -198,7 +198,21 @@ public sealed class DreamScheduledTaskEfficiencyTests
         await service.RunScheduledTaskEfficiencyPassAsync(CancellationToken.None);
 
         Assert.AreEqual(userGate, (await store.GetAsync(TaskName))!.Gate);
-        Assert.AreEqual($"{SkillName}/old.json", (await costs.GetOptimizationsAsync(TaskName)).Single().SuggestedGate);
+        Assert.AreEqual(0, (await costs.GetOptimizationsAsync(TaskName)).Count,
+            "nothing the user could act on, so nothing is recorded and the task is not benched");
+    }
+
+    [TestMethod]
+    public async Task Pass_GateOnAMissingWisp_IsRefused_NotSuggested()
+    {
+        var (service, _, store, _, costs) = await ArrangeAsync($$"""
+            { "tasks": [{ "task": "{{TaskName}}", "gate": { "skill": "{{SkillName}}", "resource": "no-such.json" } }] }
+            """);
+
+        await service.RunScheduledTaskEfficiencyPassAsync(CancellationToken.None);
+
+        Assert.IsNull((await store.GetAsync(TaskName))!.Gate);
+        Assert.AreEqual(0, (await costs.GetOptimizationsAsync(TaskName)).Count);
     }
 
     [TestMethod]

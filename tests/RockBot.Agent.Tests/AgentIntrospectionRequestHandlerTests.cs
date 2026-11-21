@@ -229,7 +229,7 @@ public sealed class AgentIntrospectionRequestHandlerTests
             Assert.AreEqual("mail/new.json", row.Gate);
             Assert.AreEqual(1, row.GatedSkips);
             Assert.AreEqual(
-                "gated on wisp mail/new.json (nonEmpty); suggested gate mail/send.json (its wisp is not read-only; set it with set_task_gate)",
+                "gated on wisp mail/new.json (nonEmpty); suggested gate mail/send.json (its wisp may write, so it was not switched on; set_task_gate can)",
                 row.OptimizationNote);
         }
         finally

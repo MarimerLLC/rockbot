@@ -248,7 +248,7 @@ internal sealed class AgentIntrospectionRequestHandler(
             return null;
         var parts = new List<string>(optimization.Changes);
         if (optimization.SuggestedGate is { } suggested)
-            parts.Add($"suggested gate {suggested} (its wisp is not read-only; set it with set_task_gate)");
+            parts.Add($"suggested gate {suggested} (its wisp may write, so it was not switched on; set_task_gate can)");
         return parts.Count == 0 ? null : string.Join("; ", parts);
     }
 

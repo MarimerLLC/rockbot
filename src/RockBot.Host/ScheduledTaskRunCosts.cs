@@ -268,9 +268,13 @@ public sealed class ScheduledTaskRunCosts
             if (!history.TryGetValue(taskName, out var runs))
                 history[taskName] = runs = [];
 
-            var check = Evaluate(cost, runs, _options);
+            // #848: a gated skip ran no LLM turn. It is not compared with real runs, and it has no tier.
+            var skipped = outcome == ScheduledRunOutcome.GatedSkip;
+            var check = skipped
+                ? new ScheduledRunCostCheck(cost, null, 0, Anomalous: false)
+                : Evaluate(cost, runs, _options);
             var activity = run.Activity;
-            runs.Add(new ScheduledRunRecord(run.StartedAt, _now(), cost, run.HighestTier, check.Anomalous,
+            runs.Add(new ScheduledRunRecord(run.StartedAt, _now(), cost, skipped ? null : run.HighestTier, check.Anomalous,
                 Outcome: outcome,
                 ReplyHash: ReportHash(report),
                 Delegated: run.Delegated,
@@ -416,7 +420,10 @@ public sealed class ScheduledTaskRunCosts
     /// <summary>How <paramref name="cost"/> compares with the latest <paramref name="prior"/> runs.</summary>
     internal static ScheduledRunCostCheck Evaluate(double cost, IReadOnlyList<ScheduledRunRecord> prior, ScheduledTaskCostOptions options)
     {
-        var baseline = prior.TakeLast(options.BaselineRuns).Select(r => r.CostUsd).ToList();
+        // Gated skips (#848) cost nothing because no LLM turn ran; counting them would make every
+        // real run look expensive.
+        var baseline = prior.Where(r => r.Outcome != ScheduledRunOutcome.GatedSkip)
+            .TakeLast(options.BaselineRuns).Select(r => r.CostUsd).ToList();
         if (baseline.Count < options.MinBaselineRuns)
             return new ScheduledRunCostCheck(cost, null, baseline.Count, Anomalous: false);
 

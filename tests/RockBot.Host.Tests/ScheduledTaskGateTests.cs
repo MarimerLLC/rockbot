@@ -78,6 +78,28 @@ public sealed class ScheduledTaskGateTests
     }
 
     [TestMethod]
+    public void Evaluate_ManySteps_EmptyOnlyWhenEveryStepIs()
+    {
+        // A mail search that found 3 messages, then a calendar step that found none.
+        var found = ScheduledTaskGate.Evaluate(Gate, ["""[{"id":"m1"},{"id":"m2"},{"id":"m3"}]""", "[]"]);
+        var nothing = ScheduledTaskGate.Evaluate(Gate, ["[]", """{"messages":[]}"""]);
+        var none = ScheduledTaskGate.Evaluate(Gate, Array.Empty<string>());
+
+        Assert.IsTrue(found.RunLlm, "an earlier step's results count");
+        Assert.IsFalse(nothing.RunLlm);
+        Assert.IsFalse(none.RunLlm);
+    }
+
+    [TestMethod]
+    public void Evaluate_OneOutput_HashesAsBefore()
+    {
+        Assert.AreEqual(
+            ScheduledTaskGate.Evaluate(Gate, """[{"id":"m1"}]""").LastResultHash,
+            ScheduledTaskGate.Evaluate(Gate, ["""[{"id":"m1"}]""", "[]"]).LastResultHash,
+            "empty steps don't move the hash");
+    }
+
+    [TestMethod]
     public void Evaluate_ChangedMode_FirstRun_Passes()
     {
         Assert.IsTrue(ScheduledTaskGate.Evaluate(Gate with { Mode = TaskGateMode.Changed }, """[{"id":"m1"}]""").RunLlm);

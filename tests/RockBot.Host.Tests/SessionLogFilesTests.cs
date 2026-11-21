@@ -15,8 +15,18 @@ public class SessionLogFilesTests
         Assert.AreEqual("patrol~concert-sweep", SessionLogFiles.StemFor("patrol/concert-sweep"));
 
     [TestMethod]
-    public void BackslashesAlsoMapToTilde() =>
-        Assert.AreEqual("a~b", SessionLogFiles.StemFor("a\\b"));
+    public void TildePercentAndBackslash_AreEscaped() =>
+        Assert.AreEqual("a%5Cb%7Ec%25d", SessionLogFiles.StemFor("a\\b~c%d"));
+
+    [TestMethod]
+    public void DistinctIds_NeverShareAStem()
+    {
+        string[] ids = ["patrol/inbox", "patrol~inbox", "patrol\\inbox", "patrol%7Einbox", "a/~b", "a~/b", "", "%00"];
+
+        var stems = ids.Select(SessionLogFiles.StemFor).ToList();
+
+        Assert.AreEqual(ids.Length, stems.Distinct(StringComparer.Ordinal).Count(), string.Join(", ", stems));
+    }
 
     [TestMethod]
     public void JsonlPath_IsDirectlyUnderTheDirectory()

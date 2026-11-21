@@ -42,5 +42,6 @@ Rules:
 - A gate may name the new wisp or one the skill already has.
 - Gate `mode` is `nonEmpty` (run when the wisp returns any results) or `changed` (run only when its results differ from the last run's). Use `changed` only when the wisp's output repeats the same items until something new arrives.
 - Never rewrite a skill marked code-owned.
-- A gate on a wisp that writes anything (or has an LLM or agent step) is only recorded as a suggestion for the user.
+- A gate is switched on only when every step of its wisp is known to only read: a direct MCP call whose tool name starts with a read verb (`search_`, `list_`, `get_`, …) and has no write verb, or a `web_search` / `web_browse` step. Any other gate is only recorded as a suggestion for the user. That includes a script, LLM or agent step, or a tool name with no read verb.
+- The gate passes when any step of the wisp finds results, and the run then gets every step's output.
 - When nothing would clearly help, return `{"tasks": []}`.

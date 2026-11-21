@@ -12,6 +12,7 @@ namespace RockBot.Wisp;
 internal sealed class SavedWispRunner : ISavedWispRunner
 {
     private readonly SpawnWispsExecutor _executor;
+    private readonly IMcpToolDirectory? _mcpToolDirectory;
     private readonly ILogger<SavedWispRunner> _logger;
 
     public SavedWispRunner(
@@ -29,12 +30,15 @@ internal sealed class SavedWispRunner : ISavedWispRunner
         _executor = new SpawnWispsExecutor(wispExecutor, executionLog, feedbackStore, workingMemory, options,
             loggerFactory.CreateLogger<SpawnWispsExecutor>(), circuitBreaker, skillStore, skillUsageStore,
             mcpToolDirectory);
+        _mcpToolDirectory = mcpToolDirectory;
         _logger = loggerFactory.CreateLogger<SavedWispRunner>();
     }
 
-    internal SavedWispRunner(SpawnWispsExecutor executor, ILogger<SavedWispRunner> logger)
+    internal SavedWispRunner(SpawnWispsExecutor executor, ILogger<SavedWispRunner> logger,
+        IMcpToolDirectory? mcpToolDirectory = null)
     {
         _executor = executor;
+        _mcpToolDirectory = mcpToolDirectory;
         _logger = logger;
     }
 
@@ -42,17 +46,20 @@ internal sealed class SavedWispRunner : ISavedWispRunner
     {
         var definition = SpawnWispsExecutor.ParseDefinition(definitionJson, out var error);
         if (definition is null)
-            return new SavedWispRun(false, string.Empty, null, null, error);
+            return new SavedWispRun(false, string.Empty, [], error);
 
         try
         {
             var result = await _executor.ExecuteSavedAsync(definition, sessionId, ct);
-            var last = result.StepResults.LastOrDefault(s => s.IsSuccess && !s.WasSkipped && s.Content is not null);
+            // Every step that produced output: a gate is judged on all of them, not just the last.
+            var outputs = result.StepResults
+                .Where(s => s.IsSuccess && !s.WasSkipped && s.Content is not null)
+                .Select(s => new SavedWispStepOutput(s.StepId, s.Content!, $"wisp/{result.WispId}/{s.StepId}/output"))
+                .ToList();
             return new SavedWispRun(
                 result.IsSuccess,
                 result.WispId,
-                last?.Content,
-                last is null ? null : $"wisp/{result.WispId}/{last.StepId}/output",
+                outputs,
                 result.IsSuccess ? null : result.FailedStep?.Error?.Message ?? "The wisp failed");
         }
         catch (OperationCanceledException)
@@ -63,7 +70,7 @@ internal sealed class SavedWispRunner : ISavedWispRunner
         {
             _logger.LogWarning(ex, "Saved wisp '{Description}' threw for session {Session}",
                 definition.Description, sessionId);
-            return new SavedWispRun(false, string.Empty, null, null, ex.Message);
+            return new SavedWispRun(false, string.Empty, [], ex.Message);
         }
     }
 
@@ -72,10 +79,19 @@ internal sealed class SavedWispRunner : ISavedWispRunner
         var definition = SpawnWispsExecutor.ParseDefinition(definitionJson, out var error);
         if (definition is null)
             return new SavedWispCheck(false, false, error);
+
+        // The same canonical form the executor logs runs under, so the shape hash matches them.
+        definition = McpStepResolver.CanonicalizeShorthand(definition, _mcpToolDirectory);
         return InspectDefinition(definition) with { ShapeHash = SpawnWispsExecutor.ComputeShapeHash(definition) };
     }
 
-    /// <summary>Whether every step of <paramref name="definition"/> is a direct call that only reads.</summary>
+    /// <summary>
+    /// Whether every step of <paramref name="definition"/> is a direct call known to only read. This
+    /// decides whether the dream may switch a gate on with nobody reviewing it, so it is an allow-list:
+    /// an MCP tool must be named with a read verb first (<c>get_</c>, <c>list_</c>, <c>search_</c>, …)
+    /// and no write verb; a web step fetches; a script step is refused, since nothing here can tell
+    /// whether its code calls out.
+    /// </summary>
     internal static SavedWispCheck InspectDefinition(WispDefinition definition)
     {
         foreach (var step in definition.Steps)
@@ -88,12 +104,11 @@ internal sealed class SavedWispRunner : ISavedWispRunner
                 case GatewayType.Mcp:
                     if (string.IsNullOrWhiteSpace(step.Tool))
                         return new SavedWispCheck(true, false, $"step '{step.Id}' names no tool");
-                    if (ToolSideEffects.IsSideEffecting(step.Tool))
-                        return new SavedWispCheck(true, false, $"step '{step.Id}' calls '{step.Tool}', which writes");
+                    if (!ToolSideEffects.IsKnownReadOnlyName(step.Tool))
+                        return new SavedWispCheck(true, false,
+                            $"step '{step.Id}' calls '{step.Tool}', which is not named as a read");
                     break;
                 case GatewayType.Web:
-                case GatewayType.Script:
-                    // Web reads; scripts run in the sandbox and change nothing outside it.
                     break;
                 default:
                     return new SavedWispCheck(true, false,

@@ -601,7 +601,7 @@ At most `EfficiencyMaxTasksPerCycle` (3) tasks are reviewed per cycle, costliest
 - a new wisp for the fixed fetch steps, attached **provisional** with its shape hash so its own runs validate it;
 - a gate on a wisp.
 
-A gate is switched on only when its wisp is valid and only reads, and the task has no gate the user set (see [Scheduled-task gates](wisps.md#scheduled-task-gates-848)). Otherwise the gate is recorded as a suggestion.
+A gate is switched on only when its wisp is valid and known to only read, and the task has no gate the user set (see [Scheduled-task gates](wisps.md#scheduled-task-gates-848)). A valid wisp that may write is recorded as a suggestion for the user. A gate the user couldn't act on is only logged, and the task stays up for review. That covers a missing or invalid wisp, or the user's own gate already in place.
 
 **Record:** each applied proposal adds a `ScheduledTaskOptimization` to the task's entry in `scheduled-task-runs.json` (the last 10 are kept). The entry holds:
 - `at`;

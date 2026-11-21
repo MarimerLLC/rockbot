@@ -10,10 +10,16 @@ namespace RockBot.Tools.Scheduling;
 /// turn is skipped. Everything else about the task is kept, which re-scheduling it with
 /// <c>schedule_task</c> would not do.
 /// </summary>
+/// <param name="store">
+/// Writes only the gate (<see cref="IScheduledTaskStore.UpdateGateAsync"/>). Re-saving the task through
+/// the scheduler would re-arm its timer, dropping a pending retry, and overwrite fields another
+/// writer changed meanwhile.
+/// </param>
 /// <param name="skills">Checks the wisp resource exists. Optional: without it the check is skipped.</param>
 /// <param name="wisps">Checks the resource is a valid wisp. Optional: without it the check is skipped.</param>
 internal sealed class SetTaskGateExecutor(
     ISchedulerService scheduler,
+    IScheduledTaskStore store,
     ISkillStore? skills = null,
     ISavedWispRunner? wisps = null) : IToolExecutor
 {
@@ -58,7 +64,8 @@ internal sealed class SetTaskGateExecutor(
             {
                 if (task.Gate is null)
                     return Response(request, $"Task '{task.Name}' has no gate; nothing changed.", isError: false);
-                await scheduler.ScheduleAsync(task with { Gate = null }, ct);
+                if (!await store.UpdateGateAsync(task.Name, null))
+                    return Response(request, $"Could not remove the gate from task '{task.Name}'.", isError: true);
                 return Response(request,
                     $"Removed the gate ({task.Gate.Target}) from task '{task.Name}'. It runs its full LLM turn on every fire again.",
                     isError: false);
@@ -99,7 +106,8 @@ internal sealed class SetTaskGateExecutor(
                 maxSkips ?? TaskGate.DefaultMaxConsecutiveSkips,
                 EnabledBy: "user",
                 Reason: "set with set_task_gate");
-            await scheduler.ScheduleAsync(task with { Gate = gate }, ct);
+            if (!await store.UpdateGateAsync(task.Name, gate))
+                return Response(request, $"Could not set the gate on task '{task.Name}'.", isError: true);
 
             var forced = gate.MaxConsecutiveSkips > 0
                 ? $" After {gate.MaxConsecutiveSkips} skipped runs in a row it runs anyway."

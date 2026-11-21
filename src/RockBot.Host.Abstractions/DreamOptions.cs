@@ -612,10 +612,11 @@ public sealed class DreamOptions
     public int WispSuccessFrequencyThreshold { get; set; } = 3;
 
     /// <summary>
-    /// How far back the wisp success and provisional validation passes look for wisp runs made by
-    /// a scheduled task (#848). Other runs are read over the last 7 days, but a weekly task makes
-    /// only one run a week, so it would never reach <see cref="WispSuccessFrequencyThreshold"/>
-    /// in 7 days. The default fits four weekly runs.
+    /// How far back the wisp success pass looks for wisp runs made by a scheduled task (#848).
+    /// Other runs are read over the last 7 days, but a weekly task makes only one run a week, so it
+    /// would never reach <see cref="WispSuccessFrequencyThreshold"/> in 7 days. The default fits
+    /// four weekly runs. (Provisional validation is not windowed this way: it reads every run since
+    /// the resource was created.)
     /// </summary>
     public TimeSpan ScheduledWispSuccessLookback { get; set; } = TimeSpan.FromDays(35);
 

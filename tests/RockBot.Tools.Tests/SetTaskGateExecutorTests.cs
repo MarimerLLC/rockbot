@@ -28,7 +28,7 @@ public sealed class SetTaskGateExecutorTests
     public async Task Set_StoresGate_AndKeepsEverythingElse()
     {
         var scheduler = new FakeScheduler(Sweep);
-        var executor = new SetTaskGateExecutor(scheduler, StoreWith("mail", "new.wisp.json", "{}"), new FakeWisps(true, true));
+        var executor = new SetTaskGateExecutor(scheduler, new FakeStore(scheduler), StoreWith("mail", "new.wisp.json", "{}"), new FakeWisps(true, true));
 
         var result = await executor.ExecuteAsync(
             Request("""{"name":"SWEEP","skill":"mail","resource":"new.wisp.json","mode":"changed","maxConsecutiveSkips":3}"""),
@@ -47,7 +47,7 @@ public sealed class SetTaskGateExecutorTests
     public async Task Set_DefaultsToNonEmptyAndSixSkips()
     {
         var scheduler = new FakeScheduler(Sweep);
-        var executor = new SetTaskGateExecutor(scheduler);
+        var executor = new SetTaskGateExecutor(scheduler, new FakeStore(scheduler));
 
         var result = await executor.ExecuteAsync(
             Request("""{"name":"sweep","skill":"mail","resource":"new.wisp.json"}"""), CancellationToken.None);
@@ -61,7 +61,7 @@ public sealed class SetTaskGateExecutorTests
     public async Task Set_MissingResource_IsError()
     {
         var scheduler = new FakeScheduler(Sweep);
-        var executor = new SetTaskGateExecutor(scheduler, StoreWith("mail", "other.wisp.json", "{}"));
+        var executor = new SetTaskGateExecutor(scheduler, new FakeStore(scheduler), StoreWith("mail", "other.wisp.json", "{}"));
 
         var result = await executor.ExecuteAsync(
             Request("""{"name":"sweep","skill":"mail","resource":"new.wisp.json"}"""), CancellationToken.None);
@@ -75,11 +75,11 @@ public sealed class SetTaskGateExecutorTests
     public async Task Set_InvalidWisp_IsError_AndWritingWisp_Warns()
     {
         var invalid = new FakeScheduler(Sweep);
-        var badResult = await new SetTaskGateExecutor(invalid, StoreWith("mail", "w.json", "x"), new FakeWisps(false, false, "no steps"))
+        var badResult = await new SetTaskGateExecutor(invalid, new FakeStore(invalid), StoreWith("mail", "w.json", "x"), new FakeWisps(false, false, "no steps"))
             .ExecuteAsync(Request("""{"name":"sweep","skill":"mail","resource":"w.json"}"""), CancellationToken.None);
 
         var writing = new FakeScheduler(Sweep);
-        var warnResult = await new SetTaskGateExecutor(writing, StoreWith("mail", "w.json", "x"), new FakeWisps(true, false, "step 1 sends mail"))
+        var warnResult = await new SetTaskGateExecutor(writing, new FakeStore(writing), StoreWith("mail", "w.json", "x"), new FakeWisps(true, false, "step 1 sends mail"))
             .ExecuteAsync(Request("""{"name":"sweep","skill":"mail","resource":"w.json"}"""), CancellationToken.None);
 
         Assert.IsTrue(badResult.IsError);
@@ -97,7 +97,7 @@ public sealed class SetTaskGateExecutorTests
         var gated = Sweep with { Gate = new TaskGate("mail", "new.wisp.json", ConsecutiveSkips: 2) };
         var scheduler = new FakeScheduler(gated);
 
-        var result = await new SetTaskGateExecutor(scheduler)
+        var result = await new SetTaskGateExecutor(scheduler, new FakeStore(scheduler))
             .ExecuteAsync(Request("""{"name":"sweep","clear":true}"""), CancellationToken.None);
 
         Assert.IsFalse(result.IsError, result.Content);
@@ -110,7 +110,7 @@ public sealed class SetTaskGateExecutorTests
     {
         var scheduler = new FakeScheduler(Sweep);
 
-        var result = await new SetTaskGateExecutor(scheduler)
+        var result = await new SetTaskGateExecutor(scheduler, new FakeStore(scheduler))
             .ExecuteAsync(Request("""{"name":"sweep","clear":true}"""), CancellationToken.None);
 
         Assert.IsFalse(result.IsError);
@@ -121,7 +121,7 @@ public sealed class SetTaskGateExecutorTests
     public async Task UnknownTask_BadMode_MissingArgs_AreErrors()
     {
         var scheduler = new FakeScheduler(Sweep);
-        var executor = new SetTaskGateExecutor(scheduler);
+        var executor = new SetTaskGateExecutor(scheduler, new FakeStore(scheduler));
 
         var unknown = await executor.ExecuteAsync(Request("""{"name":"nope","skill":"s","resource":"r"}"""), CancellationToken.None);
         var badMode = await executor.ExecuteAsync(Request("""{"name":"sweep","skill":"s","resource":"r","mode":"sometimes"}"""), CancellationToken.None);
@@ -162,17 +162,40 @@ public sealed class SetTaskGateExecutorTests
         Assert.AreEqual("wisp mail/new.wisp.json (mode changed; skipped 2/6 in a row, set by optimizer)", text);
     }
 
+    [TestMethod]
+    public async Task Registered_WhenTheTaskStoreIs()
+    {
+        var clock = new AgentClock(
+            new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(),
+            Microsoft.Extensions.Options.Options.Create(new AgentProfileOptions()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentClock>.Instance);
+        var scheduler = new FakeScheduler(Sweep);
+        var registry = new ToolRegistry();
+
+        await new SchedulingToolRegistrar(registry, scheduler, clock,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<SchedulingToolRegistrar>.Instance,
+            taskStore: new FakeStore(scheduler)).StartAsync(CancellationToken.None);
+
+        var reg = registry.GetTools().Single(t => t.Name == "set_task_gate");
+        Assert.AreEqual("scheduling", reg.Source);
+        Assert.AreEqual("scheduling", DeferredToolFamilies.FamilyOf("set_task_gate"));
+        Assert.IsTrue(ConsequentialActions.IsConsequential("set_task_gate", """{"name":"sweep"}"""),
+            "a gate decides whether a task's turn runs at all");
+    }
+
     // ── Fakes ─────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// <see cref="Saved"/> is the task as the store last wrote it. ScheduleAsync re-arms the task's
+    /// timer, which set_task_gate must not do, so calling it fails the test.
+    /// </summary>
     private sealed class FakeScheduler(params ScheduledTask[] tasks) : ISchedulerService
     {
-        public ScheduledTask? Saved { get; private set; }
+        public ScheduledTask[] Tasks { get; } = tasks;
+        public ScheduledTask? Saved { get; set; }
 
-        public Task ScheduleAsync(ScheduledTask task, CancellationToken ct = default)
-        {
-            Saved = task;
-            return Task.CompletedTask;
-        }
+        public Task ScheduleAsync(ScheduledTask task, CancellationToken ct = default) =>
+            throw new AssertFailedException("set_task_gate re-scheduled the task (re-arming its timer)");
 
         public Task<bool> CancelAsync(string name, CancellationToken ct = default) => Task.FromResult(false);
 
@@ -180,6 +203,26 @@ public sealed class SetTaskGateExecutorTests
             Task.FromResult<IReadOnlyList<ScheduledTask>>(tasks);
 
         public DateTimeOffset? GetNextOccurrence(ScheduledTask task) => DateTimeOffset.UtcNow.AddHours(1);
+    }
+
+    /// <summary>Writes only the gate, as FileScheduledTaskStore does, into the scheduler's <c>Saved</c>.</summary>
+    private sealed class FakeStore(FakeScheduler scheduler) : IScheduledTaskStore
+    {
+        public Task<bool> UpdateGateAsync(string name, TaskGate? gate)
+        {
+            var task = scheduler.Tasks.FirstOrDefault(t => t.Name == name);
+            if (task is null)
+                return Task.FromResult(false);
+            scheduler.Saved = task with { Gate = gate };
+            return Task.FromResult(true);
+        }
+
+        public Task SaveAsync(ScheduledTask task) => throw new AssertFailedException("whole-task save");
+        public Task<ScheduledTask?> GetAsync(string name) => Task.FromResult(scheduler.Tasks.FirstOrDefault(t => t.Name == name));
+        public Task<IReadOnlyList<ScheduledTask>> ListAsync() => Task.FromResult<IReadOnlyList<ScheduledTask>>(scheduler.Tasks);
+        public Task<bool> DeleteAsync(string name) => Task.FromResult(false);
+        public Task UpdateLastFiredAsync(string name, DateTimeOffset firedAt) => Task.CompletedTask;
+        public Task UpdateDirectiveAsync(string name, string directive) => Task.CompletedTask;
     }
 
     private sealed class FakeWisps(bool valid, bool readOnly, string? reason = null) : ISavedWispRunner

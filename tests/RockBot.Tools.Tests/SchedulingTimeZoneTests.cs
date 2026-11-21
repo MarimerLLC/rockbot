@@ -232,7 +232,7 @@ public sealed class SchedulingTimeZoneTests
             new UserLocationState(Options.Create(new UserLocationOptions()))).StartAsync(CancellationToken.None);
 
         CollectionAssert.AreEqual(
-            new[] { "schedule_task", "cancel_scheduled_task", "list_scheduled_tasks", "set_task_gate" },
+            new[] { "schedule_task", "cancel_scheduled_task", "list_scheduled_tasks" },
             without.Registrations.Select(r => r.Name).ToArray());
         Assert.IsTrue(with.Registrations.Any(r => r.Name == "set_task_time_zone"));
         Assert.AreEqual("scheduling", with.Registrations.Single(r => r.Name == "set_task_time_zone").Source);

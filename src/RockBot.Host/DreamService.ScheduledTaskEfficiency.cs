@@ -328,9 +328,10 @@ internal sealed partial class DreamService
         if (proposal.Gate is { } gate && !string.IsNullOrWhiteSpace(gate.Skill) && !string.IsNullOrWhiteSpace(gate.Resource))
         {
             var target = new TaskGate(gate.Skill.Trim(), gate.Resource.Trim()).Target;
-            switch (await DecideEfficiencyGateAsync(task, gate))
+            var (verdict, why) = await DecideEfficiencyGateAsync(task, gate);
+            switch (verdict)
             {
-                case (true, _):
+                case GateVerdict.Enable:
                     var mode = ParseGateMode(gate.Mode);
                     var newGate = new TaskGate(gate.Skill.Trim(), gate.Resource.Trim(), mode,
                         EnabledBy: OptimizerGateOwner,
@@ -338,10 +339,18 @@ internal sealed partial class DreamService
                     if (await _scheduledTaskStore!.UpdateGateAsync(task.Name, newGate))
                         changes.Add($"gated on wisp {target} ({(mode == TaskGateMode.Changed ? "changed" : "nonEmpty")})");
                     break;
-                case (false, var why):
+                case GateVerdict.Suggest:
+                    // A real wisp that may write: worth the user's look, and set_task_gate can switch it on.
                     suggestedGate = target;
                     _logger.LogInformation(
                         "DreamService: scheduled-task efficiency — gate {Target} for '{Task}' only suggested: {Why}",
+                        target, task.Name, why);
+                    break;
+                default:
+                    // Nothing the user could act on (no such wisp, an invalid one, their own gate in
+                    // place): not recorded, so it neither misleads the Usage tab nor benches the task.
+                    _logger.LogInformation(
+                        "DreamService: scheduled-task efficiency — gate {Target} for '{Task}' refused: {Why}",
                         target, task.Name, why);
                     break;
             }
@@ -397,24 +406,29 @@ internal sealed partial class DreamService
         return await _skillStore.AttachResourceAsync(skill, input, entry) ? $"{skill}/{filename}" : null;
     }
 
-    /// <summary>Whether a proposed gate may be switched on now, and if not, why.</summary>
-    private async Task<(bool Enable, string? Why)> DecideEfficiencyGateAsync(ScheduledTask task, GateProposalDto gate)
+    private enum GateVerdict { Enable, Suggest, Refuse }
+
+    /// <summary>
+    /// Whether a proposed gate is switched on (a valid wisp that only reads), only suggested to the
+    /// user (a valid wisp that may write), or refused (anything the user could not act on), and why.
+    /// </summary>
+    private async Task<(GateVerdict Verdict, string? Why)> DecideEfficiencyGateAsync(ScheduledTask task, GateProposalDto gate)
     {
         if (task.Gate is { } current && !string.Equals(current.EnabledBy, OptimizerGateOwner, StringComparison.OrdinalIgnoreCase))
-            return (false, "the task has a gate a person set");
+            return (GateVerdict.Refuse, "the task has a gate a person set");
         if (_skillStore is null || _savedWispRunner is null)
-            return (false, "wisps are not available to check it");
+            return (GateVerdict.Refuse, "wisps are not available to check it");
 
         var body = await _skillStore.GetResourceAsync(gate.Skill!.Trim(), gate.Resource!.Trim());
         if (body is null)
-            return (false, "the wisp resource does not exist");
+            return (GateVerdict.Refuse, "the wisp resource does not exist");
 
         var check = _savedWispRunner.Inspect(body);
         if (!check.Valid)
-            return (false, $"the wisp is invalid: {check.Reason}");
+            return (GateVerdict.Refuse, $"the wisp is invalid: {check.Reason}");
         if (!check.ReadOnly)
-            return (false, $"the wisp is not read-only: {check.Reason}");
-        return (true, null);
+            return (GateVerdict.Suggest, $"the wisp is not known to only read: {check.Reason}");
+        return (GateVerdict.Enable, null);
     }
 
     private static TaskGateMode ParseGateMode(string? mode) =>
@@ -506,8 +520,10 @@ internal sealed partial class DreamService
 
         Every field except "task" is optional; omit what you would not change. A gate may name the new
         wisp or one the skill already has. Use "changed" mode only when the wisp's output repeats the
-        same items until something new arrives. Never rewrite a skill marked code-owned. A gate on a
-        wisp that writes anything is only recorded as a suggestion. When nothing would clearly help,
-        return {"tasks": []}.
+        same items until something new arrives. Never rewrite a skill marked code-owned. A gate is
+        switched on only when every step of its wisp is a direct MCP call whose tool name starts with a
+        read verb (search_, list_, get_, ...) and has no write verb, or a web_search / web_browse step;
+        any other gate is only recorded as a suggestion. The gate passes when any step finds results.
+        When nothing would clearly help, return {"tasks": []}.
         """;
 }

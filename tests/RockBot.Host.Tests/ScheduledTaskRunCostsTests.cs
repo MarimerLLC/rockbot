@@ -215,6 +215,47 @@ public sealed class ScheduledTaskRunCostsTests
     }
 
     [TestMethod]
+    public async Task GatedSkips_AreNotInTheCostBaseline_AndHaveNoTier()
+    {
+        var costs = Create();
+        foreach (var cost in new[] { 0.40, 0.40, 0.40 })
+            await RunAsync(costs, "weekly", cost);
+        for (var i = 0; i < 4; i++)
+        {
+            costs.BeginRun("weekly", ModelTier.Balanced);
+            _now = _now.AddDays(7);
+            var skip = await costs.EndRunAsync("weekly", ScheduledRunOutcome.GatedSkip, null);
+            Assert.IsFalse(skip!.Anomalous);
+        }
+
+        var check = await RunAsync(costs, "weekly", 0.45);
+
+        Assert.IsFalse(check!.Anomalous, "$0.45 against the real runs' $0.40, not against the $0 skips");
+        Assert.AreEqual(0.40, check.BaselineMedianUsd!.Value, 1e-9);
+        Assert.AreEqual(3, check.BaselineRuns);
+        Assert.IsTrue((await costs.GetRunsAsync("weekly"))
+            .Where(r => r.Outcome == ScheduledRunOutcome.GatedSkip).All(r => r.HighestTier is null));
+    }
+
+    [TestMethod]
+    public void TierAdvisor_IgnoresGatedSkips()
+    {
+        var now = new DateTimeOffset(2026, 11, 17, 3, 0, 0, TimeSpan.Zero);
+        var task = new ScheduledTask("weekly", "0 7 * * 1", "sweep mail", now.AddDays(-60));
+        ScheduledRunRecord Skip(int i) => new(now.AddDays(-i), now.AddDays(-i), 0, ModelTier.Balanced,
+            Outcome: ScheduledRunOutcome.GatedSkip);
+        var runs = new List<ScheduledRunRecord>
+        {
+            Skip(9), Skip(8), Skip(7),
+            new(now.AddDays(-6), now.AddDays(-6), 0.30, ModelTier.Balanced),
+            new(now.AddDays(-1), now.AddDays(-1), 1.20, ModelTier.High),
+        };
+
+        Assert.IsNull(ScheduledTaskTierAdvisor.Advise(task, runs, new ScheduledTaskCostOptions(), now),
+            "one real Balanced run is not enough evidence, however many skips sit beside it");
+    }
+
+    [TestMethod]
     public void ReportHash_FoldsCaseWhitespaceAndDigits()
     {
         Assert.IsNull(ScheduledTaskRunCosts.ReportHash(null));

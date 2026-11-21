@@ -126,9 +126,9 @@ response.
 
 Each event records: `skillName`, `sessionId`, `timestamp`.
 
-The file name is the session id with `/` and `\` turned into `~` (and any other character a file
-name can't hold into `_`), so the directory stays flat: a scheduled task's session `patrol/{task}`
-writes `patrol~{task}.jsonl`. The tool-call log names its files the same way. Before #848 these
+The file name is the session id with `/` turned into `~`, so the directory stays flat: a
+scheduled task's session `patrol/{task}` writes `patrol~{task}.jsonl`. `~`, `%`, `\` and any
+character a file name can't hold become `%XX`, so two session ids never share a file. The tool-call log names its files the same way. Before #848 these
 two logs tried to write `patrol/{task}.jsonl` into a subdirectory that did not exist, so no
 scheduled task's skill use or tool calls were ever recorded.
 

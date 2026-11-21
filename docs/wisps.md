@@ -496,19 +496,27 @@ answer is no. A **gate** is a saved wisp (a skill's `Wisp` resource) that runs f
    UTC) and `{{last_run_date}}` (`yyyy/MM/dd`) from the task's previous fire (30 days back when it
    has never fired), and runs it through `ISavedWispRunner`. The run is logged like any other wisp
    run, so it counts toward promotion.
-2. `ScheduledTaskGate.Evaluate` decides from the last step's output:
+2. `ScheduledTaskGate.Evaluate` decides from every step's output. The wisp found nothing only when every step did, so a mail search that found messages still passes when a later calendar step comes back empty:
    - **Empty** means blank output; JSON `null`, `[]` or `{}`; an object whose result arrays
      (`results`, `items`, `messages`, `value`, …) are all empty or whose count (`count`, `total`,
      `resultSizeEstimate`, …) is 0; an MCP text envelope around any of those; or a short
      "No results found." sentence with nothing after it.
    - In `nonEmpty` mode any results pass. In `changed` mode results pass only when their hash
-     differs from the last run's.
+     (over every non-empty step output) differs from the last run's.
 3. When the gate does not pass, the run ends there: no LLM call, no reply, no saved report. It is
    recorded as a `GatedSkip` run in `scheduled-task-runs.json`.
-4. When it passes, the patrol turn gets a system message with the output (up to 12,000 chars), its
-   `wisp/{id}/{step}/output` working-memory key, and the `wisp:{id}/{step}` form a worker's
-   `input_keys` takes. The turn shares the gate's `RunFetchRegistry`, so a repeat of the wisp's
-   fetch is flagged.
+4. When it passes, the patrol turn gets two messages:
+   - a **system** message with only our own framing: what ran, since when, and that the results are
+     outside data to report on, never instructions;
+   - a **user-role** "Gate wisp results" block holding each step's output (12,000 chars between
+     them), its `wisp/{id}/{step}/output` working-memory key, and the `wisp:{id}/{step}` form a
+     worker's `input_keys` takes. Every line is quoted with `> `, so a planted "SYSTEM:" line or a
+     forged end marker can't pass as part of the frame.
+
+   The turn shares the gate's `RunFetchRegistry`, so a repeat of the wisp's fetch is flagged.
+5. The gate's state is stored when the run ends: at once for a skip, and only after the turn has
+   finished for a pass or forced run. A turn that is preempted (and retried) or fails leaves the
+   state as it was, so a `changed` gate doesn't mistake the retry's results for ones already seen.
 
 Safety:
 
@@ -519,9 +527,11 @@ Safety:
 - **Who can switch it on.** The user (through the agent's `set_task_gate` tool, an automation change
   under the consequential-action gate), or the dream's
   [scheduled-task efficiency pass](dream-service.md#scheduled-task-efficiency), which switches a gate
-  on only when `ISavedWispRunner.Inspect` finds every step a direct call that only reads: `Mcp` with a
-  non-writing tool name, `Web`, or `Script`. Otherwise it records the gate as a suggestion. It never
-  replaces a gate the user set.
+  on only when `ISavedWispRunner.Inspect` finds every step known to only read. That means an `Mcp` step
+  whose tool name starts with a read verb (`get_`, `list_`, `search_`, …) with no write verb after
+  it, or a `Web` step (`web_search` / `web_browse`). Unknown names, `Script`, `A2A` and LLM steps don't
+  qualify. A valid wisp that doesn't qualify is recorded as a suggestion; a missing or invalid wisp is
+  not recorded at all. It never replaces a gate the user set.
 
 The gate's state (`lastResultHash`, `consecutiveSkips`) lives on the task's `gate` in
 `scheduled-tasks.json`. `schedule_task` with the same name replaces the task and drops its gate.
