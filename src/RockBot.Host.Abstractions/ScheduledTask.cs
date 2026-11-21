@@ -110,5 +110,6 @@ public sealed record TaskGate(
     public const int DefaultMaxConsecutiveSkips = 6;
 
     /// <summary>The wisp as <c>skill/resource</c>, for display.</summary>
+    [JsonIgnore]
     public string Target => $"{Skill}/{Resource}";
 }

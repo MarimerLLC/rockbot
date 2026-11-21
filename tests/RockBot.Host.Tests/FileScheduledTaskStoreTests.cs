@@ -73,8 +73,9 @@ public sealed class FileScheduledTaskStoreTests
         Assert.IsTrue(await store.UpdateGateAsync("weekly", gate));
         var reloaded = (await CreateStore().GetAsync("weekly"))!;
         Assert.AreEqual(original with { Gate = gate }, reloaded);
-        StringAssert.Contains(await File.ReadAllTextAsync(Path.Combine(_tempDir, "scheduled-tasks.json")),
-            "\"mode\": \"Changed\"");
+        var json = await File.ReadAllTextAsync(Path.Combine(_tempDir, "scheduled-tasks.json"));
+        StringAssert.Contains(json, "\"mode\": \"Changed\"");
+        Assert.IsFalse(json.Contains("\"target\""), "the computed Target is not persisted");
 
         Assert.IsTrue(await store.UpdateGateAsync("weekly", null));
         Assert.AreEqual(original, await store.GetAsync("weekly"));

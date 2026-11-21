@@ -290,6 +290,9 @@ public sealed class ScheduledTaskRunCosts
                 _logger.LogWarning(
                     "Scheduled task '{Task}' run cost ${Cost:F2}, {Ratio:F1}x its median ${Median:F2} over {Runs} runs (highest tier {Tier})",
                     taskName, cost, cost / check.BaselineMedianUsd!.Value, check.BaselineMedianUsd, check.BaselineRuns, run.HighestTier);
+            else if (skipped)
+                _logger.LogInformation("Scheduled task '{Task}' run cost ${Cost:F2} (gated skip, no LLM turn)",
+                    taskName, cost);
             else
                 _logger.LogInformation("Scheduled task '{Task}' run cost ${Cost:F2} (highest tier {Tier})",
                     taskName, cost, run.HighestTier);
