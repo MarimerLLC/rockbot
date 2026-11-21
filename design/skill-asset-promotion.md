@@ -202,7 +202,7 @@ When a session uses a skill resource (via `get_skill_resource` or by a wisp run 
 
 ### Validation policy
 
-- Provisional resource succeeds **N** times (default 3) across distinct sessions → manifest entry flipped to `provisional=false`.
+- Provisional resource succeeds **N** times (default 3) across distinct sessions → manifest entry flipped to `provisional=false`. A scheduled task's runs all share its `patrol/{task}` session, so for those each UTC day the task ran counts as one run (#848).
 - Provisional resource fails **M** times (default 2) consecutively → manifest entry removed, body deleted, and the failure feeds the FailureClusterStore (self-repair Phase 5) so the dream pass can decide whether to also weaken the originating skill prose.
 - Provisional resources older than 30d with no usage are demoted (body kept, manifest entry annotated `stale`) so the LLM stops loading them.
 

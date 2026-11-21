@@ -175,6 +175,15 @@ internal static class IntrospectionText
                     : "";
                 var cap = task.MaxTier is { } maxTier ? $"  (capped at {maxTier})" : "";
                 output.WriteLine($"    {task.TaskName}  ${task.LastCostUsd:0.00} / {usual} / {task.LastRunTier ?? "—"}{cap}{flag}");
+                if (task.Gate is { } gate)
+                    output.WriteLine($"      gated on wisp {gate}; {task.GatedSkips} recent run(s) skipped");
+                if (task.LastOptimizedAt is { } optimizedAt)
+                {
+                    var before = task.MedianBeforeOptimizationUsd is { } b ? $"${b:0.00}" : "—";
+                    var after = task.MedianSinceOptimizationUsd is { } a ? $"${a:0.00}" : "no runs yet";
+                    output.WriteLine($"      optimized {optimizedAt:yyyy-MM-dd}: usual {before} -> {after}" +
+                                     (task.OptimizationNote is { } note ? $" ({note})" : ""));
+                }
             }
         }
 

@@ -45,6 +45,10 @@ namespace RockBot.Host;
 /// did the same job (#846).
 /// </param>
 /// <param name="MaxTierReason">Why <paramref name="MaxTier"/> was set, for the logs and the Usage tab.</param>
+/// <param name="Gate">
+/// A saved wisp run before the LLM on every fire (#848). When it finds nothing new the LLM turn
+/// is skipped, so a recurring "nothing new" sweep costs almost nothing. Null runs the task as usual.
+/// </param>
 public sealed record ScheduledTask(
     string Name,
     string CronExpression,
@@ -57,9 +61,54 @@ public sealed record ScheduledTask(
     ClientCapabilities ClientCapabilities = ClientCapabilities.None,
     string? TimeZone = null,
     [property: JsonConverter(typeof(JsonStringEnumConverter))] ModelTier? MaxTier = null,
-    string? MaxTierReason = null)
+    string? MaxTierReason = null,
+    TaskGate? Gate = null)
 {
     /// <summary><paramref name="tier"/>, lowered to <see cref="MaxTier"/> when this task sets one.</summary>
     public ModelTier Cap(ModelTier tier) =>
         MaxTier is { } max && tier > max ? max : tier;
+}
+
+/// <summary>When a <see cref="TaskGate"/> lets the LLM turn run.</summary>
+public enum TaskGateMode
+{
+    /// <summary>Run when the wisp's output holds any results.</summary>
+    NonEmpty,
+
+    /// <summary>Run when the wisp's output holds results that differ from the last run's.</summary>
+    Changed,
+}
+
+/// <summary>
+/// A saved wisp a scheduled task runs deterministically before its LLM turn (#848). A saved wisp is
+/// a skill resource, so it is named by skill and resource file. The wisp should fetch only what is new
+/// since the last run; it may use <c>{{last_run_at}}</c> (ISO 8601) and <c>{{last_run_date}}</c>
+/// (<c>yyyy/MM/dd</c>), filled from the task's last fire.
+/// </summary>
+/// <param name="Skill">The skill the wisp is attached to.</param>
+/// <param name="Resource">The wisp's resource file name on that skill.</param>
+/// <param name="Mode">When the LLM turn runs.</param>
+/// <param name="MaxConsecutiveSkips">
+/// Skipped runs in a row after which the task runs anyway, so a gate that is wrong cannot silence
+/// the task for good. Zero or less never forces a run.
+/// </param>
+/// <param name="EnabledBy">Who switched the gate on: <c>user</c> or <c>optimizer</c>.</param>
+/// <param name="Reason">Why it was switched on.</param>
+/// <param name="LastResultHash">A hash of the wisp's last non-empty output, for <see cref="TaskGateMode.Changed"/>.</param>
+/// <param name="ConsecutiveSkips">Runs skipped in a row so far.</param>
+public sealed record TaskGate(
+    string Skill,
+    string Resource,
+    [property: JsonConverter(typeof(JsonStringEnumConverter))] TaskGateMode Mode = TaskGateMode.NonEmpty,
+    int MaxConsecutiveSkips = TaskGate.DefaultMaxConsecutiveSkips,
+    string? EnabledBy = null,
+    string? Reason = null,
+    string? LastResultHash = null,
+    int ConsecutiveSkips = 0)
+{
+    /// <summary>The default for <see cref="MaxConsecutiveSkips"/>.</summary>
+    public const int DefaultMaxConsecutiveSkips = 6;
+
+    /// <summary>The wisp as <c>skill/resource</c>, for display.</summary>
+    public string Target => $"{Skill}/{Resource}";
 }

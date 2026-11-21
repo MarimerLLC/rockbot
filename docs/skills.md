@@ -126,6 +126,12 @@ response.
 
 Each event records: `skillName`, `sessionId`, `timestamp`.
 
+The file name is the session id with `/` and `\` turned into `~` (and any other character a file
+name can't hold into `_`), so the directory stays flat: a scheduled task's session `patrol/{task}`
+writes `patrol~{task}.jsonl`. The tool-call log names its files the same way. Before #848 these
+two logs tried to write `patrol/{task}.jsonl` into a subdirectory that did not exist, so no
+scheduled task's skill use or tool calls were ever recorded.
+
 The dream cycle queries the last 30 days of events to:
 - Annotate skills with usage counts in the consolidation prompt
 - Build co-occurrence maps (skills used together in the same session)

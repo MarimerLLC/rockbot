@@ -40,6 +40,8 @@ public static class WispServiceCollectionExtensions
 
         builder.Services.AddSingleton<IPrunableLog>(sp => (IPrunableLog)sp.GetRequiredService<IWispExecutionLog>());
         builder.Services.AddHostedService<WispToolRegistrar>();
+        // #848: a scheduled task's gate runs its saved wisp before any LLM turn.
+        builder.Services.AddSingleton<ISavedWispRunner, SavedWispRunner>();
         builder.Services.AddSingleton<IToolSkillProvider, WispToolSkillProvider>();
 
         return builder;

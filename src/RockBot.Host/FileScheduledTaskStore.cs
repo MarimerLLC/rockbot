@@ -149,6 +149,49 @@ internal sealed class FileScheduledTaskStore : IScheduledTaskStore
         }
     }
 
+    public async Task<bool> UpdateGateAsync(string name, TaskGate? gate)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var tasks = await ReadAllAsync();
+            if (!tasks.TryGetValue(name, out var existing))
+                return false;
+
+            tasks[name] = existing with { Gate = gate };
+            await WriteAllAsync(tasks);
+            _logger.LogInformation("Scheduled task '{Name}' gate set to {Gate} ({Mode}, by {By}): {Reason}",
+                name, gate?.Target ?? "(none)", gate?.Mode, gate?.EnabledBy, gate?.Reason);
+            return true;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task<bool> RecordGateResultAsync(string name, string? lastResultHash, int consecutiveSkips)
+    {
+        await _lock.WaitAsync();
+        try
+        {
+            var tasks = await ReadAllAsync();
+            if (!tasks.TryGetValue(name, out var existing) || existing.Gate is null)
+                return false;
+
+            tasks[name] = existing with
+            {
+                Gate = existing.Gate with { LastResultHash = lastResultHash, ConsecutiveSkips = consecutiveSkips },
+            };
+            await WriteAllAsync(tasks);
+            return true;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     public async Task UpdateDirectiveAsync(string name, string directive)
     {
         await _lock.WaitAsync();

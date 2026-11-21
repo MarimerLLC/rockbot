@@ -160,6 +160,24 @@ public sealed record ScheduledTaskUsageIntrospection
 
     /// <summary>Why the ceiling was set.</summary>
     public string? MaxTierReason { get; init; }
+
+    /// <summary>When the dream's efficiency pass last changed the task (#848); null when it never has.</summary>
+    public DateTimeOffset? LastOptimizedAt { get; init; }
+
+    /// <summary>The task's median cost per run before that change.</summary>
+    public double? MedianBeforeOptimizationUsd { get; init; }
+
+    /// <summary>The median cost of the runs since that change; null when it has not run since.</summary>
+    public double? MedianSinceOptimizationUsd { get; init; }
+
+    /// <summary>What the change was (its changes, or the gate it only suggested), in one line.</summary>
+    public string? OptimizationNote { get; init; }
+
+    /// <summary>The task's gate wisp, as <c>skill/resource</c>, when it has one.</summary>
+    public string? Gate { get; init; }
+
+    /// <summary>Recent runs whose LLM turn the gate skipped because its wisp found nothing new.</summary>
+    public int GatedSkips { get; init; }
 }
 
 /// <summary>Token and cost totals. <see cref="CostUsd"/> is an estimate from the agent's pricing table.</summary>

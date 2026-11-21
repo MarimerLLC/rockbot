@@ -1018,7 +1018,10 @@ its own state without calling its LLM, so this works while the LLM is failing an
   pricing row matches, which are costed at $0. `scheduledTasks` lists each scheduled task's latest
   run (#846): `taskName`, `runs`, `lastRunAt`, `lastCostUsd`, `medianCostUsd` (its recent runs),
   `lastRunFlagged` (cost far above that median), `lastRunTier` (the highest tier the run used), and
-  its `maxTier` ceiling with `maxTierReason` when it has one.
+  its `maxTier` ceiling with `maxTierReason` when it has one. From #848 it also carries the dream's
+  latest efficiency change, when there is one: `lastOptimizedAt`, `medianBeforeOptimizationUsd`,
+  `medianSinceOptimizationUsd` and `optimizationNote`. It also has the task's `gate`
+  (`skill/resource`) and `gatedSkips`, the recent runs whose LLM turn the gate skipped.
 - **`mcp`**: each configured MCP server (`servers`): `name`, `displayName`, `transport` (`http` or
   `stdio`), `host`, `state` (`connected`, `sign-in required`, `sign-in pending`, `failed`,
   `not connected`), `usesOAuth`, tool/prompt/resource counts and `version` while connected, and

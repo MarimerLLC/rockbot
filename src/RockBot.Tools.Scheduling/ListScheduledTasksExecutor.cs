@@ -54,6 +54,8 @@ internal sealed class ListScheduledTasksExecutor(ISchedulerService scheduler, Ag
                     if (!next.HasValue)
                         sb.AppendLine($"  Next fire: none (cron has no future occurrence — task will be removed)");
                     sb.AppendLine($"  Description: {task.Description}");
+                    if (task.Gate is { } gate)
+                        sb.AppendLine($"  Gate: {DescribeGate(gate)}");
                     var createdLocal = TimeZoneInfo.ConvertTime(task.CreatedAt, clock.Zone);
                     sb.AppendLine($"  Created: {createdLocal:yyyy-MM-dd HH:mm:ss} ({clock.Zone.Id})");
                     if (task.LastFiredAt.HasValue)
@@ -84,5 +86,14 @@ internal sealed class ListScheduledTasksExecutor(ISchedulerService scheduler, Ag
                 IsError = true
             };
         }
+    }
+
+    /// <summary>One line for a task's gate (#848): the wisp, when it lets the turn run, and the skip count.</summary>
+    internal static string DescribeGate(TaskGate gate)
+    {
+        var mode = gate.Mode == TaskGateMode.Changed ? "changed" : "nonEmpty";
+        var limit = gate.MaxConsecutiveSkips > 0 ? $"/{gate.MaxConsecutiveSkips}" : "";
+        var by = string.IsNullOrWhiteSpace(gate.EnabledBy) ? "" : $", set by {gate.EnabledBy}";
+        return $"wisp {gate.Target} (mode {mode}; skipped {gate.ConsecutiveSkips}{limit} in a row{by})";
     }
 }
