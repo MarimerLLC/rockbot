@@ -33,6 +33,15 @@ public sealed class SubagentOptions
     public int InteractiveConsolidationTimeoutSeconds { get; set; } = 300;
 
     /// <summary>
+    /// How long the consolidation gate keeps waiting for a sibling that has finished but whose
+    /// result has not reached the gate yet (#858). The result crosses the broker and the result
+    /// handler's per-result work (which can include a decision-model call) after the subagent
+    /// leaves the active set. Once this passes, the batch stops waiting for it; a result that
+    /// arrives later is dropped as a late arrival. Capped by the consolidation ceiling.
+    /// </summary>
+    public int ResultArrivalGraceSeconds { get; set; } = 60;
+
+    /// <summary>
     /// Characters of full text inlined into a new subagent's prior-work block (#665): the spawn
     /// <c>inputs</c> the primary passed, then any relevant earlier result that saved no keys. Earlier
     /// results with saved keys are listed as summary and keys for the subagent to fetch (#695) — the

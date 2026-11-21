@@ -26,9 +26,11 @@ public sealed class SubagentManager(
     // Short-lived record of recently-removed subagents (taskId -> owning primary session).
     // A late A2A reply can arrive after a subagent has exited and been pulled from _active;
     // the tombstone lets ISubagentSessionResolver still recover the primary to fold into.
-    // Retention comfortably exceeds the A2A invocation timeout so late replies resolve.
+    // The consolidation gate also reads them (#858): a finished sibling's result may not have
+    // reached the gate yet. Retention comfortably exceeds the A2A invocation timeout so late
+    // replies resolve.
     private static readonly TimeSpan TombstoneRetention = TimeSpan.FromHours(2);
-    private readonly ConcurrentDictionary<string, (string PrimarySessionId, DateTimeOffset RemovedAt)> _tombstones = new();
+    private readonly ConcurrentDictionary<string, FinishedSubagent> _tombstones = new();
 
     public async Task<string> SpawnAsync(
         string description,
@@ -169,13 +171,23 @@ public sealed class SubagentManager(
 
     public IReadOnlyList<SubagentEntry> ListActive()
     {
-        // Clean completed
+        RemoveCompleted();
+        return _active.Values.ToList();
+    }
+
+    public IReadOnlyList<FinishedSubagent> ListRecentlyFinished()
+    {
+        RemoveCompleted();
+        return _tombstones.Values.ToList();
+    }
+
+    private void RemoveCompleted()
+    {
         foreach (var key in _active.Keys.ToList())
         {
             if (_active.TryGetValue(key, out var e) && e.Task.IsCompleted)
                 RemoveActive(key);
         }
-        return _active.Values.ToList();
     }
 
     private async Task RunSubagentAsync(
@@ -324,11 +336,18 @@ public sealed class SubagentManager(
     /// <summary>
     /// Removes a subagent from the active set and records a tombstone of its owning primary
     /// session so a late A2A reply can still be folded back after the subagent has exited.
+    /// The tombstone is written before the entry leaves <c>_active</c>, so a caller that reads
+    /// <see cref="ListActive"/> and then <see cref="ListRecentlyFinished"/> always sees it in one
+    /// of the two (#858).
     /// </summary>
     private void RemoveActive(string taskId)
     {
-        if (_active.TryRemove(taskId, out var entry))
-            _tombstones[taskId] = (entry.PrimarySessionId, DateTimeOffset.UtcNow);
+        if (_active.TryGetValue(taskId, out var entry))
+        {
+            _tombstones.TryAdd(taskId, new FinishedSubagent(
+                taskId, entry.PrimarySessionId, entry.BatchId, entry.Consolidate, DateTimeOffset.UtcNow));
+            _active.TryRemove(taskId, out _);
+        }
         PruneTombstones();
     }
 
@@ -337,7 +356,7 @@ public sealed class SubagentManager(
         var cutoff = DateTimeOffset.UtcNow - TombstoneRetention;
         foreach (var (key, value) in _tombstones)
         {
-            if (value.RemovedAt < cutoff)
+            if (value.FinishedAt < cutoff)
                 _tombstones.TryRemove(key, out _);
         }
     }

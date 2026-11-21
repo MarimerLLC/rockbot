@@ -90,20 +90,23 @@ internal sealed class SubagentResultGate(
 
         var ceiling = ChooseCeiling(result.PrimarySessionId);
         var deadline = DateTimeOffset.UtcNow + ceiling;
+        var arrivalGrace = TimeSpan.FromSeconds(Math.Max(0, options.Value.ResultArrivalGraceSeconds));
 
-        // Wait loop: poll ListActive() until no siblings remain, the signal fires, or
-        // we hit the ceiling. Each iteration gets a fresh signal so we can detect new
-        // arrivals without racing on the previous TaskCompletionSource.
+        // Wait loop: poll the manager until no sibling is pending (still running, or finished
+        // with its result not yet here), or we hit the ceiling. Each iteration gets a fresh
+        // signal so we can detect new arrivals without racing on the previous TaskCompletionSource.
         while (DateTimeOffset.UtcNow < deadline)
         {
-            var activeSiblings = subagentManager.ListActive()
-                .Where(e => e.PrimarySessionId == result.PrimarySessionId
-                         && e.BatchId == result.BatchId
-                         && e.Consolidate
-                         && e.TaskId != result.TaskId)
-                .ToList();
+            // Another waiter already fired this batch, with our result in it.
+            lock (batch.Lock)
+            {
+                if (batch.Fired) return null;
+            }
 
-            if (activeSiblings.Count == 0)
+            var (activeCount, nextArrivalDeadline) =
+                PendingSiblings(result, batch, batchKey, subagentManager, arrivalGrace);
+
+            if (activeCount == 0 && nextArrivalDeadline is null)
             {
                 var fired = TryFire(batch);
                 if (fired is not null)
@@ -125,9 +128,14 @@ internal sealed class SubagentResultGate(
                 signalTask = batch.Signal.Task;
             }
 
-            var remaining = deadline - DateTimeOffset.UtcNow;
+            var now = DateTimeOffset.UtcNow;
+            var remaining = deadline - now;
             var waitFor = remaining < PollInterval ? remaining : PollInterval;
-            if (waitFor <= TimeSpan.Zero) break;
+            // Re-check as soon as a finished sibling's arrival grace runs out.
+            if (nextArrivalDeadline is { } arrivalDeadline && arrivalDeadline - now < waitFor)
+                waitFor = arrivalDeadline - now;
+            if (remaining <= TimeSpan.Zero) break;
+            if (waitFor <= TimeSpan.Zero) continue;
 
             try
             {
@@ -145,10 +153,7 @@ internal sealed class SubagentResultGate(
 
         // Ceiling reached. Cancel stragglers and give their failure results time to arrive.
         var stragglers = subagentManager.ListActive()
-            .Where(e => e.PrimarySessionId == result.PrimarySessionId
-                     && e.BatchId == result.BatchId
-                     && e.Consolidate
-                     && e.TaskId != result.TaskId)
+            .Where(e => IsSibling(result, e.TaskId, e.PrimarySessionId, e.BatchId, e.Consolidate))
             .ToList();
 
         if (stragglers.Count > 0)
@@ -210,6 +215,70 @@ internal sealed class SubagentResultGate(
         return null; // someone else fired
     }
 
+    /// <summary>
+    /// The siblings the batch still waits for (#858): those still running, and those that have
+    /// finished but whose result has not entered the batch yet. A finished subagent leaves the
+    /// manager's active set as soon as it publishes its result, well before the result crosses
+    /// the broker and the handler's per-result work to get here; without the second kind, the
+    /// first result to arrive fired alone and its siblings were dropped as late arrivals.
+    /// Returns the number still running, and the earliest time a finished sibling's arrival
+    /// grace runs out (null when none is awaited).
+    /// </summary>
+    private (int ActiveCount, DateTimeOffset? NextArrivalDeadline) PendingSiblings(
+        SubagentResultMessage result,
+        PendingBatch batch,
+        string batchKey,
+        ISubagentManager subagentManager,
+        TimeSpan arrivalGrace)
+    {
+        // Active first: an entry is listed as finished before it leaves the active set, so
+        // reading in this order can't miss one moving between the two.
+        var active = subagentManager.ListActive()
+            .Where(e => IsSibling(result, e.TaskId, e.PrimarySessionId, e.BatchId, e.Consolidate))
+            .ToList();
+        var finished = subagentManager.ListRecentlyFinished()
+            .Where(f => IsSibling(result, f.TaskId, f.PrimarySessionId, f.BatchId, f.Consolidate))
+            .ToList();
+
+        var now = DateTimeOffset.UtcNow;
+        DateTimeOffset? nextArrivalDeadline = null;
+        int activeCount;
+        lock (batch.Lock)
+        {
+            // A sibling whose result is already here isn't pending, even if its run hasn't left
+            // the active set yet: nothing signals the gate when it does.
+            activeCount = active.Count(e => !batch.Results.Any(r => r.TaskId == e.TaskId));
+
+            foreach (var f in finished)
+            {
+                if (batch.Results.Any(r => r.TaskId == f.TaskId))
+                    continue;
+
+                var arrivalDeadline = f.FinishedAt + arrivalGrace;
+                if (arrivalDeadline > now)
+                {
+                    if (nextArrivalDeadline is null || arrivalDeadline < nextArrivalDeadline)
+                        nextArrivalDeadline = arrivalDeadline;
+                }
+                else if (batch.ReportedMissing.Add(f.TaskId))
+                {
+                    logger.LogWarning(
+                        "Batch {BatchKey}: sibling {TaskId} finished {Seconds:F0}s ago but its result has not arrived — no longer waiting for it",
+                        batchKey, f.TaskId, (now - f.FinishedAt).TotalSeconds);
+                }
+            }
+        }
+
+        return (activeCount, nextArrivalDeadline);
+    }
+
+    private static bool IsSibling(
+        SubagentResultMessage result, string taskId, string primarySessionId, string? batchId, bool consolidate) =>
+        primarySessionId == result.PrimarySessionId
+        && batchId == result.BatchId
+        && consolidate
+        && taskId != result.TaskId;
+
     private TimeSpan ChooseCeiling(string primarySessionId)
     {
         var opts = options.Value;
@@ -245,6 +314,10 @@ internal sealed class SubagentResultGate(
     private sealed class PendingBatch
     {
         public List<SubagentResultMessage> Results { get; } = [];
+
+        // Finished siblings whose result didn't arrive within the arrival grace (#858), so the
+        // warning for each is logged once across all waiters.
+        public HashSet<string> ReportedMissing { get; } = [];
         public bool Fired { get; set; }
         public DateTimeOffset? FiredAt { get; set; }
         public Lock Lock { get; } = new();
