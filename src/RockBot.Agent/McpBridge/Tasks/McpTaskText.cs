@@ -18,6 +18,8 @@ internal static class McpTaskText
     /// <remarks>
     /// A watch's ending or expiry warning is kept only for a subagent: a running one has nothing
     /// but its working memory to learn it from (#854). A user conversation's turn is the text itself.
+    /// Only a user conversation or a subagent can watch (<c>McpTaskContext.CanReceiveLater</c>), so
+    /// any watch session that isn't a user conversation is a subagent's, whatever its spelling.
     /// </remarks>
     public static string? WorkingMemoryKey(McpTaskResult message) => message.Kind switch
     {
@@ -26,14 +28,21 @@ internal static class McpTaskText
         McpTaskResult.KindEscalatedResult => $"{message.SessionId}/{HandbackText.EscalatedKeyPrefix}{message.QuestionId}/result",
         McpTaskResult.KindResourceUpdated =>
             $"{message.SessionId}/mcp-watch/{message.ServerName}/{message.TaskId}/{(message.ContentHash is { Length: >= 12 } h ? h[..12] : "latest")}",
-        McpTaskResult.KindWatchEnded when HandbackSessions.IsSubagentSession(message.SessionId) =>
-            $"{message.SessionId}/mcp-watch/{message.ServerName}/{message.TaskId}/ended",
+        McpTaskResult.KindWatchEnded when !HandbackSessions.IsUserSession(message.SessionId) =>
+            WatchNoticeKey(message.SessionId, message.ServerName, message.TaskId, EndedNotice),
         // A watch kept past its first lifetime is warned again: the latest warning replaces the last.
-        McpTaskResult.KindWatchExpiring when HandbackSessions.IsSubagentSession(message.SessionId) =>
-            $"{message.SessionId}/mcp-watch/{message.ServerName}/{message.TaskId}/expiring",
+        McpTaskResult.KindWatchExpiring when !HandbackSessions.IsUserSession(message.SessionId) =>
+            WatchNoticeKey(message.SessionId, message.ServerName, message.TaskId, ExpiringNotice),
         McpTaskResult.KindWatchEnded or McpTaskResult.KindWatchExpiring => null,
         _ => $"{message.SessionId}/mcp-task/{message.ServerName}/{message.TaskId}/result",
     };
+
+    public const string EndedNotice = "ended";
+    public const string ExpiringNotice = "expiring";
+
+    /// <summary>Where a subagent's watch keeps its ending or expiry warning, beside its updates.</summary>
+    public static string WatchNoticeKey(string sessionId, string server, string watchId, string notice) =>
+        $"{sessionId}/mcp-watch/{server}/{watchId}/{notice}";
 
     /// <summary>The working-memory category of <see cref="WorkingMemoryKey"/>.</summary>
     public static string WorkingMemoryCategory(McpTaskResult message) => message.Kind switch

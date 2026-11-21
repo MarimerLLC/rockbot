@@ -4178,13 +4178,18 @@ internal sealed partial class DreamService : IHostedService, IDisposable
     /// <paramref name="perEntryCap"/> chars and emits at most <paramref name="maxEntries"/>
     /// entries (newest first by <see cref="WorkingMemoryEntry.StoredAt"/>).
     /// </summary>
+    /// <remarks>
+    /// What a resource watch delivered is left out: it is a server's data or the user's watch
+    /// instructions, which must not become memories or skills (#853, #854).
+    /// </remarks>
     internal static string? BuildSubagentWhiteboardSection(
         IReadOnlyList<WorkingMemoryEntry> entries, int perEntryCap, int maxEntries)
     {
-        if (entries.Count == 0)
+        var mined = entries.Where(e => !WorkingMemoryCategories.IsWatchDelivery(e.Category)).ToList();
+        if (mined.Count == 0)
             return null;
 
-        var ordered = entries
+        var ordered = mined
             .OrderByDescending(e => e.StoredAt)
             .Take(maxEntries)
             .ToList();

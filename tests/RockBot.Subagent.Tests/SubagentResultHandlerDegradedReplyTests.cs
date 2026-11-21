@@ -53,6 +53,23 @@ public class SubagentResultHandlerDegradedReplyTests
         StringAssert.Contains(content, "(no output)");
     }
 
+    [TestMethod]
+    public void WhatAWatchDelivered_IsNotListedAsAnOutput()
+    {
+        // #854: a watch's notices are for the subagent's run, and quote the user's instructions.
+        var now = DateTimeOffset.UtcNow;
+        var entries = new[]
+        {
+            new WorkingMemoryEntry("subagent/a1/findings", "alpha", now, now.AddHours(1), null, null),
+            new WorkingMemoryEntry("subagent/a1/mcp-watch/scheduler/w_1/expiring", "ends soon", now, now.AddHours(1),
+                WorkingMemoryCategories.McpWatch, null),
+        };
+
+        var outputs = SubagentResultHandler.Outputs(entries);
+
+        CollectionAssert.AreEqual(new[] { "subagent/a1/findings" }, outputs.Select(e => e.Key).ToArray());
+    }
+
     // ── Where a consolidated result is delivered ────────────────────────────
 
     [TestMethod]

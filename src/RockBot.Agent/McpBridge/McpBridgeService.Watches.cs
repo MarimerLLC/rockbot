@@ -245,6 +245,21 @@ public sealed partial class McpBridgeService
             entry.ExpiresAt = expires;
             entry.OnChange = instructions;
 
+            // A subagent's last expiry warning no longer holds: kept, it would read as still ending (#854).
+            if (_workingMemory is not null && !Handback.HandbackSessions.IsUserSession(entry.SessionId))
+            {
+                try
+                {
+                    await _workingMemory.DeleteAsync(Tasks.McpTaskText.WatchNoticeKey(
+                        entry.SessionId, entry.Server, entry.WatchId, Tasks.McpTaskText.ExpiringNotice));
+                }
+                catch (Exception ex)
+                {
+                    // At worst the stale warning stays until its TTL.
+                    _logger.LogWarning(ex, "Could not clear the expiry warning of watch {WatchId}", entry.WatchId);
+                }
+            }
+
             _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) asked for again; runs until at least {ExpiresAt:u}{Instructions}",
                 entry.WatchId, entry.Server, entry.Uri, expires, onChange is null ? "" : instructions is null ? ", instructions cleared" : ", instructions set");
             return RewatchOutcome.Kept;

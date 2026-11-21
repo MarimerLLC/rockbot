@@ -25,8 +25,11 @@ public class McpWatchInstructionsEndToEndTests
     private static Task<BridgeHarness> StartAsync(
         WatchableResources store,
         Action<McpBridgeOptions>? configureBridge = null,
-        TimeProvider? timeProvider = null) =>
+        TimeProvider? timeProvider = null,
+        RockBot.Host.IWorkingMemory? workingMemory = null) =>
         BridgeHarness.StartAsync(
+            workingMemory: workingMemory,
+            tools:
             [
                 .. store.Tools(),
                 // Changes a resource although the server calls it read-only: a call it marks so isn't an echo's cause.
@@ -331,6 +334,36 @@ public class McpWatchInstructionsEndToEndTests
         var warnings = harness.TaskResults.Where(r => r.Kind == McpTaskResult.KindWatchExpiring).ToList();
         Assert.AreNotEqual(warnings[0].ContentHash, warnings[1].ContentHash, "each lifetime's warning is handled on its own");
         Assert.AreEqual(1, harness.Bridge.ActiveWatchEntries.Count);
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task ASubagentsExpiryWarning_IsKeptUntilItAsksForTheWatchAgain()
+    {
+        // #854: a running subagent reads the warning from working memory; once kept, it no longer holds.
+        const string subagent = "subagent/task-1";
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        var workingMemory = new McpHandbackEndToEndTests.RecordingWorkingMemory();
+        await using var harness = await StartAsync(store, timeProvider: clock, workingMemory: workingMemory, configureBridge: o =>
+        {
+            o.WatchTtlDays = 30;
+            o.WatchMaxLifetimeDays = 3;
+            o.WatchExpiryWarningHours = 24;
+            o.WatchDebounceMs = 0;
+        });
+        var watchId = await WatchAsync(harness, session: subagent);
+
+        clock.Advance(TimeSpan.FromHours(60));
+        var warning = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindWatchExpiring);
+        var key = $"{subagent}/mcp-watch/{BridgeHarness.ServerName}/{watchId}/expiring";
+        Assert.AreEqual(key, warning.WorkingMemoryKey);
+        StringAssert.Contains(workingMemory.Store[key], "maximum lifetime");
+
+        var again = await harness.WatchWithInstructionsAsync(Poll, subagent, onChange: null, instructionsAllowed: false);
+        Assert.IsNull(again.Error, again.Error);
+        Assert.IsFalse(workingMemory.Store.ContainsKey(key), "the kept watch no longer reads as ending");
     }
 
     // ── Echoes of the session's own calls ───────────────────────────────────
