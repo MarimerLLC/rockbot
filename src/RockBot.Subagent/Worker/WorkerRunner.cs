@@ -124,7 +124,7 @@ internal sealed class WorkerRunner(
         // #847: data the spawner already fetched (a wisp's output, a saved result). The worker
         // filters it instead of fetching it again.
         if (await BuildInputDataMessageAsync(definition.InputKeys, workingMemory, workerNamespace,
-                options.Value.MaxInlineInputChars, logger) is { } inputData)
+                options.Value.MaxInlineInputChars, logger, workingMemoryOptions.Value) is { } inputData)
             chatMessages.Add(new ChatMessage(ChatRole.System, inputData));
 
         chatMessages.Add(new ChatMessage(ChatRole.User, definition.Description));
@@ -276,19 +276,38 @@ internal sealed class WorkerRunner(
     private static readonly TimeSpan InputChunkTtl = TimeSpan.FromMinutes(30);
 
     /// <summary>
+    /// Category of the chunked copies of oversize input data. It is one of the regenerable
+    /// categories (<see cref="WorkingMemoryOptions.DefaultEvictableCategories"/>), so the copies
+    /// count against the cached-content budget, not the saved-notes one: a large input must never
+    /// fill the worker's namespace and leave no room for the findings it saves to its result key.
+    /// </summary>
+    internal const string InputChunkCategory = "wisp-input";
+
+    /// <summary>
     /// The system message carrying a worker's <see cref="WorkerDefinition.InputKeys"/> data (#847),
     /// or null when it has none. Each key's content is inlined while the running total stays within
     /// <paramref name="maxInlineChars"/>; a key that doesn't fit is chunked into the worker's
     /// namespace and listed by chunk key. A key that can't be read is named as missing, so the
     /// worker reports it as blocked instead of silently fetching the data itself.
+    /// <para>
+    /// Each key carries the provenance header <c>get_from_working_memory</c> would show
+    /// (<see cref="WorkingMemoryProvenance.BuildHeader"/>): who wrote it and when, and for a
+    /// snapshot key (<c>shared/patrol/…</c>) the may-be-stale or STALE SNAPSHOT warning. The
+    /// don't-refetch rule yields to that warning, so a stale calendar snapshot is not taken for
+    /// live state.
+    /// </para>
     /// </summary>
     internal static async Task<string?> BuildInputDataMessageAsync(
         IReadOnlyList<string>? inputKeys,
         IWorkingMemory workingMemory,
         string workerNamespace,
         int maxInlineChars,
-        ILogger logger)
+        ILogger logger,
+        WorkingMemoryOptions? workingMemoryOptions = null,
+        DateTimeOffset? now = null)
     {
+        var provenanceOptions = workingMemoryOptions ?? new WorkingMemoryOptions();
+        var readAt = now ?? DateTimeOffset.UtcNow;
         if (inputKeys is not { Count: > 0 })
             return null;
 
@@ -302,9 +321,11 @@ internal sealed class WorkerRunner(
             return null;
 
         var sb = new StringBuilder();
-        sb.AppendLine("Input data — already fetched by the spawning agent. It is complete and current for this task:");
-        sb.AppendLine("work from it. Do NOT call tools to fetch this same data again (no repeat searches, listings or");
-        sb.AppendLine("detail reads of what is below). Call a tool only for data that is not here.");
+        sb.AppendLine("Input data — already fetched by the spawning agent for this task: work from it. Do NOT call");
+        sb.AppendLine("tools to fetch this same data again (no repeat searches, listings or detail reads of what is");
+        sb.AppendLine("below). Call a tool only for data that is not here. Each key's bracketed header says who wrote");
+        sb.AppendLine("it and when; when a header calls the data a snapshot that may be stale, follow that header —");
+        sb.AppendLine("it overrides the no-refetch rule for that key.");
 
         var budget = maxInlineChars;
         for (var i = 0; i < keys.Count; i++)
@@ -312,10 +333,14 @@ internal sealed class WorkerRunner(
             var key = keys[i];
             sb.AppendLine();
 
+            WorkingMemoryEntry? entry = null;
             string? content;
             try
             {
-                content = await workingMemory.GetAsync(key);
+                // The entry carries the writer and stored-at the provenance header needs; a store
+                // that can't supply it still returns the bare value.
+                entry = await workingMemory.GetEntryAsync(key);
+                content = entry?.Value ?? await workingMemory.GetAsync(key);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -330,9 +355,12 @@ internal sealed class WorkerRunner(
                 continue;
             }
 
+            var header = WorkingMemoryProvenance.BuildHeader(key, entry, readAt, provenanceOptions);
+
             if (maxInlineChars <= 0 || content.Length <= budget)
             {
                 sb.AppendLine($"### {key}");
+                sb.AppendLine(header);
                 sb.AppendLine(content);
                 budget -= content.Length;
                 continue;
@@ -340,9 +368,10 @@ internal sealed class WorkerRunner(
 
             var chunks = ContentChunker.Chunk(content, InputChunkMaxLength);
             var stored = await ChunkedContentStore.StoreAsync(
-                workingMemory, $"{workerNamespace}/input-{i}", chunks, InputChunkTtl, category: "worker-input");
+                workingMemory, $"{workerNamespace}/input-{i}", chunks, InputChunkTtl, category: InputChunkCategory);
 
             sb.AppendLine($"### {key} — {content.Length:N0} chars, split into {chunks.Count} chunk(s)");
+            sb.AppendLine(header);
             if (stored.ShortfallNote is { } shortfall)
                 sb.AppendLine(shortfall);
             sb.AppendLine("Read the chunks you need with get_from_working_memory(key):");

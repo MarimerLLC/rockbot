@@ -49,6 +49,72 @@ public class RunFetchRegistryTests
     }
 
     [TestMethod]
+    public void McpInvokeTool_OnADottedServer_MatchesItsSanitizedTypedName()
+    {
+        // McpWrapperNaming.For turns "mail.prod" into the wrapper "mail-prod__search_emails".
+        var registry = new RunFetchRegistry();
+        registry.Observe("mcp_invoke_tool",
+            """{"server_name":"mail.prod","tool_name":"search.emails","arguments":{"query":"x"}}""",
+            true, "by wisp w1 step s", "wisp/w1/s/output");
+
+        Assert.IsNotNull(registry.Observe("mail-prod__search-emails", """{"query":"x"}""", true, "by direct"));
+    }
+
+    [TestMethod]
+    public void TypedWrite_OnADottedServer_ForgetsTheGatewayReads()
+    {
+        var registry = new RunFetchRegistry();
+        registry.Observe("mcp_invoke_tool",
+            """{"server_name":"mail.prod","tool_name":"search_emails","arguments":{"query":"x"}}""",
+            true, "by A", origin: "s");
+
+        registry.Observe("mail-prod__send_email", """{"to":"a@example.com"}""", true, "by A", origin: "s");
+
+        Assert.IsNull(registry.Observe("mcp_invoke_tool",
+            """{"server_name":"mail.prod","tool_name":"search_emails","arguments":{"query":"x"}}""",
+            true, "by B", origin: "s"));
+    }
+
+    [TestMethod]
+    [DataRow("mcp_read_resource", """{"server_name":"docs","uri":"docs://a"}""")]
+    [DataRow("mcp_get_prompt", """{"server_name":"docs","prompt_name":"summary","arguments":{"topic":"x"}}""")]
+    public void ServerScopedGatewayRead_IsForgottenAfterAWriteOnItsServer(string tool, string args)
+    {
+        var registry = new RunFetchRegistry();
+        registry.Observe(tool, args, true, "by A", origin: "s");
+        Assert.IsNotNull(registry.Observe(tool, args, true, "by A", origin: "s"), "A plain repeat is flagged.");
+
+        registry.Observe("mcp_invoke_tool",
+            """{"server_name":"docs","tool_name":"update_doc","arguments":{"uri":"docs://a"}}""", true, "by W", origin: "s");
+
+        Assert.IsNull(registry.Observe(tool, args, true, "by B", origin: "s"),
+            "The write on that server makes the re-read legitimate.");
+    }
+
+    [TestMethod]
+    public void ServerScopedGatewayRead_WriteOnAnotherServer_KeepsIt()
+    {
+        var registry = new RunFetchRegistry();
+        const string read = """{"server_name":"docs","uri":"docs://a"}""";
+        registry.Observe("mcp_read_resource", read, true, "by A", origin: "s");
+
+        registry.Observe("mail__send_email", """{"to":"a@example.com"}""", true, "by W", origin: "s");
+
+        var prior = registry.Observe("mcp_read_resource", read, true, "by B", origin: "s");
+        Assert.IsNotNull(prior);
+        Assert.AreEqual("mcp_read_resource on docs", prior.Tool);
+    }
+
+    [TestMethod]
+    public void ServerScopedGatewayRead_DifferentUris_AreDifferentFetches()
+    {
+        var registry = new RunFetchRegistry();
+        registry.Observe("mcp_read_resource", """{"server_name":"docs","uri":"docs://a"}""", true, "by A");
+
+        Assert.IsNull(registry.Observe("mcp_read_resource", """{"server_name":"docs","uri":"docs://b"}""", true, "by B"));
+    }
+
+    [TestMethod]
     public void McpInvokeTool_StringifiedInnerArguments_MatchesTheTypedName()
     {
         var registry = new RunFetchRegistry();
@@ -218,7 +284,11 @@ public class RunFetchRegistryTests
     public void McpReadResource_IsTracked()
     {
         var registry = new RunFetchRegistry();
-        registry.Observe("mcp_read_resource", """{"uri":"doc://a"}""", true, "by A");
+        registry.Observe("mcp_read_resource", """{"server_name":"docs","uri":"doc://a"}""", true, "by A");
+        Assert.AreEqual(1, registry.Count);
+
+        // Without its server the read can't be tied to the writes that would invalidate it.
+        registry.Observe("mcp_read_resource", """{"uri":"doc://b"}""", true, "by A");
         Assert.AreEqual(1, registry.Count);
     }
 

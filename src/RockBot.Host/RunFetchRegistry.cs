@@ -170,13 +170,27 @@ public sealed class RunFetchRegistry
         {
             var map = arguments?.ToDictionary(a => a.Key, a => a.Value, StringComparer.OrdinalIgnoreCase)
                       ?? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-            server = AsString(map.GetValueOrDefault("server_name")) ?? string.Empty;
-            tool = AsString(map.GetValueOrDefault("tool_name")) ?? string.Empty;
+            // Sanitized as a typed wrapper name is, so this call and the typed {server}__{tool}
+            // call compare equal even for a server such as "mail.prod" (wrapper "mail-prod__…").
+            server = SanitizeWrapperPart(AsString(map.GetValueOrDefault("server_name")));
+            tool = SanitizeWrapperPart(AsString(map.GetValueOrDefault("tool_name")));
             if (server.Length == 0 || tool.Length == 0) return null;
             args = ToNode(map.GetValueOrDefault("arguments"));
             // A model sometimes sends the inner arguments as a JSON string.
             if (args is JsonValue v && v.TryGetValue<string>(out var s) && TryParseNode(s) is { } parsed)
                 args = parsed;
+        }
+        else if (McpServerScopedGatewayTools.Contains(toolName))
+        {
+            // mcp_read_resource / mcp_get_prompt name their server in server_name. Keep it, so a
+            // write on that server forgets these reads too; the rest of the arguments identify them.
+            var map = arguments?.ToDictionary(a => a.Key, a => a.Value, StringComparer.OrdinalIgnoreCase)
+                      ?? new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            server = SanitizeWrapperPart(AsString(map.GetValueOrDefault("server_name")));
+            if (server.Length == 0) return null;
+            map.Remove("server_name");
+            tool = toolName;
+            args = ToNode(map);
         }
         else
         {
@@ -192,7 +206,9 @@ public sealed class RunFetchRegistry
                             || (server.Length > 0 && ToolSideEffects.IsBookkeeping(tool));
         if (!sideEffecting && !IsTrackedRead(toolName, tool)) return null;
 
-        var display = server.Length > 0 ? $"{server}__{tool}" : tool;
+        var display = McpServerScopedGatewayTools.Contains(toolName)
+            ? $"{toolName} on {server}"
+            : server.Length > 0 ? $"{server}__{tool}" : tool;
         var canonical = Canonicalize(args)?.ToJsonString() ?? "{}";
         if (canonical == "null") canonical = "{}";
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
@@ -218,6 +234,28 @@ public sealed class RunFetchRegistry
     {
         ToolSideEffects.McpInvokeToolName, "mcp_read_resource", "mcp_get_prompt",
     };
+
+    /// <summary>Gateway tools that read from the server named in their <c>server_name</c> argument.</summary>
+    private static readonly HashSet<string> McpServerScopedGatewayTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mcp_read_resource", "mcp_get_prompt",
+    };
+
+    /// <summary>
+    /// One part of a typed wrapper name as <c>McpWrapperNaming.For</c> writes it: every character
+    /// outside <c>[A-Za-z0-9_-]</c> becomes <c>-</c>. Applied to the server and tool an
+    /// <c>mcp_invoke_tool</c> call names, so they key like the typed call's parts. Two servers whose
+    /// names differ only in such a character would share entries; that only costs a stray note.
+    /// </summary>
+    internal static string SanitizeWrapperPart(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        return value.All(IsWrapperChar)
+            ? value
+            : new string(value.Select(c => IsWrapperChar(c) ? c : '-').ToArray());
+
+        static bool IsWrapperChar(char c) => char.IsAsciiLetterOrDigit(c) || c is '_' or '-';
+    }
 
     private static bool IsTrackedRead(string calledName, string tool)
     {

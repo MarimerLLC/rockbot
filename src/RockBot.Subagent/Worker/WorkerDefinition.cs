@@ -78,10 +78,15 @@ public sealed record WorkerDefinition
             var slash = reference.IndexOf('/');
             if (slash <= 0 || slash == reference.Length - 1)
                 return null;
-            // Tolerate a reference written with the output suffix or the namespace prefix.
+            // Tolerate a reference written with the namespace prefix or the output suffix. The
+            // suffix counts only after both a wisp id and a step id, so a step named "output"
+            // (wisp:w1/output) still resolves to wisp/w1/output/output, where it is stored.
             if (reference.StartsWith("wisp/", StringComparison.OrdinalIgnoreCase))
                 reference = reference["wisp/".Length..];
-            return reference.EndsWith("/output", StringComparison.OrdinalIgnoreCase)
+            var segments = reference.Split('/');
+            if (segments.Length < 2 || segments.Any(s => s.Length == 0))
+                return null;
+            return segments.Length >= 3 && string.Equals(segments[^1], "output", StringComparison.OrdinalIgnoreCase)
                 ? $"wisp/{reference}"
                 : $"wisp/{reference}/output";
         }

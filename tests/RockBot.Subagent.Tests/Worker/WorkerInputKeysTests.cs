@@ -15,6 +15,9 @@ public class WorkerInputKeysTests
     [TestMethod]
     [DataRow("wisp:wisp-1234/search", "wisp/wisp-1234/search/output")]
     [DataRow("wisp:wisp-1234/search/output", "wisp/wisp-1234/search/output")]
+    [DataRow("wisp:w1/output", "wisp/w1/output/output")]
+    [DataRow("wisp:wisp/w1/output", "wisp/w1/output/output")]
+    [DataRow("wisp:w1/output/output", "wisp/w1/output/output")]
     [DataRow("wisp:wisp/wisp-1234/search", "wisp/wisp-1234/search/output")]
     [DataRow("WISP: wisp-1234/search ", "wisp/wisp-1234/search/output")]
     [DataRow("wisp/wisp-1234/search/output", "wisp/wisp-1234/search/output")]
@@ -62,7 +65,8 @@ public class WorkerInputKeysTests
 
         Assert.IsNotNull(message);
         StringAssert.Contains(message, "already fetched");
-        StringAssert.Contains(message, "Do NOT call tools to fetch this same data again");
+        StringAssert.Contains(message, "Do NOT call");
+        StringAssert.Contains(message, "fetch this same data again");
         StringAssert.Contains(message, "### wisp/w1/search/output");
         StringAssert.Contains(message, "\"subject\":\"Invoice\"");
     }
@@ -79,7 +83,8 @@ public class WorkerInputKeysTests
             ["wisp:w1/a", "wisp:w1/b"], memory, "worker/t1", 1000, NullLogger.Instance);
 
         Assert.IsNotNull(message);
-        StringAssert.Contains(message, "### wisp/w1/a/output\nsmall".Replace("\n", Environment.NewLine));
+        StringAssert.Contains(message, "### wisp/w1/a/output");
+        StringAssert.Contains(message, $"{Environment.NewLine}small");
         StringAssert.Contains(message, "### wisp/w1/b/output — ");
         StringAssert.Contains(message, "chunk(s)");
         Assert.IsFalse(message.Contains(big), "An oversize value is not inlined.");
@@ -87,6 +92,57 @@ public class WorkerInputKeysTests
         Assert.IsTrue(chunkKeys.Count >= 2, "The value is chunked into the worker's namespace.");
         foreach (var key in chunkKeys)
             StringAssert.Contains(message, $"`{key}`");
+    }
+
+    [TestMethod]
+    public async Task BuildInputDataMessage_ChunkCopiesUseARegenerableCategory()
+    {
+        var memory = new FakeWorkingMemory();
+        memory.Values["wisp/w1/b/output"] = string.Join("\n\n", Enumerable.Range(0, 400).Select(i => $"Paragraph {i}: " + new string('x', 100)));
+
+        await WorkerRunner.BuildInputDataMessageAsync(["wisp:w1/b"], memory, "worker/t1", 1000, NullLogger.Instance);
+
+        var categories = memory.Categories
+            .Where(c => c.Key.StartsWith("worker/t1/input-", StringComparison.Ordinal))
+            .Select(c => c.Value)
+            .Distinct()
+            .ToList();
+        CollectionAssert.AreEqual(new[] { WorkerRunner.InputChunkCategory }, categories);
+        CollectionAssert.Contains(WorkingMemoryOptions.DefaultEvictableCategories.ToList(), WorkerRunner.InputChunkCategory,
+            "Chunk copies must not use up the saved-notes budget the worker needs for its result key.");
+    }
+
+    [TestMethod]
+    public async Task BuildInputDataMessage_StaleSnapshot_KeepsTheStaleWarning()
+    {
+        var now = new DateTimeOffset(2026, 11, 20, 12, 0, 0, TimeSpan.Zero);
+        var memory = new FakeWorkingMemory();
+        memory.Entries["shared/patrol/calendar-latest"] = new WorkingMemoryEntry(
+            "shared/patrol/calendar-latest", "{\"events\":[]}", now.AddDays(-2), now.AddDays(1),
+            Writer: "patrol/heartbeat-patrol");
+
+        var message = await WorkerRunner.BuildInputDataMessageAsync(
+            ["shared/patrol/calendar-latest"], memory, "worker/t1", 1000, NullLogger.Instance,
+            new WorkingMemoryOptions(), now);
+
+        Assert.IsNotNull(message);
+        StringAssert.Contains(message, "[STALE SNAPSHOT — written by patrol/heartbeat-patrol");
+        StringAssert.Contains(message, "it overrides the no-refetch rule for that key");
+        Assert.IsFalse(message.Contains("complete and current"), "A snapshot is never declared current.");
+    }
+
+    [TestMethod]
+    public async Task BuildInputDataMessage_OrdinaryKey_ShowsWhoWroteItAndWhen()
+    {
+        var now = new DateTimeOffset(2026, 11, 20, 12, 0, 0, TimeSpan.Zero);
+        var memory = new FakeWorkingMemory();
+        memory.Entries["wisp/w1/s/output"] = new WorkingMemoryEntry(
+            "wisp/w1/s/output", "[]", now.AddMinutes(-5), now.AddMinutes(25), Writer: "wisp/w1");
+
+        var message = await WorkerRunner.BuildInputDataMessageAsync(
+            ["wisp:w1/s"], memory, "worker/t1", 1000, NullLogger.Instance, new WorkingMemoryOptions(), now);
+
+        StringAssert.Contains(message!, "[stored 2026-11-20T11:55Z (5 minutes ago) by wisp/w1]");
     }
 
     [TestMethod]
@@ -103,14 +159,23 @@ public class WorkerInputKeysTests
     private sealed class FakeWorkingMemory : IWorkingMemory
     {
         public Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, string?> Categories { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>Entries with metadata, for the provenance header; also readable by value.</summary>
+        public Dictionary<string, WorkingMemoryEntry> Entries { get; } = new(StringComparer.Ordinal);
 
         public Task<string?> GetAsync(string key) =>
-            Task.FromResult(Values.TryGetValue(key, out var v) ? v : null);
+            Task.FromResult(Values.TryGetValue(key, out var v) ? v
+                : Entries.TryGetValue(key, out var e) ? e.Value : null);
+
+        public Task<WorkingMemoryEntry?> GetEntryAsync(string key) =>
+            Task.FromResult(Entries.TryGetValue(key, out var e) ? e : null);
 
         public Task SetAsync(string key, string value, TimeSpan? ttl = null,
             string? category = null, IReadOnlyList<string>? tags = null)
         {
             Values[key] = value;
+            Categories[key] = category;
             return Task.CompletedTask;
         }
 

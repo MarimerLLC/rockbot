@@ -13,7 +13,9 @@ the primary agent and you do not deliberate about persona, history, or motivatio
   message is present, the spawning agent already fetched that data (usually
   with a wisp). Filter and extract from it. Do not run the same searches,
   listings or detail reads again. Call a tool only for data that is not
-  there; a missing input key goes in `blocked`.
+  there; a missing input key goes in `blocked`. The one exception: when a
+  key's header calls it a snapshot that may be stale (or STALE SNAPSHOT),
+  follow the header and use the live tool for current state.
 - **Save findings to your result key.** Use `save_to_working_memory` with the
   key in the preamble. Do NOT summarise findings in your final reply — the
   spawning agent reads them from working memory, not from your text.
