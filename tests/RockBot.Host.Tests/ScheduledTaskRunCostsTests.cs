@@ -135,6 +135,98 @@ public sealed class ScheduledTaskRunCostsTests
         Assert.AreEqual(2.5, ScheduledTaskRunCosts.Median([4, 1, 2, 3]));
         Assert.IsNull(ScheduledTaskRunCosts.Median([]));
     }
+
+    // ── #848: what a run did, and the efficiency pass's changes ───────────────
+
+    [TestMethod]
+    public async Task RunActivity_OutcomeAndGate_RoundTripThroughTheFile()
+    {
+        var costs = Create();
+        costs.BeginRun("weekly", ModelTier.Balanced);
+        costs.NoteActivity("weekly", new ScheduledRunActivity(ToolCalls: 31, DuplicateFetches: 4, SkillsUsed: ["concert-sweep"]));
+        costs.NoteGate("weekly", ScheduledRunGateResult.ForcedRun);
+        costs.NoteDelegated("weekly");
+        _ledger["weekly"] = 2.0;
+        await costs.EndRunAsync("weekly", ScheduledRunOutcome.Replied, "Nothing new  this week (Nov 16).");
+
+        var run = (await Create().GetRunsAsync("weekly")).Single();
+
+        Assert.AreEqual(ScheduledRunOutcome.Replied, run.Outcome);
+        Assert.AreEqual(ScheduledTaskRunCosts.ReportHash("nothing new this week (nov 9)."), run.ReplyHash);
+        Assert.IsTrue(run.Delegated);
+        Assert.AreEqual(31, run.ToolCalls);
+        Assert.AreEqual(4, run.DuplicateFetches);
+        CollectionAssert.AreEqual(new[] { "concert-sweep" }, run.SkillsUsed!.ToArray());
+        Assert.AreEqual(ScheduledRunGateResult.ForcedRun, run.Gate);
+        StringAssert.Contains(File.ReadAllText(Path.Combine(_dir, "scheduled-task-runs.json")), "\"outcome\":\"Replied\"");
+    }
+
+    [TestMethod]
+    public async Task LegacyFile_WithoutTheNewFields_StillReads()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(Path.Combine(_dir, "scheduled-task-runs.json"), """
+            {"schemaVersion":1,"tasks":{"weekly":[
+              {"startedAt":"2026-11-02T09:00:00+00:00","endedAt":"2026-11-02T09:05:00+00:00","costUsd":1.25,"highestTier":"Balanced","anomalous":false}
+            ]}}
+            """);
+
+        var costs = Create();
+        var run = (await costs.GetRunsAsync("weekly")).Single();
+        var summary = (await costs.GetSummariesAsync()).Single();
+
+        Assert.AreEqual(1.25, run.CostUsd, 1e-9);
+        Assert.IsNull(run.Outcome);
+        Assert.IsNull(run.ToolCalls);
+        Assert.IsNull(run.Gate);
+        Assert.AreEqual(0, (await costs.GetOptimizationsAsync("weekly")).Count);
+        Assert.IsNull(summary.LastOptimization);
+        Assert.AreEqual(0, summary.GatedSkips);
+    }
+
+    [TestMethod]
+    public async Task Optimizations_AreKeptPerTask_Capped_AndSplitTheSummaryMedian()
+    {
+        var costs = Create();
+        foreach (var cost in new[] { 1.4, 1.6, 1.5 })
+            await RunAsync(costs, "weekly", cost);
+
+        var at = _now.AddMinutes(1);
+        for (var i = 0; i < ScheduledTaskRunCosts.MaxOptimizationsPerTask + 2; i++)
+            await costs.RecordOptimizationAsync("weekly",
+                new ScheduledTaskOptimization(at, [$"change {i}"], 1.5, "why", i == 0 ? "mail/send.json" : null));
+
+        // Two cheap runs after the change, one of them skipped by the gate.
+        _now = at.AddMinutes(1);
+        await RunAsync(costs, "weekly", 0.10);
+        costs.BeginRun("weekly", ModelTier.Balanced);
+        _now = _now.AddDays(7);
+        await costs.EndRunAsync("weekly", ScheduledRunOutcome.GatedSkip, null);
+
+        var optimizations = await Create().GetOptimizationsAsync("weekly");
+        var summary = (await Create().GetSummariesAsync()).Single();
+
+        Assert.AreEqual(ScheduledTaskRunCosts.MaxOptimizationsPerTask, optimizations.Count);
+        Assert.AreEqual("change 2", optimizations[0].Changes.Single(), "the oldest are dropped");
+        Assert.AreEqual($"change {ScheduledTaskRunCosts.MaxOptimizationsPerTask + 1}", summary.LastOptimization!.Changes.Single());
+        Assert.AreEqual(0.05, summary.MedianSinceOptimizationUsd!.Value, 1e-9, "median of $0.10 and the $0 skip");
+        Assert.AreEqual(1, summary.GatedSkips);
+        Assert.AreEqual(0, (await costs.GetOptimizationsAsync("other")).Count);
+    }
+
+    [TestMethod]
+    public void ReportHash_FoldsCaseWhitespaceAndDigits()
+    {
+        Assert.IsNull(ScheduledTaskRunCosts.ReportHash(null));
+        Assert.IsNull(ScheduledTaskRunCosts.ReportHash("  "));
+        Assert.AreEqual(
+            ScheduledTaskRunCosts.ReportHash("No new tickets since 2026-11-09.\n\n0 emails checked."),
+            ScheduledTaskRunCosts.ReportHash("  no new tickets  since 2026-11-16. 12 emails checked.  "));
+        Assert.AreNotEqual(
+            ScheduledTaskRunCosts.ReportHash("No new tickets."),
+            ScheduledTaskRunCosts.ReportHash("Two new tickets."));
+        Assert.AreEqual(16, ScheduledTaskRunCosts.ReportHash("x")!.Length);
+    }
 }
 
 /// <summary>#846: when the dream caps a recurring task at Balanced.</summary>

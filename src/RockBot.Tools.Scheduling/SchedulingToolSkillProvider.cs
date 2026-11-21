@@ -16,8 +16,8 @@ internal sealed class SchedulingToolSkillProvider(UserLocationState? userLocatio
     public string Name => "scheduling";
 
     public string Summary => userLocation is null
-        ? "Schedule one-time or recurring tasks with cron expressions (schedule_task, cancel_scheduled_task, list_scheduled_tasks)."
-        : "Schedule one-time or recurring tasks with cron expressions, each in the user's local or home time zone (schedule_task, cancel_scheduled_task, list_scheduled_tasks, set_task_time_zone).";
+        ? "Schedule one-time or recurring tasks with cron expressions (schedule_task, cancel_scheduled_task, list_scheduled_tasks, set_task_gate)."
+        : "Schedule one-time or recurring tasks with cron expressions, each in the user's local or home time zone (schedule_task, cancel_scheduled_task, list_scheduled_tasks, set_task_gate, set_task_time_zone).";
 
     public string GetDocument() => userLocation is null ? Document : LocationDocument;
 
@@ -66,13 +66,13 @@ internal sealed class SchedulingToolSkillProvider(UserLocationState? userLocatio
         **Changing a task:** use `set_task_time_zone` to change only its zone. Calling
         `schedule_task` with the same name replaces the whole task, so pass everything again:
         `list_scheduled_tasks` shows each task's output format and whether it runs once. A
-        replaced task loses its directive.
+        replaced task loses its directive and gate.
 
 
         """;
 
     internal static readonly string LocationDocument = Document
-        .Replace("Three tools let you", "Four tools let you")
+        .Replace("Four tools let you", "Five tools let you")
         .Replace(ZoneAnchor, ZoneText.TrimEnd())
         .Replace(ToolsAnchor, TimeZoneSection + ToolsAnchor);
 
@@ -80,7 +80,7 @@ internal sealed class SchedulingToolSkillProvider(UserLocationState? userLocatio
         """
         # Scheduling Tools Guide
 
-        Three tools let you create, inspect, and remove tasks that fire automatically
+        Four tools let you create, inspect, and remove tasks that fire automatically
         on a cron schedule. Tasks can be one-time (fire once at a specific moment) or
         recurring (fire on a repeating pattern). When a task fires, the agent executes
         the description and sends the response to the user.
@@ -126,6 +126,27 @@ internal sealed class SchedulingToolSkillProvider(UserLocationState? userLocatio
         ```
         list_scheduled_tasks()
         ```
+
+
+        ### set_task_gate
+        Put a saved wisp in front of a recurring task so a run that would find nothing new
+        costs almost nothing. On every fire the wisp runs first, with no LLM. If it returns no
+        results the task's LLM turn is skipped; if it finds something, the turn runs with the
+        wisp's output already in context (use it; don't fetch the same data again).
+
+        ```
+        set_task_gate(name: "weekly-inbox-sweep", skill: "inbox-sweep", resource: "new-mail.wisp.json")
+        set_task_gate(name: "weekly-inbox-sweep", clear: true)
+        ```
+
+        - `mode`: `nonEmpty` (default) runs the turn when there are any results; `changed`
+          runs it only when they differ from the last run's.
+        - The wisp can use `{{last_run_at}}` (ISO 8601) and `{{last_run_date}}` (`yyyy/MM/dd`),
+          filled from the task's last fire, to fetch only what is new.
+        - A failed wisp lets the turn run, and so does the run after `maxConsecutiveSkips`
+          (default 6) skips in a row.
+        - The dream cycle may switch a gate on by itself, but only for a wisp that only reads.
+        - `schedule_task` with the same name replaces the task and drops its gate.
 
 
         ## Cron Expression Format

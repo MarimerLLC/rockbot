@@ -14,7 +14,9 @@ internal sealed class SchedulingToolRegistrar(
     ISchedulerService scheduler,
     AgentClock clock,
     ILogger<SchedulingToolRegistrar> logger,
-    UserLocationState? userLocation = null) : IHostedService
+    UserLocationState? userLocation = null,
+    ISkillStore? skillStore = null,
+    ISavedWispRunner? wispRunner = null) : IHostedService
 {
     private const string ScheduleSchema = """
         {
@@ -63,7 +65,7 @@ internal sealed class SchedulingToolRegistrar(
         context shows both their current zone and their home zone.
         To change only an existing task's zone, use set_task_time_zone. Calling schedule_task with
         the same name replaces the whole task: pass its current outputFormat (shown by
-        list_scheduled_tasks) or it falls back to plain, and its directive is dropped.
+        list_scheduled_tasks) or it falls back to plain, and its directive and gate are dropped.
         """;
 
     private const string SetTimeZoneSchema = """
@@ -103,6 +105,50 @@ internal sealed class SchedulingToolRegistrar(
         schema["required"]!.AsArray().Add("timeZone");
         return schema.ToJsonString();
     }
+
+    private const string SetGateSchema = """
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the existing scheduled task"
+            },
+            "skill": {
+              "type": "string",
+              "description": "The skill the saved wisp is attached to"
+            },
+            "resource": {
+              "type": "string",
+              "description": "The saved wisp's resource file name on that skill (e.g. 'new-mail.wisp.json')"
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["nonEmpty", "changed"],
+              "description": "'nonEmpty' (default): run the LLM turn when the wisp returns any results. 'changed': run it only when the results differ from the last run's."
+            },
+            "maxConsecutiveSkips": {
+              "type": "integer",
+              "description": "Skipped runs in a row after which the task runs anyway (default 6). 0 never forces a run."
+            },
+            "clear": {
+              "type": "boolean",
+              "description": "Set true to remove the task's gate. skill and resource are then ignored."
+            }
+          },
+          "required": ["name"]
+        }
+        """;
+
+    internal const string SetGateDescription = """
+        Put a saved wisp in front of an existing scheduled task (or remove it with clear: true). On
+        every fire the wisp runs first, with no LLM. When it finds nothing (or, in 'changed' mode,
+        nothing different from last time) the task's LLM turn is skipped, so a recurring "anything
+        new?" check costs almost nothing. When it finds something, the turn runs with the wisp's output
+        already in context. The wisp can use {{last_run_at}} (ISO 8601) and {{last_run_date}}
+        (yyyy/MM/dd) to fetch only what is new since the last fire. A failed wisp lets the turn run;
+        so does the run after maxConsecutiveSkips skips. Everything else about the task is kept.
+        """;
 
     private const string CancelSchema = """
         {
@@ -147,6 +193,15 @@ internal sealed class SchedulingToolRegistrar(
             Source = "scheduling"
         }, new ListScheduledTasksExecutor(scheduler, clock, locationEnabled));
         logger.LogInformation("Registered scheduling tool: list_scheduled_tasks");
+
+        registry.Register(new ToolRegistration
+        {
+            Name = "set_task_gate",
+            Description = SetGateDescription,
+            ParametersSchema = SetGateSchema,
+            Source = "scheduling"
+        }, new SetTaskGateExecutor(scheduler, skillStore, wispRunner));
+        logger.LogInformation("Registered scheduling tool: set_task_gate");
 
         if (locationEnabled)
         {

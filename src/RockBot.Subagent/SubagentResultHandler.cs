@@ -449,7 +449,7 @@ internal sealed class SubagentResultHandler(
         CancellationToken ct)
     {
         var costCheck = runCosts is not null && WellKnownSessions.ScheduledTaskName(rawSessionId) is { } taskName
-            ? await runCosts.EndRunAsync(taskName, ct)
+            ? await runCosts.EndRunAsync(taskName, ScheduledRunOutcome.Replied, reply.Content, ct)
             : null;
 
         if (resultArchive is null)

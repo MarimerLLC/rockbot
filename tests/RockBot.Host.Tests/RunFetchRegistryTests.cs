@@ -24,6 +24,22 @@ public class RunFetchRegistryTests
     }
 
     [TestMethod]
+    public void Repeats_CountsEveryRepeatedRead_ButNotFailuresOrNewCalls()
+    {
+        // #848: the run's waste signal for the efficiency pass.
+        var registry = new RunFetchRegistry();
+
+        registry.Observe("mail__search_emails", Args(("query", "x")), true, "by A");
+        registry.Observe("mail__search_emails", Args(("query", "y")), true, "by A");
+        registry.Observe("mail__search_emails", Args(("query", "x")), false, "by B");
+        Assert.AreEqual(0, registry.Repeats, "new arguments and failed calls are not repeats");
+
+        registry.Observe("mail__search_emails", Args(("query", "x")), true, "by B");
+        registry.Observe("mail__search_emails", Args(("query", "x")), true, "by C");
+        Assert.AreEqual(2, registry.Repeats);
+    }
+
+    [TestMethod]
     public void ArgumentKeyOrder_DoesNotMatter()
     {
         var registry = new RunFetchRegistry();

@@ -56,4 +56,19 @@ public interface IScheduledTaskStore
     /// </summary>
     Task<bool> UpdateMaxTierAsync(string name, ModelTier? maxTier, string? reason)
         => Task.FromResult(false);
+
+    /// <summary>
+    /// Sets (or, with null, clears) an existing task's <see cref="ScheduledTask.Gate"/>, leaving every
+    /// other field untouched (#848). Returns false when the task does not exist or the store does not
+    /// support it.
+    /// </summary>
+    Task<bool> UpdateGateAsync(string name, TaskGate? gate)
+        => Task.FromResult(false);
+
+    /// <summary>
+    /// Records what an existing task's gate saw on a run: the hash of its last non-empty output and
+    /// how many runs it has skipped in a row (#848). No-op, returning false, when the task has no gate.
+    /// </summary>
+    Task<bool> RecordGateResultAsync(string name, string? lastResultHash, int consecutiveSkips)
+        => Task.FromResult(false);
 }

@@ -572,6 +572,48 @@ The staleness check is the change gate, because a refreshed skill is no longer s
 
 Skill consolidation and optimization don't look at schemas, so they carry an `mcp/` skill's baseline forward instead of refreshing it.
 
+### Scheduled-task efficiency
+
+Issue #848. This pass runs right after the scheduled-task tier pass. Every other self-improvement pass is triggered by a failure or a frequency, so a recurring task that succeeds every week at a high cost trips none of them. An example is re-reading a whole mailbox to report "nothing new".
+
+**Selection** (`ScheduledTaskEfficiencyAdvisor`, deterministic) picks a task when all of these hold:
+- it is a recurring user task (not a system task, not run-once);
+- it has at least `EfficiencyMinRuns` (3) runs since it was created or last optimized, so each change is judged on runs made after it;
+- its median cost is at least `EfficiencyMinMedianCostUsd` ($0.10) a run;
+- it shows at least one signal:
+  - at least 3 runs sent the same report or none. Reports are compared by a hash with case, whitespace and digits folded. Gated skips don't count.
+  - a run repeated a read-only fetch it had already made (`RunFetchRegistry.Repeats`);
+  - a median of at least `EfficiencyMinToolCalls` (15) tool calls per run.
+
+At most `EfficiencyMaxTasksPerCycle` (3) tasks are reviewed per cycle, costliest first. The per-run stats behind this (`outcome`, `replyHash`, `toolCalls`, `duplicateFetches`, `skillsUsed`, `gate`, `delegated`) are recorded on each run in `scheduled-task-runs.json`.
+
+**Input**, per task:
+- its description, directive and gate;
+- its runs since the last change;
+- the text and resources of the skills those runs used;
+- the latest run's tool calls, from the tool-call log;
+- its last three saved reports;
+- wisps its runs already made.
+
+**What the LLM proposes**, any of:
+- a rewrite of one of those skills (body only; resources kept; never a code-owned skill);
+- a new directive, e.g. with a skip-list of already-judged ids;
+- a new wisp for the fixed fetch steps, attached **provisional** with its shape hash so its own runs validate it;
+- a gate on a wisp.
+
+A gate is switched on only when its wisp is valid and only reads, and the task has no gate the user set (see [Scheduled-task gates](wisps.md#scheduled-task-gates-848)). Otherwise the gate is recorded as a suggestion.
+
+**Record:** each applied proposal adds a `ScheduledTaskOptimization` to the task's entry in `scheduled-task-runs.json` (the last 10 are kept). The entry holds:
+- `at`;
+- `changes`;
+- `baselineMedianUsd`, the median before the change;
+- `rationale`;
+- `suggestedGate`.
+
+The Usage tab shows the median before and since the change.
+
+The change gate fingerprints the picked tasks' run counts and last runs, so the pass re-asks only after they run again. **Directive file:** `scheduled-task-efficiency.md`. Built-in fallback if not present. Requires the scheduled-task store and run history; the wisp and gate parts also need `ISavedWispRunner`. Enabled/disabled by `DreamOptions.ScheduledTaskEfficiencyEnabled`.
+
 ---
 
 ## Directive files
@@ -588,6 +630,7 @@ entirely — write a complete replacement, not a diff.
 | `skill-optimize.md` | Skill optimization | How to improve skills from failure context |
 | `pref-dream.md` | Preference inference | How to infer and record preferences |
 | `mcp-skill-refresh-dream.md` | MCP skill refresh | How to reconcile a stale `mcp/{server}` skill with the live schemas |
+| `scheduled-task-efficiency.md` | Scheduled-task efficiency | How to make a costly recurring task's runs cheaper |
 
 ---
 
@@ -618,6 +661,15 @@ public sealed class DreamOptions
     public bool McpSkillRefreshEnabled { get; set; } = true;
     public string McpSkillRefreshDirectivePath { get; set; } = "mcp-skill-refresh-dream.md";
     public int McpSkillRefreshMaxPerCycle { get; set; } = 5;
+
+    // Scheduled tasks (#848)
+    public TimeSpan ScheduledWispSuccessLookback { get; set; } = TimeSpan.FromDays(35);
+    public bool ScheduledTaskEfficiencyEnabled { get; set; } = true;
+    public string ScheduledTaskEfficiencyDirectivePath { get; set; } = "scheduled-task-efficiency.md";
+    public double EfficiencyMinMedianCostUsd { get; set; } = 0.10;
+    public int EfficiencyMinToolCalls { get; set; } = 15;
+    public int EfficiencyMinRuns { get; set; } = 3;
+    public int EfficiencyMaxTasksPerCycle { get; set; } = 3;
 
     // Change gate — skip a corpus-wide pass whose input has not moved
     public bool DreamPassChangeGateEnabled { get; set; } = true;

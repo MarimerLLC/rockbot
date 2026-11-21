@@ -66,6 +66,64 @@ public class ProvisionalValidationPassTests
     }
 
     [TestMethod]
+    public void Decide_ThreeWeeklyRunsOfOneScheduledTask_Promotes()
+    {
+        // #848: every run of a scheduled task shares its patrol session id; each day counts once.
+        var records = new[]
+        {
+            WispRecord(true, "patrol/weekly-sweep", Now.AddDays(-14)),
+            WispRecord(true, "patrol/weekly-sweep", Now.AddDays(-7)),
+            WispRecord(true, "patrol/weekly-sweep", Now.AddHours(-1)),
+        };
+
+        var decision = DreamService.DecideProvisionalAction(
+            ProvWisp(createdAt: Now.AddDays(-20)), records, [], Now,
+            successThreshold: 3, failureThreshold: 2, staleAfter: TimeSpan.FromDays(30));
+
+        Assert.AreEqual(DreamService.ProvisionalAction.Promote, decision.Action);
+        Assert.AreEqual(3, decision.SuccessCount);
+    }
+
+    [TestMethod]
+    public void Decide_ScheduledTaskRunsOnOneDay_CountOnce()
+    {
+        var records = new[]
+        {
+            WispRecord(true, "patrol/sweep", Now.AddHours(-3)),
+            WispRecord(true, "patrol/sweep", Now.AddHours(-2)),
+            WispRecord(true, "patrol/sweep", Now.AddHours(-1)),
+        };
+
+        var decision = DreamService.DecideProvisionalAction(
+            ProvWisp(), records, [], Now,
+            successThreshold: 3, failureThreshold: 2, staleAfter: TimeSpan.FromDays(30));
+
+        Assert.AreNotEqual(DreamService.ProvisionalAction.Promote, decision.Action);
+        Assert.AreEqual(1, decision.SuccessCount);
+    }
+
+    [TestMethod]
+    public void SuccessRunKey_SplitsOnlyScheduledSessionsByDay()
+    {
+        Assert.AreEqual("s1", DreamService.SuccessRunKey(WispRecord(true, "s1", Now)));
+        Assert.AreEqual("patrol/sweep@2026-05-09", DreamService.SuccessRunKey(WispRecord(true, "patrol/sweep", Now)));
+        Assert.IsNull(DreamService.SuccessRunKey(WispRecord(true, "", Now)));
+    }
+
+    [TestMethod]
+    public void InWispSuccessWindow_ScheduledRunsUseTheLongerLookback()
+    {
+        var lookback = TimeSpan.FromDays(35);
+
+        Assert.IsTrue(DreamService.InWispSuccessWindow(WispRecord(true, "patrol/sweep", Now.AddDays(-20)), Now, lookback));
+        Assert.IsFalse(DreamService.InWispSuccessWindow(WispRecord(true, "patrol/sweep", Now.AddDays(-40)), Now, lookback));
+        Assert.IsFalse(DreamService.InWispSuccessWindow(WispRecord(true, "s1", Now.AddDays(-20)), Now, lookback));
+        Assert.IsTrue(DreamService.InWispSuccessWindow(WispRecord(true, "s1", Now.AddDays(-6)), Now, lookback));
+        // A lookback shorter than the general window never narrows it.
+        Assert.IsTrue(DreamService.InWispSuccessWindow(WispRecord(true, "patrol/sweep", Now.AddDays(-6)), Now, TimeSpan.FromDays(1)));
+    }
+
+    [TestMethod]
     public void Decide_TwoConsecutiveFailures_RemovesResource()
     {
         var records = new[]

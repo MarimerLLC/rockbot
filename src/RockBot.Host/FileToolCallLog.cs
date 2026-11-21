@@ -7,7 +7,7 @@ namespace RockBot.Host;
 
 /// <summary>
 /// File-based tool-call log. Each session's tool invocations are appended to a separate JSONL file:
-/// <c>{basePath}/{sessionId}.jsonl</c>. One JSON object per line.
+/// <c>{basePath}/{stem}.jsonl</c>, the stem from <see cref="SessionLogFiles.StemFor"/>. One JSON object per line.
 /// </summary>
 internal sealed class FileToolCallLog : IToolCallLog, IPrunableLog
 {
@@ -37,11 +37,12 @@ internal sealed class FileToolCallLog : IToolCallLog, IPrunableLog
 
     public async Task AppendAsync(ToolCallEvent evt, CancellationToken ct = default)
     {
-        var sem = _writeLocks.GetOrAdd(evt.SessionId, _ => new SemaphoreSlim(1, 1));
+        // Keyed by file stem, the same key the retention trim derives from the file name.
+        var sem = _writeLocks.GetOrAdd(SessionLogFiles.StemFor(evt.SessionId), _ => new SemaphoreSlim(1, 1));
         await sem.WaitAsync(ct);
         try
         {
-            var path = Path.Combine(_basePath, $"{evt.SessionId}.jsonl");
+            var path = SessionLogFiles.JsonlPath(_basePath, evt.SessionId);
             var line = JsonSerializer.Serialize(evt, JsonOptions);
             await File.AppendAllTextAsync(path, line + Environment.NewLine, ct);
 
@@ -73,7 +74,7 @@ internal sealed class FileToolCallLog : IToolCallLog, IPrunableLog
 
     public async Task<IReadOnlyList<ToolCallEvent>> GetBySessionAsync(string sessionId, CancellationToken ct = default)
     {
-        var path = Path.Combine(_basePath, $"{sessionId}.jsonl");
+        var path = SessionLogFiles.JsonlPath(_basePath, sessionId);
         if (!File.Exists(path))
             return [];
 

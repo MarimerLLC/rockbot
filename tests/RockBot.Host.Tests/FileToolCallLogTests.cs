@@ -179,6 +179,29 @@ public class FileToolCallLogTests
         Assert.IsNull(results[0].ErrorMessage);
     }
 
+    [TestMethod]
+    public async Task PatrolSession_IsLogged_ReadBack_Queried_AndTrimmed()
+    {
+        // #848: scheduled runs use "patrol/{task}"; the raw id put the file in a
+        // subdirectory nobody created, so every append threw and was dropped.
+        var log = CreateLog();
+        for (var i = 0; i < 5; i++)
+            await log.AppendAsync(MakeEvent("patrol/concert-sweep", $"tool_{i}"));
+
+        var bySession = await log.GetBySessionAsync("patrol/concert-sweep");
+        Assert.AreEqual(5, bySession.Count);
+        Assert.AreEqual("patrol/concert-sweep", bySession[0].SessionId);
+
+        var recent = await log.QueryRecentAsync(DateTimeOffset.UtcNow.AddHours(-1), 100);
+        Assert.AreEqual(5, recent.Count);
+
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "patrol~concert-sweep.jsonl")));
+
+        var removed = await log.PruneAsync(new LogRetentionPolicy(TimeSpan.Zero, 0, MaxLinesPerFile: 2));
+        Assert.AreEqual(3, removed);
+        Assert.AreEqual(2, (await log.GetBySessionAsync("patrol/concert-sweep")).Count);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private FileToolCallLog CreateLog() =>

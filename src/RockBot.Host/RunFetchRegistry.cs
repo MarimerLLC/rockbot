@@ -53,10 +53,22 @@ public sealed class RunFetchRegistry
         _time = time;
     }
 
+    private int _repeats;
+
     /// <summary>Number of fetches recorded.</summary>
     public int Count
     {
         get { lock (_lock) return _entries.Count; }
+    }
+
+    /// <summary>
+    /// How many successful read-only calls repeated one already recorded (same tool and arguments),
+    /// whether or not the earlier data was still reachable. A per-run waste signal for the dream's
+    /// scheduled-task efficiency pass (#848).
+    /// </summary>
+    public int Repeats
+    {
+        get { lock (_lock) return _repeats; }
     }
 
     /// <summary>
@@ -118,7 +130,10 @@ public sealed class RunFetchRegistry
                 return null;
             }
 
-            if (_entries.TryGetValue(call.Fingerprint, out var prior) && IsReachable(prior.Entry, origin, now))
+            var seen = _entries.TryGetValue(call.Fingerprint, out var prior);
+            if (seen)
+                _repeats++;
+            if (seen && IsReachable(prior.Entry, origin, now))
                 return prior.Entry;
 
             // First fetch, or the earlier one's data is out of the caller's reach: this call is the
