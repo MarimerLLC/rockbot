@@ -62,6 +62,11 @@ internal sealed class SpawnWorkersExecutor(
         if (definitions.Count == 0)
             return Error(request, "definitions array must contain at least one worker definition");
 
+        // #847: refuse up front when an input key is malformed or gone. A worker started without
+        // its input would fall back to fetching the data itself — the cost input_keys avoids.
+        if (await CheckInputKeysAsync(definitions) is { } inputError)
+            return Error(request, inputError);
+
         var primarySessionId = request.SessionId ?? "unknown";
 
         var batch = await manager.SpawnBatchAsync(definitions, primarySessionId, ct);
@@ -108,6 +113,58 @@ internal sealed class SpawnWorkersExecutor(
         }
 
         return findings;
+    }
+
+    /// <summary>
+    /// The problems with the batch's <see cref="WorkerDefinition.InputKeys"/>, as one message, or
+    /// null when every key resolves and is present in working memory. Without a store the keys are
+    /// only checked for form.
+    /// </summary>
+    internal async Task<string?> CheckInputKeysAsync(IReadOnlyList<WorkerDefinition> definitions)
+    {
+        var problems = new List<string>();
+        var checkedKeys = new Dictionary<string, bool>(StringComparer.Ordinal);
+
+        foreach (var def in definitions)
+        {
+            foreach (var entry in def.InputKeys ?? [])
+            {
+                var key = WorkerDefinition.ResolveInputKey(entry);
+                if (key is null)
+                {
+                    problems.Add(
+                        $"'{entry}' is not an input key. Use wisp:<wisp-id>/<step-id> for a wisp step's output, " +
+                        "or the full working-memory key (with a '/') that the save or the wisp result reported.");
+                    continue;
+                }
+
+                if (workingMemory is null) continue;
+
+                if (!checkedKeys.TryGetValue(key, out var present))
+                {
+                    try
+                    {
+                        present = await workingMemory.GetAsync(key) is not null;
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger?.LogWarning(ex, "spawn_workers: could not read input key '{Key}'", key);
+                        present = false;
+                    }
+                    checkedKeys[key] = present;
+                }
+
+                if (!present)
+                    problems.Add(
+                        $"input key '{key}' is not in working memory (wrong id, or it expired). " +
+                        "Check the key the wisp result or save reported, re-run the wisp if its output expired, " +
+                        "or drop the key.");
+            }
+        }
+
+        return problems.Count == 0
+            ? null
+            : "No workers were started. " + string.Join(" ", problems.Distinct(StringComparer.Ordinal));
     }
 
     private static IReadOnlyList<WorkerDefinition>? ParseDefinitions(

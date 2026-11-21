@@ -504,6 +504,10 @@ public class SpawnWispsExecutorTests
         StringAssert.Contains(formatted, "First wisp");
         StringAssert.Contains(formatted, "Second wisp");
         StringAssert.Contains(formatted, "Batch ID: `batch-test-fmt`");
+        // #847: each ok wisp names its output key, for spawn_workers input_keys.
+        StringAssert.Contains(formatted, "Output key: `wisp/wisp-aaa/step1/output`");
+        StringAssert.Contains(formatted, "Output key: `wisp/wisp-bbb/step1/output`");
+        StringAssert.Contains(formatted, "input_keys");
     }
 
     [TestMethod]

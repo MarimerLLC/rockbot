@@ -38,4 +38,12 @@ public sealed class WorkerOptions
     /// Set to 0 or below to inline every result in full regardless of size.
     /// </remarks>
     public int MaxInlineResultChars { get; set; } = 4000;
+
+    /// <summary>
+    /// How much of a worker's <c>input_keys</c> data (#847) is put straight into its context, in
+    /// total across keys. Keys are inlined in order while they fit; a key that doesn't is split
+    /// into chunks in the worker's working-memory namespace and the worker gets the chunk index
+    /// instead, so it reads only the parts it needs.
+    /// </summary>
+    public int MaxInlineInputChars { get; set; } = 32_000;
 }

@@ -363,8 +363,10 @@ The tool response includes per-wisp status with output previews (up to 2K chars)
 
 - `wisp-abc`: "Search marimer emails" [ok] (1180ms)
   Output: ...
+  Output key: `wisp/wisp-abc/search/output` (to filter it, pass this key to spawn_workers as input_keys; ...)
 - `wisp-def`: "Search xebia emails" [ok] (2733ms)
   Output: ...
+  Output key: `wisp/wisp-def/search/output` (...)
 ...
 
 Batch ID: `batch-abc123def456ab`
@@ -387,6 +389,29 @@ log, with the counts and every call the wisps' steps made: the one call of a dir
 step named `{server}__{tool}`), and every substantive call of an LLM step. An LLM step whose
 state-changing calls all failed is itself a failed step. See
 [agent-host.md](agent-host.md#when-the-completion-evaluator-runs).
+
+### Fetch once: handing wisp output on (#847)
+
+Each successful wisp's line names its final step's output key. Its step outputs stay in
+working memory for `WispOptions.SuccessOutputTtl` (30 minutes). That way the calling agent
+can filter the data without fetching it again. A light filter is an `Llm` extract step at
+the end of the wisp. Heavier judgment goes to `spawn_workers` with
+`input_keys: ["wisp:<wisp-id>/<step-id>"]`, which gives the worker the data as input (see
+[worker-subagents.md](../design/worker-subagents.md)).
+
+Every successful Direct step is also recorded in the run's fetch registry
+(`RunFetchRegistry`). It holds the tool and its arguments with keys sorted; a
+`mcp_invoke_tool` call and the typed `{server}__{tool}` call count as the same tool. When
+the agent, or a worker it spawned, later makes the same read-only call, the result gets a
+system note naming the wisp step and its output key. The call still runs, and the note allows
+a deliberate re-read for fresher data. A successful state-changing call on a server clears
+that server's recorded reads, so re-reading after a write is not flagged; an MCP tool named
+like the agent's own bookkeeping (`task_update`, `save_memory`) counts as such a write. Reads
+meant to repeat are not tracked: names with `status`, `poll`, `progress`, `health`,
+`current`, `now`, `time` or `wait`, and MCP discovery (`mcp_list_services` and the like). A wisp
+step is cited only while its output key can still be in working memory (the shorter of
+`SuccessOutputTtl` and the 60-minute step TTL). A call with no key is cited only to the loop
+that made it, since another loop (a worker, the spawner) cannot see that result.
 
 ### When to parallelize
 
@@ -510,6 +535,7 @@ tests/RockBot.Wisp.Tests/      # 71 unit tests
 |--------|---------|-------------|
 | `WispOptions.SharedVolumePath` | `/rockbot/shared` | Root directory for shared volume file I/O |
 | `WispOptions.MaxConcurrentWisps` | `10` | Max wisps executing concurrently in a batch |
+| `WispOptions.SuccessOutputTtl` | `00:30:00` | How long a successful wisp's step outputs stay in working memory (was a fixed 5 minutes) |
 | `WispOptions.ForEachDefaultMaxItems` | `25` | Elements a `for_each` step may iterate when it sets no `max_items` |
 | `WispOptions.ForEachMaxItemsCeiling` | `100` | Hard ceiling on `max_items` |
 | `WispOptions.ForEachMaxConcurrency` | `4` | Hard ceiling on a `for_each` step's `concurrency` (default 1) |

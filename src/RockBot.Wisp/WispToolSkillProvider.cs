@@ -246,8 +246,10 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
 
         - `wisp-abc123`: "Fetch calendar events" [ok] (800ms)
           Output: ...
+          Output key: `wisp/wisp-abc123/list/output` (...)
         - `wisp-def456`: "Search recent emails" [ok] (1.2s)
           Output: ...
+          Output key: `wisp/wisp-def456/search/output` (...)
         - `wisp-ghi789`: "Check project status" [failed] (600ms)
           Error (External): Service unavailable
 
@@ -257,6 +259,24 @@ public sealed class WispToolSkillProvider : IToolSkillProvider
 
         The batch summary is always written to working memory as JSON, enabling
         downstream steps to programmatically inspect results.
+
+        ### Using a wisp's output — fetch each thing once
+
+        A wisp's data is already fetched. **After a wisp succeeds, do not call the same
+        tool with the same arguments yourself, and do not brief a worker to re-run it.**
+        A call that repeats an earlier fetch in the same run gets a system note saying
+        where the data already is. Pick how to use the output by how much filtering it needs:
+
+        - **Small enough to read:** use the inlined `Output` directly.
+        - **Too big or noisy, light filter:** end the wisp with an `Llm` extract step
+          (`input_from` the fetched data, a short prompt such as "keep only messages
+          from X; return id, subject, date as JSON"). It runs on the cheap wisp model,
+          and the wisp returns the small result instead of the raw dump.
+        - **Heavier judgment:** pass the `Output key` to `spawn_workers` as
+          `input_keys: ["wisp:<wisp-id>/<step-id>"]`. The worker filters the data it is
+          given instead of fetching it again.
+
+        A successful wisp's outputs stay in working memory for 30 minutes (configurable).
 
         ### Step modes
 

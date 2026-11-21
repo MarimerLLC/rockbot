@@ -37,6 +37,12 @@ public sealed class WorkerToolSkillProvider : IToolSkillProvider
         - `result_key` (optional) — override the auto-assigned `worker/<task-id>/result`
           working-memory key. Use this when you want the worker to overwrite a known
           shared key directly (e.g. `shared/patrol/calendar-latest`).
+        - `input_keys` (optional) — data the worker works from instead of fetching it:
+          `wisp:<wisp-id>/<step-id>` for a wisp step's output, or a full working-memory
+          key with a `/` (e.g. `wisp/wisp-1234/search/output`, or the key a save
+          reported). The worker gets the content as its input and is told not to
+          refetch it. Large values are chunked into the worker's namespace. Every key
+          must exist, or no worker starts.
         - `timeout_minutes` (optional) — soft wall-clock cap. Default 5.
         - `tools_allow` (optional) — allowlist that narrows the **non-MCP** registry
           tools (`web_search`, `execute_python_script`, `spawn_wisps`, …) the worker
@@ -48,6 +54,22 @@ public sealed class WorkerToolSkillProvider : IToolSkillProvider
           mode has it) and is never gated by this list, so a value like
           `calendar-mcp.*` never cuts a worker off from MCP. In eager mode it does
           narrow the typed `{server}__{tool}` tools, matched as `{server}.{tool}`.
+
+        ## Fetch once, filter cheaply (wisp → worker)
+
+        When a wisp has already fetched raw data that is too big or noisy to use in
+        your own context, hand it to a worker — do not have the worker fetch it again:
+
+        1. `spawn_wisps` runs the searches/reads. Its result lists each wisp's
+           `Output key: wisp/<id>/<step>/output`.
+        2. `spawn_workers` with `input_keys: ["wisp:<id>/<step>"]` and a description
+           such as "Keep only messages from X; return id, subject, date".
+
+        Never brief a worker to re-run a search, listing or read a wisp already did,
+        and don't call that tool with the same arguments yourself. A call that repeats
+        an earlier fetch in the same run gets a system note saying where the data is.
+        For a light filter, an `Llm` step at the end of the wisp itself is cheaper
+        still (see the wisp guide).
 
         ## Consuming a worker batch
 

@@ -305,6 +305,65 @@ public class SpawnWorkersExecutorTests
         StringAssert.Contains(response.Content!, "calendar scan: 2 meetings");
     }
 
+    // ── input_keys (#847) ─────────────────────────────────────────────────
+
+    [TestMethod]
+    public async Task SpawnWorkersExecutor_InputKeyMissing_ReturnsErrorAndSpawnsNothing()
+    {
+        var manager = new FakeWorkerManager();
+        var memory = new FakeWorkingMemory();
+        var executor = new SpawnWorkersExecutor(manager, memory);
+
+        var response = await ExecuteWithInputKeysAsync(executor, "wisp:wisp-1234/search");
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content!, "No workers were started");
+        StringAssert.Contains(response.Content!, "wisp/wisp-1234/search/output");
+        Assert.IsNull(manager.LastBatch, "No worker runs when its input is missing — it would refetch the data.");
+    }
+
+    [TestMethod]
+    public async Task SpawnWorkersExecutor_BareInputKey_ReturnsError()
+    {
+        var manager = new FakeWorkerManager();
+        var executor = new SpawnWorkersExecutor(manager, new FakeWorkingMemory());
+
+        var response = await ExecuteWithInputKeysAsync(executor, "email-raw");
+
+        Assert.IsTrue(response.IsError);
+        StringAssert.Contains(response.Content!, "'email-raw' is not an input key");
+        Assert.IsNull(manager.LastBatch);
+    }
+
+    [TestMethod]
+    public async Task SpawnWorkersExecutor_InputKeysPresent_SpawnsWithKeys()
+    {
+        var manager = new FakeWorkerManager();
+        var memory = new FakeWorkingMemory();
+        memory.Values["wisp/wisp-1234/search/output"] = "[{\"id\":1}]";
+        memory.Values["subagent/abc/emails"] = "raw";
+        var executor = new SpawnWorkersExecutor(manager, memory);
+
+        var response = await ExecuteWithInputKeysAsync(executor, "wisp:wisp-1234/search", "subagent/abc/emails");
+
+        Assert.IsFalse(response.IsError, response.Content);
+        CollectionAssert.AreEqual(
+            new[] { "wisp:wisp-1234/search", "subagent/abc/emails" },
+            manager.LastBatch![0].InputKeys!.ToArray());
+    }
+
+    private static Task<ToolInvokeResponse> ExecuteWithInputKeysAsync(SpawnWorkersExecutor executor, params string[] keys) =>
+        executor.ExecuteAsync(new ToolInvokeRequest
+        {
+            ToolCallId = "call-1",
+            ToolName = "spawn_workers",
+            Arguments = JsonSerializer.Serialize(new
+            {
+                definitions = new object[] { new { description = "filter the emails", input_keys = keys } },
+            }),
+            SessionId = "session-1",
+        }, CancellationToken.None);
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private static WorkerBatchResult SingleResultBatch(string taskId, string resultKey) => new()
