@@ -729,6 +729,85 @@ public class SubagentManagerTests
         Assert.AreEqual("session/blazor-session", manager.ResolvePrimarySession(sessionId));
     }
 
+    // #858: the consolidation gate needs to know a sibling finished but its result is still on its way.
+
+    [TestMethod]
+    public async Task ListRecentlyFinished_AfterBatchRunEnds_ListsItWithItsBatch()
+    {
+        var events = new RecordingEventPublisher();
+        var manager = CreateManager(events: events);
+
+        var before = DateTimeOffset.UtcNow;
+        var taskId = await manager.SpawnAsync(
+            "summarize the thread", null, null, "session/s1", CancellationToken.None,
+            batchId: "batch-7", consolidate: true);
+        await events.WaitForAsync<UserProxy.SubagentFinished>();
+
+        Assert.IsFalse(manager.ListActive().Any(e => e.TaskId == taskId), "a finished run leaves the active set");
+        var finished = manager.ListRecentlyFinished().Single(f => f.TaskId == taskId);
+        Assert.AreEqual("session/s1", finished.PrimarySessionId);
+        Assert.AreEqual("batch-7", finished.BatchId);
+        Assert.IsTrue(finished.Consolidate);
+        Assert.IsTrue(finished.FinishedAt >= before);
+    }
+
+    [TestMethod]
+    public async Task ListRecentlyFinished_RunningSubagent_IsNotListed()
+    {
+        var (manager, release) = CreateBlockingManager();
+        var taskId = await manager.SpawnAsync(
+            "Blocking task", context: null, timeoutMinutes: 10,
+            primarySessionId: "session/s1", ct: CancellationToken.None, batchId: "batch-7");
+        await Task.Delay(100);
+
+        Assert.IsTrue(manager.ListActive().Any(e => e.TaskId == taskId));
+        Assert.IsFalse(manager.ListRecentlyFinished().Any(f => f.TaskId == taskId));
+
+        release.SetResult(true);
+        await manager.CancelAsync(taskId);
+        Assert.IsTrue(manager.ListRecentlyFinished().Any(f => f.TaskId == taskId && f.BatchId == "batch-7"));
+    }
+
+    [TestMethod]
+    public async Task Gate_WithRealManager_WaitsForFinishedSiblingsResult()
+    {
+        // The real manager and the gate together: both siblings have finished and left the
+        // active set, but only task A's result has reached the gate. It must wait for B's.
+        var (manager, release) = CreateBlockingManager();
+        var a = await manager.SpawnAsync("task a", null, 10, "session/s1", CancellationToken.None, batchId: "batch-9");
+        var b = await manager.SpawnAsync("task b", null, 10, "session/s1", CancellationToken.None, batchId: "batch-9");
+
+        release.SetResult(true);
+        for (var i = 0; i < 100 && manager.ListActive().Count > 0; i++)
+            await Task.Delay(50);
+        Assert.AreEqual(0, manager.ListActive().Count, "both runs should have ended");
+
+        var gate = new SubagentResultGate(
+            Options.Create(new SubagentOptions { InteractiveConsolidationTimeoutSeconds = 30 }),
+            NullLogger<SubagentResultGate>.Instance);
+
+        var first = Task.Run(() => gate.AccumulateAsync(GateResult(a), manager, CancellationToken.None));
+        await Task.Delay(300);
+        Assert.IsFalse(first.IsCompleted, "A must wait for its finished sibling's result.");
+
+        var second = await gate.AccumulateAsync(GateResult(b), manager, CancellationToken.None);
+        var winners = new[] { await first, second }.Where(r => r is not null).ToList();
+        Assert.AreEqual(1, winners.Count);
+        Assert.AreEqual(2, winners[0]!.Count);
+
+        static SubagentResultMessage GateResult(string taskId) => new()
+        {
+            TaskId = taskId,
+            SubagentSessionId = $"subagent-{taskId}",
+            PrimarySessionId = "session/s1",
+            Output = $"Output from {taskId}",
+            IsSuccess = true,
+            Timestamp = DateTimeOffset.UtcNow,
+            BatchId = "batch-9",
+            Consolidate = true,
+        };
+    }
+
     [TestMethod]
     public void Resolver_UnknownSubagent_ResolvesNull()
     {
