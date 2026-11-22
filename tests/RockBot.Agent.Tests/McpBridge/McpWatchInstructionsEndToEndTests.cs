@@ -437,12 +437,33 @@ public class McpWatchInstructionsEndToEndTests
         Assert.IsTrue(registered.Success, registered.Error);
     }
 
-    private static string InvokeToolArgs(string serverName, string text) => JsonSerializer.Serialize(new
+    private static string InvokeToolArgs(string serverName, string text, string toolName = "set_watch_resource") =>
+        JsonSerializer.Serialize(new
+        {
+            serverName,
+            toolName,
+            arguments = new { name = "poll", text },
+        });
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AnAggregatorCallToAToolTheServerMarksReadOnly_IsNoEchosCause()
     {
-        serverName,
-        toolName = "set_watch_resource",
-        arguments = new { name = "poll", text },
-    });
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        await using var harness = await StartAsync(store);
+        await AddAggregatorAsync(harness);
+        await WatchAsync(harness);
+
+        var call = await harness.InvokeAsync("invoke_tool",
+            InvokeToolArgs(BridgeHarness.ServerName, "v2", toolName: "peek_watch_resource"),
+            server: Aggregator, sessionId: Session);
+        Assert.IsFalse(call.IsError, call.Content);
+
+        var update = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated);
+        Assert.IsTrue(update.NeedsReply, "the watched server marks the routed tool read-only");
+        Assert.IsNull(update.CausedByTool);
+    }
 
     [TestMethod]
     [Timeout(30_000, CooperativeCancellation = true)]

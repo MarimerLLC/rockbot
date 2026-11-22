@@ -4204,11 +4204,6 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             m => Environment.GetEnvironmentVariable(m.Groups[1].Value) ?? string.Empty);
 
     /// <summary>
-    /// Extracts a string value from a parsed argument dictionary, handling
-    /// the <see cref="JsonElement"/> boxing that System.Text.Json produces
-    /// when deserializing to <c>Dictionary&lt;string, object?&gt;</c>.
-    /// </summary>
-    /// <summary>
     /// Records a call in the session's recent calls (#853), on the configured server an
     /// aggregator routed it to as well (#856), so a watch on that server can tell its echo.
     /// </summary>
@@ -4226,27 +4221,36 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
     /// <summary>
     /// The downstream server and tool a call through an aggregator reaches: <c>invoke_tool</c>
     /// with <c>serverName</c> and <c>toolName</c>, or a typed <c>&lt;server&gt;__&lt;tool&gt;</c>
-    /// tool. Null unless the bridge has a server of that name configured itself, and when that
-    /// server marks the tool read-only, since such a call changes nothing there.
+    /// tool (split at the longest prefix that names a configured server). Only for a server
+    /// named as an aggregator, as the <c>invoke_tool</c> unwrap judges one. Null unless the bridge
+    /// has a server of that name configured itself, and when that server marks the tool read-only,
+    /// since such a call changes nothing there.
     /// </summary>
     private (string Server, string Tool)? RoutedCallOf(
         string serverName, string toolName, Dictionary<string, object?> arguments)
     {
-        string? downstream, innerTool;
+        if (!serverName.Contains("aggregator", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        string? downstream = null, innerTool = null;
         if (toolName == "invoke_tool")
         {
             downstream = GetStringArgument(arguments, "serverName");
             innerTool = GetStringArgument(arguments, "toolName");
         }
-        else if (toolName.IndexOf("__", StringComparison.Ordinal) is var split and > 0
-                 && split + 2 < toolName.Length)
-        {
-            downstream = toolName[..split];
-            innerTool = toolName[(split + 2)..];
-        }
         else
         {
-            return null;
+            for (var split = toolName.LastIndexOf("__", StringComparison.Ordinal);
+                 split > 0;
+                 split = toolName.LastIndexOf("__", split - 1, StringComparison.Ordinal))
+            {
+                if (split + 2 < toolName.Length && _connections.IsConfigured(toolName[..split]))
+                {
+                    downstream = toolName[..split];
+                    innerTool = toolName[(split + 2)..];
+                    break;
+                }
+            }
         }
 
         if (string.IsNullOrWhiteSpace(downstream)
@@ -4263,6 +4267,11 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
         return (downstream, innerTool);
     }
 
+    /// <summary>
+    /// Extracts a string value from a parsed argument dictionary, handling
+    /// the <see cref="JsonElement"/> boxing that System.Text.Json produces
+    /// when deserializing to <c>Dictionary&lt;string, object?&gt;</c>.
+    /// </summary>
     private static string? GetStringArgument(Dictionary<string, object?> args, string key)
     {
         if (!args.TryGetValue(key, out var val)) return null;
