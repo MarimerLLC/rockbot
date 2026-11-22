@@ -33,7 +33,8 @@ internal sealed class LateA2ANotificationHandler(
     SessionClientCapabilityStore clientCapabilityStore,
     SessionOriginStore originStore,
     ILogger<LateA2ANotificationHandler> logger,
-    IMcpSkillSurface? mcpSkillSurface = null) : IMessageHandler<LateA2ANotificationMessage>
+    IMcpSkillSurface? mcpSkillSurface = null,
+    IAgentWorkSerializer? workSerializer = null) : IMessageHandler<LateA2ANotificationMessage>
 {
     private string DisplayName => agentNameHolder.DisplayName ?? agent.Name;
 
@@ -47,32 +48,18 @@ internal sealed class LateA2ANotificationHandler(
             ? sessionNamespace[SessionPrefix.Length..]
             : sessionNamespace;
 
-        var kindSlug = message.Kind.ToString().ToLowerInvariant();
-
-        // A background MCP task a subagent started folds back the same way; its peer is "mcp:{server}".
-        var from = message.PeerAgent.StartsWith(LateA2ANotificationMessage.McpPeerPrefix, StringComparison.Ordinal)
-            ? $"MCP server '{message.PeerAgent[LateA2ANotificationMessage.McpPeerPrefix.Length..]}' (a background task)"
-            : $"A2A peer '{message.PeerAgent}'";
-        var syntheticUserTurn =
-            $"A late {kindSlug} arrived from {from} for your completed subagent " +
-            $"'{message.SubagentName}'. The payload is in working memory at '{message.WorkingMemoryKey}'. " +
-            $"Call get_from_working_memory with that key to read it, decide whether to act on it, and inform " +
-            $"the user if it is relevant. Make clear this is a late result from earlier background work so the " +
-            $"context is not opaque.";
+        var syntheticUserTurn = SyntheticTurn(message);
 
         logger.LogInformation(
             "Folding late A2A {Kind} from peer '{Peer}' (subagent {SubagentTaskId}) into primary session {Session}",
             message.Kind, message.PeerAgent, message.SubagentTaskId, rawSessionId);
 
+        // Wait for any turn in progress to finish rather than run beside it: a folded watch change
+        // can act on the user's instructions (#855), as McpTaskResultHandler's turns do.
+        await using var slot = workSerializer is null ? null : await workSerializer.AcquireForUserAsync("late notification", ct);
+
         await conversationMemory.AddTurnAsync(
-            rawSessionId,
-            new ConversationTurn("user", syntheticUserTurn, DateTimeOffset.UtcNow)
-            {
-                AgentName = message.PeerAgent,
-                Source = new ConversationTurnSource(UserProxy.ReplySourceKind.A2A),
-                Origin = originStore.Get(rawSessionId).ToTurnOrigin(),
-            },
-            ct);
+            rawSessionId, UserTurn(message, syntheticUserTurn, originStore.Get(rawSessionId).ToTurnOrigin()), ct);
 
         var chatMessages = await agentContextBuilder.BuildAsync(
             rawSessionId, syntheticUserTurn, ct,
@@ -117,10 +104,7 @@ internal sealed class LateA2ANotificationHandler(
                 Origin = originStore.Get(rawSessionId),
                 MessageId = ConversationTurn.NewId(),
             };
-            await conversationMemory.AddTurnAsync(
-                rawSessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow) { AgentName = DisplayName }.Matching(reply),
-                ct);
+            await conversationMemory.AddTurnAsync(rawSessionId, ReplyTurn(message, reply), ct);
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
         }
@@ -130,4 +114,46 @@ internal sealed class LateA2ANotificationHandler(
                 "Failed to fold late A2A notification for subagent {SubagentTaskId}", message.SubagentTaskId);
         }
     }
+
+    /// <summary>
+    /// The turn that tells the primary agent what arrived, followed by the sender's
+    /// <see cref="LateA2ANotificationMessage.Instructions"/> when it wrote any.
+    /// </summary>
+    internal static string SyntheticTurn(LateA2ANotificationMessage message)
+    {
+        var kindSlug = message.Kind.ToString().ToLowerInvariant();
+
+        // A background MCP task a subagent started folds back the same way; its peer is "mcp:{server}".
+        var from = message.PeerAgent.StartsWith(LateA2ANotificationMessage.McpPeerPrefix, StringComparison.Ordinal)
+            ? $"MCP server '{message.PeerAgent[LateA2ANotificationMessage.McpPeerPrefix.Length..]}' (a background task)"
+            : $"A2A peer '{message.PeerAgent}'";
+        var hasInstructions = !string.IsNullOrWhiteSpace(message.Instructions);
+        var turn =
+            $"A late {kindSlug} arrived from {from} for your completed subagent " +
+            $"'{message.SubagentName}'. The payload is in working memory at '{message.WorkingMemoryKey}'. " +
+            (hasInstructions
+                // The user's instructions below say what to do; "decide whether to act" would undercut them.
+                ? "Call get_from_working_memory with that key to read it, then act on it as the instructions below say. "
+                : "Call get_from_working_memory with that key to read it, decide whether to act on it, and inform " +
+                  "the user if it is relevant. ") +
+            "Make clear this is a late result from earlier background work so the context is not opaque.";
+
+        return hasInstructions ? turn + "\n\n" + message.Instructions : turn;
+    }
+
+    /// <summary>The folded turn as recorded in the primary session.</summary>
+    internal static ConversationTurn UserTurn(LateA2ANotificationMessage message, string content, ConversationTurnOrigin? origin) =>
+        new("user", content, DateTimeOffset.UtcNow)
+        {
+            AgentName = message.PeerAgent,
+            Source = new ConversationTurnSource(UserProxy.ReplySourceKind.A2A),
+            Origin = origin,
+            ExcludeFromLearning = message.ExcludeFromLearning,
+        };
+
+    /// <summary>The agent's reply to the folded turn as recorded in the primary session.</summary>
+    internal static ConversationTurn ReplyTurn(LateA2ANotificationMessage message, AgentReply reply) =>
+        new ConversationTurn("assistant", reply.Content, DateTimeOffset.UtcNow) { AgentName = reply.AgentName }.Matching(reply)
+            // A reply about a watch tends to restate the user's instructions (#853).
+            with { ExcludeFromLearning = message.ExcludeFromLearning };
 }

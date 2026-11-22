@@ -415,7 +415,9 @@ agent: McpTaskResultHandler ──► synthetic turn + agent run + reply (user c
     `McpTaskSessionAwaiter` (over the bridge's `McpTaskRegistry`) holds the subagent until its
     tasks have delivered, so `SubagentResultHandler`'s whiteboard listing includes the results;
   - exited subagent: the result is stashed under the primary's `notifications/mcp/…` and a
-    `LateA2ANotificationMessage` with peer `mcp:{server}` folds it into a primary turn.
+    `LateA2ANotificationMessage` with peer `mcp:{server}` folds it into a primary turn. A watch's
+    fold-back is marked `ExcludeFromLearning`, and a change carries the user's instructions for
+    the watch (see "Instructions for watches").
 
   Delivery is at least once; the handler drops a repeat it has already handled. The message's
   work record (`IWipTracker`) stays open until the handler has finished, so if the agent stops
@@ -589,6 +591,16 @@ the right skill (on 2026-11-20 it picked an agent-written one from a test sessio
   and can't be changed by the content. With neither, the default stays: act as the conversation
   calls for, and the description and guide say to report and ask first. The consequential-action
   gate is unchanged: the turn runs under the watch's `RunOrigin`/`UserAskedFor`.
+- **A subagent that has exited (#855).** Its watch's change folds into the primary session as a
+  `LateA2ANotificationMessage`, whose turn points to the content in working memory. The same
+  quoted instructions travel on the message (`Instructions`, from `McpWatchText.FoldedInstructions`)
+  and follow that turn. They don't suggest unwatching: the watch is the subagent's, and the
+  primary can't stop it. An echo (`CausedByTool`) needs no reply, so it folds nothing. Each change
+  is stashed under its own key (with its content hash), so a quick second change can't overwrite
+  the first before it is read. An ending or expiry warning folds as a status, followed by
+  `McpWatchText.FoldedEndingNote`: the warning's advice on keeping the watch is for its owner, so
+  the note says what the primary can do instead (watch it anew; the user must give its
+  instructions again). The folding turn waits for the agent's work slot, as other turns do.
 - **Only the user sets them.** A relayed turn (a watch update, a background task's result, a late
   reply, a subagent's synthesis) runs as `RunOrigin.UserTurn`, so the origin can't tell it from
   the user's own message. `ActionGateScope.DirectUserMessage` (`IsDirectUserTurn`) is true only on

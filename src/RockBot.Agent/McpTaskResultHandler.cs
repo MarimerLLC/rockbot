@@ -359,7 +359,8 @@ internal sealed class McpTaskResultHandler(
             return;
         }
 
-        // Nothing to say (a change the agent's own call made, #853): no turn in the primary either.
+        // Nothing to say (a change the agent's own call made, #853): no turn in the primary either,
+        // so its echo note (CausedByTool) has nowhere to go and needn't be carried.
         if (!message.NeedsReply)
         {
             logger.LogInformation("Background task {TaskId}'s {Kind} for exited subagent {Session} needs no reply; kept in working memory only",
@@ -378,8 +379,14 @@ internal sealed class McpTaskResultHandler(
         var subagentTaskId = origin.StartsWith("subagent/", StringComparison.Ordinal) ? origin["subagent/".Length..] : origin;
         var kind = message.Kind is McpTaskResult.KindCompleted or McpTaskResult.KindResourceUpdated && !message.IsError
             ? NotificationKind.Result
-            : message.Kind == McpTaskResult.KindWatchExpiring ? NotificationKind.Status : NotificationKind.Error;
-        var wmKey = $"{primary}/notifications/mcp/{message.TaskId}/{kind.ToString().ToLowerInvariant()}";
+            // A watch that ends or is about to is news, not a failure.
+            : message.Kind is McpTaskResult.KindWatchExpiring or McpTaskResult.KindWatchEnded ? NotificationKind.Status : NotificationKind.Error;
+        // Each change to a watch gets its own key: one keyed by the watch alone would be overwritten
+        // by the next change before the first folded turn reads it.
+        var version = message.Kind == McpTaskResult.KindResourceUpdated && message.ContentHash is { Length: > 0 } hash
+            ? $"{hash[..Math.Min(12, hash.Length)]}/"
+            : "";
+        var wmKey = $"{primary}/notifications/mcp/{message.TaskId}/{version}{kind.ToString().ToLowerInvariant()}";
         await workingMemory.SetAsync(wmKey, message.Content, ttl: ResultTtl,
             category: "mcp-task-late-notification", tags: [message.ServerName, message.TaskId]);
 
@@ -391,7 +398,17 @@ internal sealed class McpTaskResultHandler(
             Kind: kind,
             WorkingMemoryKey: wmKey,
             RunOrigin: message.RunOrigin,
-            UserAskedFor: message.UserAskedFor);
+            UserAskedFor: message.UserAskedFor,
+            // A change carries the user's instructions for the watch (#855). An ending or expiry
+            // warning has them in its content, but its advice on keeping the watch is for the
+            // session that owns it, which the primary isn't.
+            Instructions: message.Kind switch
+            {
+                McpTaskResult.KindResourceUpdated => McpWatchText.FoldedInstructions(message),
+                McpTaskResult.KindWatchEnded or McpTaskResult.KindWatchExpiring => McpWatchText.FoldedEndingNote(message),
+                _ => null,
+            },
+            ExcludeFromLearning: IsWatchKind(message));
 
         await publisher.PublishAsync($"{a2aOptions.LateNotificationTopic}.{agent.Name}",
             notification.ToEnvelope<LateA2ANotificationMessage>(source: agent.Name), ct);
