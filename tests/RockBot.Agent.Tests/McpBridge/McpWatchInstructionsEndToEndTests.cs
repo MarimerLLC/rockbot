@@ -74,7 +74,7 @@ public class McpWatchInstructionsEndToEndTests
 
     private static McpWatchEntry LedgerEntry(BridgeHarness harness, string watchId)
     {
-        using var doc = JsonDocument.Parse(File.ReadAllText(harness.WatchLedgerPath));
+        using var doc = JsonDocument.Parse(SharedFile.ReadAllText(harness.WatchLedgerPath));
         return doc.RootElement.GetProperty("entries").Deserialize<McpWatchEntry[]>(
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!.Single(e => e.WatchId == watchId);
     }

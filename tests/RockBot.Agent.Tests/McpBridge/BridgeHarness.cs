@@ -275,7 +275,7 @@ internal sealed class BridgeHarness : IAsyncDisposable
 
     /// <summary>The server entries as the bridge last persisted them to <c>mcp.json</c>.</summary>
     public McpBridgeConfig ReadPersistedConfig() =>
-        JsonSerializer.Deserialize<McpBridgeConfig>(File.ReadAllText(ConfigPath),
+        JsonSerializer.Deserialize<McpBridgeConfig>(SharedFile.ReadAllText(ConfigPath),
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
 
     /// <summary>Rewrites one entry of <c>mcp.json</c>, as an operator would by hand.</summary>

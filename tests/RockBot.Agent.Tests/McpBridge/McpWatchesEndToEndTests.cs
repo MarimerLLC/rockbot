@@ -75,7 +75,7 @@ public class McpWatchesEndToEndTests
 
     private static McpWatchEntry[] Ledger(BridgeHarness harness)
     {
-        using var doc = JsonDocument.Parse(File.ReadAllText(harness.WatchLedgerPath));
+        using var doc = JsonDocument.Parse(SharedFile.ReadAllText(harness.WatchLedgerPath));
         return doc.RootElement.GetProperty("entries").Deserialize<McpWatchEntry[]>(
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
     }
@@ -106,7 +106,7 @@ public class McpWatchesEndToEndTests
 
         // The ledger keeps the hash of what was delivered, never the content.
         await WaitUntilAsync(() => Ledger(harness).Single().LastHash == update.ContentHash, "the ledger to record the delivery");
-        Assert.IsFalse(File.ReadAllText(harness.WatchLedgerPath).Contains("everyone voted"), "content is never written");
+        Assert.IsFalse(SharedFile.ReadAllText(harness.WatchLedgerPath).Contains("everyone voted"), "content is never written");
     }
 
     [TestMethod]
