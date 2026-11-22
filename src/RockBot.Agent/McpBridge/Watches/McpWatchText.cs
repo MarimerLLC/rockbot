@@ -181,6 +181,20 @@ internal static class McpWatchText
     }
 
     /// <summary>
+    /// What follows a folded ending or expiry warning of an exited subagent's watch. The warning's
+    /// own advice (renew it as it is, stop it, pass the instructions as on_change) is for the
+    /// session that owns the watch; from the primary none of it works, so it's corrected here.
+    /// </summary>
+    public static string FoldedEndingNote(McpTaskResult message) =>
+        $"[rockbot] That watch (watch_id \"{message.TaskId}\") belonged to the subagent, which has exited, so this " +
+        "conversation can't renew or stop it; disregard the payload's advice on doing so. If it still needs watching, " +
+        $"{WatchToolName}(server_name: \"{Flatten(message.ServerName)}\", uri: \"{Flatten(message.ResourceUri ?? message.ToolName)}\") " +
+        "here starts a new watch owned by this conversation; it gets the user's standing watch rules." +
+        (message.OnChange is null
+            ? ""
+            : " It doesn't get that watch's own instructions: only the user can give those again, so tell the user it needs them.");
+
+    /// <summary>
     /// The standing rules and the watch's own instructions, quoted as the user's, then what to do
     /// with them. False, writing nothing, when there are none.
     /// </summary>

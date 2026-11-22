@@ -523,15 +523,16 @@ public class McpTaskResultHandlerTests
     [TestMethod]
     [DataRow(McpTaskResult.KindWatchEnded, DisplayName = "ended")]
     [DataRow(McpTaskResult.KindWatchExpiring, DisplayName = "expiring")]
-    public async Task AnExitedSubagentsWatchEnding_FoldsBackOutOfLearning_WithItsInstructionsInItsContent(string kind)
+    public async Task AnExitedSubagentsWatchEnding_FoldsBackAsStatus_OutOfLearning_WithAdviceThePrimaryCanFollow(string kind)
     {
         _subagents.Active = false;
         _subagents.Primary = $"session/{Conversation}";
+        var watchId = "w_" + Guid.NewGuid().ToString("N")[..12];
 
         await _handler.ProcessAsync(WatchUpdate("ignored") with
         {
             SessionId = "subagent/abc",
-            TaskId = "w_" + Guid.NewGuid().ToString("N")[..12],
+            TaskId = watchId,
             Kind = kind,
             Content = "[rockbot] The watch on x ends. Its instructions from the user:\n> Finalize it.",
             ContentHash = kind == McpTaskResult.KindWatchExpiring ? "expiring-20261201000000" : null,
@@ -539,8 +540,42 @@ public class McpTaskResultHandlerTests
         }, CancellationToken.None);
 
         var folded = Published<LateA2ANotificationMessage>().Single();
-        Assert.IsNull(folded.Instructions, "already in the content, which the primary reads");
+        Assert.AreEqual(NotificationKind.Status, folded.Kind, "a watch ending isn't an error");
         Assert.IsTrue(folded.ExcludeFromLearning);
+        var note = folded.Instructions!;
+        Assert.IsNotNull(note, "the warning's advice is for the session that owns the watch");
+        StringAssert.Contains(note, $"watch_id \"{watchId}\"");
+        StringAssert.Contains(note, "can't renew or stop it");
+        StringAssert.Contains(note, $"{McpWatchText.WatchToolName}(server_name: \"scheduler\", uri: \"scheduler://events/AB12/status\")");
+        StringAssert.Contains(note, "only the user can give those again");
+    }
+
+    [TestMethod]
+    public void AFoldedEndingNote_WithoutInstructions_DoesntMentionThem()
+    {
+        var note = McpWatchText.FoldedEndingNote(WatchUpdate("ignored") with { Kind = McpTaskResult.KindWatchEnded });
+
+        StringAssert.Contains(note, "standing watch rules");
+        Assert.IsFalse(note.Contains("only the user can give those again"));
+    }
+
+    [TestMethod]
+    public async Task AnExitedSubagentsSuccessiveWatchChanges_KeepTheirOwnContent()
+    {
+        _subagents.Active = false;
+        _subagents.Primary = $"session/{Conversation}";
+        var watchId = "w_" + Guid.NewGuid().ToString("N")[..12];
+        var first = WatchUpdate("state: one vote", hash: "11111111111111111111111111111111") with { SessionId = "subagent/abc", TaskId = watchId };
+        var second = WatchUpdate("state: two votes", hash: "22222222222222222222222222222222") with { SessionId = "subagent/abc", TaskId = watchId };
+
+        await _handler.ProcessAsync(first, CancellationToken.None);
+        await _handler.ProcessAsync(second, CancellationToken.None);
+
+        var folded = Published<LateA2ANotificationMessage>();
+        Assert.AreEqual(2, folded.Count);
+        Assert.AreNotEqual(folded[0].WorkingMemoryKey, folded[1].WorkingMemoryKey);
+        Assert.AreEqual("state: one vote", _workingMemory.Store[folded[0].WorkingMemoryKey]);
+        Assert.AreEqual("state: two votes", _workingMemory.Store[folded[1].WorkingMemoryKey]);
     }
 
     [TestMethod]
