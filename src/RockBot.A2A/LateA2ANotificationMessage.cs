@@ -28,11 +28,20 @@ public sealed record LateA2ANotificationMessage(
     NotificationKind Kind,
     string WorkingMemoryKey,
     string? RunOrigin = null,
-    string? UserAskedFor = null)
+    string? UserAskedFor = null,
+    string? Instructions = null,
+    bool ExcludeFromLearning = false)
 {
     // RunOrigin / UserAskedFor: the consequential-action scope (#685) of the run whose work this
     // is, as ActionGateScope.LogName and CompletionEvalTriggers.LogName write them. The folding
     // turn runs under it. Null when unknown (A2A late replies don't carry it yet).
+    //
+    // Instructions: text the sender wrote for the folding turn, appended to it as is. A watched
+    // resource's change carries the user's instructions for the watch here (#855), so they reach
+    // the primary agent as they would have reached the subagent.
+    //
+    // ExcludeFromLearning: the folding turn and its reply stay out of what the dream learns from,
+    // as every watch turn does (#853).
 
     /// <summary>
     /// Prefix of <see cref="PeerAgent"/> when the late reply is a background MCP task's, not an A2A

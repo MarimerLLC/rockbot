@@ -359,7 +359,8 @@ internal sealed class McpTaskResultHandler(
             return;
         }
 
-        // Nothing to say (a change the agent's own call made, #853): no turn in the primary either.
+        // Nothing to say (a change the agent's own call made, #853): no turn in the primary either,
+        // so its echo note (CausedByTool) has nowhere to go and needn't be carried.
         if (!message.NeedsReply)
         {
             logger.LogInformation("Background task {TaskId}'s {Kind} for exited subagent {Session} needs no reply; kept in working memory only",
@@ -391,7 +392,11 @@ internal sealed class McpTaskResultHandler(
             Kind: kind,
             WorkingMemoryKey: wmKey,
             RunOrigin: message.RunOrigin,
-            UserAskedFor: message.UserAskedFor);
+            UserAskedFor: message.UserAskedFor,
+            // A change carries the user's instructions for the watch (#855); an ending or expiry
+            // warning already has them in its content.
+            Instructions: message.Kind == McpTaskResult.KindResourceUpdated ? McpWatchText.FoldedInstructions(message) : null,
+            ExcludeFromLearning: IsWatchKind(message));
 
         await publisher.PublishAsync($"{a2aOptions.LateNotificationTopic}.{agent.Name}",
             notification.ToEnvelope<LateA2ANotificationMessage>(source: agent.Name), ct);

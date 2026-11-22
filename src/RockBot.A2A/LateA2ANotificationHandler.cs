@@ -47,18 +47,7 @@ internal sealed class LateA2ANotificationHandler(
             ? sessionNamespace[SessionPrefix.Length..]
             : sessionNamespace;
 
-        var kindSlug = message.Kind.ToString().ToLowerInvariant();
-
-        // A background MCP task a subagent started folds back the same way; its peer is "mcp:{server}".
-        var from = message.PeerAgent.StartsWith(LateA2ANotificationMessage.McpPeerPrefix, StringComparison.Ordinal)
-            ? $"MCP server '{message.PeerAgent[LateA2ANotificationMessage.McpPeerPrefix.Length..]}' (a background task)"
-            : $"A2A peer '{message.PeerAgent}'";
-        var syntheticUserTurn =
-            $"A late {kindSlug} arrived from {from} for your completed subagent " +
-            $"'{message.SubagentName}'. The payload is in working memory at '{message.WorkingMemoryKey}'. " +
-            $"Call get_from_working_memory with that key to read it, decide whether to act on it, and inform " +
-            $"the user if it is relevant. Make clear this is a late result from earlier background work so the " +
-            $"context is not opaque.";
+        var syntheticUserTurn = SyntheticTurn(message);
 
         logger.LogInformation(
             "Folding late A2A {Kind} from peer '{Peer}' (subagent {SubagentTaskId}) into primary session {Session}",
@@ -71,6 +60,7 @@ internal sealed class LateA2ANotificationHandler(
                 AgentName = message.PeerAgent,
                 Source = new ConversationTurnSource(UserProxy.ReplySourceKind.A2A),
                 Origin = originStore.Get(rawSessionId).ToTurnOrigin(),
+                ExcludeFromLearning = message.ExcludeFromLearning,
             },
             ct);
 
@@ -119,7 +109,9 @@ internal sealed class LateA2ANotificationHandler(
             };
             await conversationMemory.AddTurnAsync(
                 rawSessionId,
-                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow) { AgentName = DisplayName }.Matching(reply),
+                new ConversationTurn("assistant", finalContent, DateTimeOffset.UtcNow) { AgentName = DisplayName }.Matching(reply)
+                    // A reply about a watch tends to restate the user's instructions (#853).
+                    with { ExcludeFromLearning = message.ExcludeFromLearning },
                 ct);
             var envelope = reply.ToEnvelope<AgentReply>(source: agent.Name);
             await publisher.PublishAsync($"{UserProxyTopics.UserResponse}.{agent.Name}", envelope, ct);
@@ -129,5 +121,29 @@ internal sealed class LateA2ANotificationHandler(
             logger.LogError(ex,
                 "Failed to fold late A2A notification for subagent {SubagentTaskId}", message.SubagentTaskId);
         }
+    }
+
+    /// <summary>
+    /// The turn that tells the primary agent what arrived, followed by the sender's
+    /// <see cref="LateA2ANotificationMessage.Instructions"/> when it wrote any.
+    /// </summary>
+    internal static string SyntheticTurn(LateA2ANotificationMessage message)
+    {
+        var kindSlug = message.Kind.ToString().ToLowerInvariant();
+
+        // A background MCP task a subagent started folds back the same way; its peer is "mcp:{server}".
+        var from = message.PeerAgent.StartsWith(LateA2ANotificationMessage.McpPeerPrefix, StringComparison.Ordinal)
+            ? $"MCP server '{message.PeerAgent[LateA2ANotificationMessage.McpPeerPrefix.Length..]}' (a background task)"
+            : $"A2A peer '{message.PeerAgent}'";
+        var turn =
+            $"A late {kindSlug} arrived from {from} for your completed subagent " +
+            $"'{message.SubagentName}'. The payload is in working memory at '{message.WorkingMemoryKey}'. " +
+            $"Call get_from_working_memory with that key to read it, decide whether to act on it, and inform " +
+            $"the user if it is relevant. Make clear this is a late result from earlier background work so the " +
+            $"context is not opaque.";
+
+        return string.IsNullOrWhiteSpace(message.Instructions)
+            ? turn
+            : turn + "\n\n" + message.Instructions;
     }
 }
