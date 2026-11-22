@@ -105,7 +105,7 @@ internal sealed class SubagentResultHandler(
 
         // Build whiteboard hint for this result
         var subagentPrefix = $"subagent/{message.TaskId}/";
-        var whiteboardEntries = await workingMemory.ListAsync(subagentPrefix);
+        var whiteboardEntries = await ListOutputsAsync(subagentPrefix);
 
         var whiteboardHint = whiteboardEntries.Count > 0
             ? $" The subagent stored {whiteboardEntries.Count} output(s) in working memory under namespace '{subagentPrefix.TrimEnd('/')}'. " +
@@ -211,7 +211,7 @@ internal sealed class SubagentResultHandler(
             foreach (var r in batchedResults.Where(r => r.TaskId != message.TaskId))
             {
                 var prefix = $"subagent/{r.TaskId}/";
-                var entries = await workingMemory.ListAsync(prefix);
+                var entries = await ListOutputsAsync(prefix);
                 if (entries.Count > 0)
                 {
                     allHints.Add(
@@ -324,6 +324,18 @@ internal sealed class SubagentResultHandler(
         // deleted here. They persist until their TTL expires so the primary agent can reference
         // them across multiple follow-up turns.
     }
+
+    /// <summary>
+    /// A subagent's outputs under <paramref name="prefix"/>. What its resource watches delivered is
+    /// for the run itself, not output to present to the user: a watch's notices quote the user's
+    /// own instructions for it (#854).
+    /// </summary>
+    private async Task<List<WorkingMemoryEntry>> ListOutputsAsync(string prefix) =>
+        Outputs(await workingMemory.ListAsync(prefix));
+
+    /// <summary>The entries of a subagent's namespace that are its outputs; see <see cref="ListOutputsAsync"/>.</summary>
+    internal static List<WorkingMemoryEntry> Outputs(IEnumerable<WorkingMemoryEntry> entries) =>
+        [.. entries.Where(e => !WorkingMemoryCategories.IsWatchDelivery(e.Category))];
 
     /// <summary>
     /// Synthesis LLM call failed (e.g. all providers 503'd). The per-subagent outputs are still

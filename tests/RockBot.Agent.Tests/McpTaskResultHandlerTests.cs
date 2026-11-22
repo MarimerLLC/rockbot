@@ -341,6 +341,48 @@ public class McpTaskResultHandlerTests
     }
 
     [TestMethod]
+    [DataRow(McpTaskResult.KindWatchEnded, "ended", DisplayName = "ended")]
+    [DataRow(McpTaskResult.KindWatchExpiring, "expiring", DisplayName = "expiring")]
+    public async Task ARunningSubagent_KeepsAWatchsEndingAmongItsOutputs(string kind, string suffix)
+    {
+        _subagents.Active = true;
+        var watchId = "w_" + Guid.NewGuid().ToString("N")[..12]; // deliveries are de-duplicated process-wide
+        var message = WatchUpdate("ignored") with
+        {
+            SessionId = "subagent/abc",
+            TaskId = watchId,
+            Kind = kind,
+            Content = $"[rockbot] The watch on scheduler://events/AB12/status {suffix}",
+            ContentHash = kind == McpTaskResult.KindWatchExpiring ? "expiring-20261201000000" : null,
+            NeedsReply = true,
+        };
+
+        await _handler.ProcessAsync(message, CancellationToken.None);
+
+        Assert.AreEqual(message.Content, _workingMemory.Store[$"subagent/abc/mcp-watch/scheduler/{watchId}/{suffix}"]);
+        Assert.AreEqual(0, _publisher.Published.Count, "no reply and no fold-back while it runs");
+    }
+
+    [TestMethod]
+    [DataRow(McpTaskResult.KindWatchEnded, DisplayName = "ended")]
+    [DataRow(McpTaskResult.KindWatchExpiring, DisplayName = "expiring")]
+    public async Task AConversationsWatchEnding_IsOnlyATurn(string kind)
+    {
+        var message = WatchUpdate("ignored") with
+        {
+            TaskId = "w_" + Guid.NewGuid().ToString("N")[..12],
+            Kind = kind,
+            Content = "[rockbot] The watch on x ends",
+            ContentHash = null,
+        };
+
+        await _handler.ProcessAsync(message, CancellationToken.None);
+
+        Assert.AreEqual(0, _workingMemory.Store.Count, "the turn is the text itself");
+        Assert.AreEqual(message.Content, (await _conversation.GetTurnsAsync(Conversation)).First(t => t.Role == "user").Content);
+    }
+
+    [TestMethod]
     public async Task AnExitedSubagent_HasTheResultFoldedBackIntoItsPrimarySession()
     {
         _subagents.Active = false;

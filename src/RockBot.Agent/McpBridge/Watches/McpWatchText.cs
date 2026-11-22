@@ -16,7 +16,7 @@ internal static class McpWatchText
     public const string SetRuleToolName = McpManagementExecutor.SetWatchRuleToolName;
 
     /// <summary>The working-memory category of a watch's content.</summary>
-    public const string WorkingMemoryCategory = "mcp-watch";
+    public const string WorkingMemoryCategory = RockBot.Host.WorkingMemoryCategories.McpWatch;
 
     /// <summary>How much of a watch's instructions a listing of several shows.</summary>
     private const int ShortInstructionsChars = 120;

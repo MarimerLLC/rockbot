@@ -32,10 +32,12 @@ public class McpWatchesEndToEndTests
         bool policy = true,
         bool subscribable = true,
         Action<McpBridgeOptions>? configureBridge = null,
-        TimeProvider? timeProvider = null) =>
+        TimeProvider? timeProvider = null,
+        RockBot.Host.IWorkingMemory? workingMemory = null) =>
         BridgeHarness.StartAsync(
             [EchoTool(), .. store.Tools()],
             resources: store.Resources(),
+            workingMemory: workingMemory,
             configure: e => e.Subscriptions = policy ? true : null,
             configureBridge: o =>
             {
@@ -244,6 +246,25 @@ public class McpWatchesEndToEndTests
         StringAssert.Contains(ended.Content, "no longer exists");
         Assert.IsTrue(ended.NeedsReply);
         await WaitUntilAsync(() => harness.Bridge.ActiveWatchEntries.Count == 0, "the watch to end");
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task ASubagentsWatchEnding_IsKeptAmongItsOutputs()
+    {
+        // A running subagent learns of a delivery only from its working memory (#854).
+        const string subagent = "subagent/task-1";
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        var workingMemory = new McpHandbackEndToEndTests.RecordingWorkingMemory();
+        await using var harness = await StartAsync(store, workingMemory: workingMemory);
+        var watchId = await WatchAsync(harness, session: subagent);
+
+        store.Delete("poll");
+        var ended = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindWatchEnded);
+
+        Assert.AreEqual($"{subagent}/mcp-watch/{BridgeHarness.ServerName}/{watchId}/ended", ended.WorkingMemoryKey);
+        StringAssert.Contains(workingMemory.Store[ended.WorkingMemoryKey!], "no longer exists");
     }
 
     [TestMethod]

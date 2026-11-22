@@ -137,6 +137,24 @@ public class SubagentWhiteboardSectionTests
     }
 
     [TestMethod]
+    public void WhatAWatchDelivered_IsNotMined()
+    {
+        // #854: a watch's notices quote the user's instructions for it, which must not be learned (#853).
+        var entries = new[]
+        {
+            Entry("subagent/x/mcp-watch/scheduler/w_1/ended", "on_change: email Bob", category: WorkingMemoryCategories.McpWatch),
+            Entry("subagent/x/findings", "server is onedrive-personal"),
+        };
+
+        var section = DreamService.BuildSubagentWhiteboardSection(entries, 1000, 50);
+
+        Assert.IsNotNull(section);
+        StringAssert.Contains(section, "onedrive-personal");
+        Assert.IsFalse(section.Contains("email Bob"));
+        Assert.IsNull(DreamService.BuildSubagentWhiteboardSection([entries[0]], 1000, 50), "nothing left to mine");
+    }
+
+    [TestMethod]
     public void MaxEntriesZero_ReturnsHeaderOnly_NoEntries()
     {
         var entries = new[] { Entry("subagent/x/y", "value") };
