@@ -2057,10 +2057,11 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             CallCts = handback?.Cts ?? CancellationTokenSource.CreateLinkedTokenSource(ct),
             ElicitationScope = server.Elicitation
                 ?.BeginCall(request.ToolName, request.Arguments, request.SessionId, handback),
-            // A call that may change the server's resources, for telling a watch's echo (#853).
+            // A call that may change the server's resources, for telling a watch's echo (#853). One
+            // through an aggregator counts on the configured server it reached, too (#856).
             EchoCall = request.SessionId is { Length: > 0 } callerSession
                        && toolDefinition.Tool?.ProtocolTool.Annotations?.ReadOnlyHint != true
-                ? _recentCalls.Start(callerSession, serverName, request.ToolName)
+                ? StartEchoCall(callerSession, serverName, request.ToolName, arguments)
                 : null,
             RecentCalls = _recentCalls,
         };
@@ -4201,6 +4202,70 @@ public sealed partial class McpBridgeService : IHostedService, IAsyncDisposable
             value,
             @"\$\{([^}]+)\}",
             m => Environment.GetEnvironmentVariable(m.Groups[1].Value) ?? string.Empty);
+
+    /// <summary>
+    /// Records a call in the session's recent calls (#853), on the configured server an
+    /// aggregator routed it to as well (#856), so a watch on that server can tell its echo.
+    /// </summary>
+    private McpRecentCalls.Call StartEchoCall(
+        string sessionId, string serverName, string toolName, Dictionary<string, object?> arguments)
+    {
+        if (RoutedCallOf(serverName, toolName, arguments) is not { } routed)
+            return _recentCalls.Start(sessionId, serverName, toolName);
+
+        _logger.LogDebug("Recording {Server}/{Tool} as a call on {RoutedServer}/{RoutedTool} for watch echoes",
+            serverName, toolName, routed.Server, routed.Tool);
+        return _recentCalls.Start(sessionId, serverName, routed.Tool, routed.Server);
+    }
+
+    /// <summary>
+    /// The downstream server and tool a call through an aggregator reaches: <c>invoke_tool</c>
+    /// with <c>serverName</c> and <c>toolName</c>, or a typed <c>&lt;server&gt;__&lt;tool&gt;</c>
+    /// tool (split at the longest prefix that names a configured server). Only for a server
+    /// named as an aggregator, as the <c>invoke_tool</c> unwrap judges one. Null unless the bridge
+    /// has a server of that name configured itself, and when that server marks the tool read-only,
+    /// since such a call changes nothing there.
+    /// </summary>
+    private (string Server, string Tool)? RoutedCallOf(
+        string serverName, string toolName, Dictionary<string, object?> arguments)
+    {
+        if (!serverName.Contains("aggregator", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        string? downstream = null, innerTool = null;
+        if (toolName == "invoke_tool")
+        {
+            downstream = GetStringArgument(arguments, "serverName");
+            innerTool = GetStringArgument(arguments, "toolName");
+        }
+        else
+        {
+            for (var split = toolName.LastIndexOf("__", StringComparison.Ordinal);
+                 split > 0;
+                 split = toolName.LastIndexOf("__", split - 1, StringComparison.Ordinal))
+            {
+                if (split + 2 < toolName.Length && _connections.IsConfigured(toolName[..split]))
+                {
+                    downstream = toolName[..split];
+                    innerTool = toolName[(split + 2)..];
+                    break;
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(downstream)
+            || string.IsNullOrWhiteSpace(innerTool)
+            || string.Equals(downstream, serverName, StringComparison.OrdinalIgnoreCase)
+            || !_connections.IsConfigured(downstream))
+            return null;
+
+        if (_connections.TryGet(downstream, out var server)
+            && server.Tools.FirstOrDefault(t => string.Equals(t.Name, innerTool, StringComparison.Ordinal))
+                ?.ProtocolTool.Annotations?.ReadOnlyHint == true)
+            return null;
+
+        return (downstream, innerTool);
+    }
 
     /// <summary>
     /// Extracts a string value from a parsed argument dictionary, handling

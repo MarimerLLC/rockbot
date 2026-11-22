@@ -36,6 +36,21 @@ public class McpWatchInstructionsEndToEndTests
                 McpServerTool.Create(
                     (string name, string text) => { store.Set(name, text); return "ok"; },
                     new McpServerToolCreateOptions { Name = "peek_watch_resource", ReadOnly = true }),
+                // An aggregator's two ways of reaching a downstream server's tool (#856). Registered
+                // a second time as "aggregator", the fixture stands in for one in front of itself.
+                McpServerTool.Create(
+                    (string serverName, string toolName, JsonElement arguments) =>
+                    {
+                        var args = arguments.ValueKind == JsonValueKind.String
+                            ? JsonDocument.Parse(arguments.GetString()!).RootElement
+                            : arguments;
+                        store.Set(args.GetProperty("name").GetString()!, args.GetProperty("text").GetString()!);
+                        return $"ok ({serverName}/{toolName})";
+                    },
+                    new McpServerToolCreateOptions { Name = "invoke_tool" }),
+                McpServerTool.Create(
+                    (string name, string text) => { store.Set(name, text); return "ok"; },
+                    new McpServerToolCreateOptions { Name = $"{BridgeHarness.ServerName}__set_watch_resource" }),
             ],
             resources: store.Resources(),
             configure: e => e.Subscriptions = true,
@@ -410,6 +425,100 @@ public class McpWatchInstructionsEndToEndTests
         Assert.IsFalse(call.IsError, call.Content);
         var update = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated);
         Assert.IsTrue(update.NeedsReply);
+        Assert.IsNull(update.CausedByTool);
+    }
+
+    private const string Aggregator = "aggregator";
+
+    /// <summary>Registers the fixture again as <see cref="Aggregator"/>, at a URL the bridge doesn't take for a duplicate.</summary>
+    private static async Task AddAggregatorAsync(BridgeHarness harness)
+    {
+        var registered = await harness.RegisterAsync(Aggregator, harness.ServerUrl + "?via=aggregator");
+        Assert.IsTrue(registered.Success, registered.Error);
+    }
+
+    private static string InvokeToolArgs(string serverName, string text, string toolName = "set_watch_resource") =>
+        JsonSerializer.Serialize(new
+        {
+            serverName,
+            toolName,
+            arguments = new { name = "poll", text },
+        });
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AnAggregatorCallToAToolTheServerMarksReadOnly_IsNoEchosCause()
+    {
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        await using var harness = await StartAsync(store);
+        await AddAggregatorAsync(harness);
+        await WatchAsync(harness);
+
+        var call = await harness.InvokeAsync("invoke_tool",
+            InvokeToolArgs(BridgeHarness.ServerName, "v2", toolName: "peek_watch_resource"),
+            server: Aggregator, sessionId: Session);
+        Assert.IsFalse(call.IsError, call.Content);
+
+        var update = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated);
+        Assert.IsTrue(update.NeedsReply, "the watched server marks the routed tool read-only");
+        Assert.IsNull(update.CausedByTool);
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AChangeMadeThroughAnAggregator_IsTheSessionsOwnEcho()
+    {
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        await using var harness = await StartAsync(store);
+        await AddAggregatorAsync(harness);
+        await WatchAsync(harness);
+
+        var call = await harness.InvokeAsync("invoke_tool", InvokeToolArgs(BridgeHarness.ServerName, "v2"),
+            server: Aggregator, sessionId: Session);
+        Assert.IsFalse(call.IsError, call.Content);
+
+        var update = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated);
+        Assert.IsFalse(update.NeedsReply, "the session made this change itself, through the aggregator");
+        Assert.AreEqual("set_watch_resource", update.CausedByTool);
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AChangeMadeThroughAnAggregatorsTypedTool_IsTheSessionsOwnEcho()
+    {
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        await using var harness = await StartAsync(store);
+        await AddAggregatorAsync(harness);
+        await WatchAsync(harness);
+
+        var call = await harness.InvokeAsync($"{BridgeHarness.ServerName}__set_watch_resource", SetArgs("v2"),
+            server: Aggregator, sessionId: Session);
+        Assert.IsFalse(call.IsError, call.Content);
+
+        var update = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated);
+        Assert.IsFalse(update.NeedsReply, "the session made this change itself, through the aggregator");
+        Assert.AreEqual("set_watch_resource", update.CausedByTool);
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AnAggregatorCallToAServerTheBridgeLacks_IsNoEchosCause()
+    {
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        await using var harness = await StartAsync(store);
+        await AddAggregatorAsync(harness);
+        await WatchAsync(harness);
+
+        var call = await harness.InvokeAsync("invoke_tool", InvokeToolArgs("elsewhere", "v2"),
+            server: Aggregator, sessionId: Session);
+        Assert.IsFalse(call.IsError, call.Content);
+
+        var update = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindResourceUpdated);
+        Assert.IsTrue(update.NeedsReply, "no configured server of that name, so not the watched one");
         Assert.IsNull(update.CausedByTool);
     }
 

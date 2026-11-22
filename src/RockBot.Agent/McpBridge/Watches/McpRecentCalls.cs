@@ -8,7 +8,8 @@ namespace RockBot.Agent.McpBridge.Watches;
 /// </summary>
 /// <remarks>
 /// Calls a server marks read-only (<c>readOnlyHint</c>) aren't recorded; every other call is,
-/// since a server that annotates nothing gives no other way to tell.
+/// since a server that annotates nothing gives no other way to tell. A call through an aggregator
+/// also counts on the configured server it reached (<see cref="Call.RoutedServer"/>, #856).
 /// </remarks>
 internal sealed class McpRecentCalls(TimeProvider time)
 {
@@ -30,15 +31,29 @@ internal sealed class McpRecentCalls(TimeProvider time)
     {
         public required string SessionId { get; init; }
         public required string Server { get; init; }
+
+        /// <summary>
+        /// The server a call through an aggregator on <see cref="Server"/> reached, when the bridge
+        /// has a server of that name too: a change there is this call's echo as well.
+        /// </summary>
+        public string? RoutedServer { get; init; }
+
         public required string Tool { get; init; }
         public required DateTimeOffset StartedAt { get; init; }
         public DateTimeOffset? EndedAt { get; set; }
     }
 
-    /// <summary>Records that a call started; dispose the result (or call <see cref="End"/>) when it ends.</summary>
-    public Call Start(string sessionId, string server, string tool)
+    /// <summary>Records that a call started; call <see cref="End"/> when it ends.</summary>
+    public Call Start(string sessionId, string server, string tool, string? routedServer = null)
     {
-        var call = new Call { SessionId = sessionId, Server = server, Tool = tool, StartedAt = time.GetUtcNow() };
+        var call = new Call
+        {
+            SessionId = sessionId,
+            Server = server,
+            RoutedServer = routedServer,
+            Tool = tool,
+            StartedAt = time.GetUtcNow(),
+        };
         lock (_gate)
         {
             Prune();
@@ -57,7 +72,8 @@ internal sealed class McpRecentCalls(TimeProvider time)
     }
 
     /// <summary>
-    /// The latest call of <paramref name="sessionId"/> on <paramref name="server"/> that was running
+    /// The latest call of <paramref name="sessionId"/> on <paramref name="server"/> (directly or
+    /// routed through an aggregator) that was running
     /// at <paramref name="at"/>, or had ended no more than <paramref name="grace"/> before it. A call
     /// counts for at most <see cref="MaxCauseSpan"/> after it started, ended or not.
     /// </summary>
@@ -67,7 +83,8 @@ internal sealed class McpRecentCalls(TimeProvider time)
         {
             return _calls
                 .Where(c => string.Equals(c.SessionId, sessionId, StringComparison.Ordinal)
-                            && string.Equals(c.Server, server, StringComparison.OrdinalIgnoreCase)
+                            && (string.Equals(c.Server, server, StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(c.RoutedServer, server, StringComparison.OrdinalIgnoreCase))
                             && c.StartedAt <= at
                             && at <= Min(c.EndedAt ?? at, c.StartedAt + MaxCauseSpan) + grace)
                 .OrderByDescending(c => c.StartedAt)
