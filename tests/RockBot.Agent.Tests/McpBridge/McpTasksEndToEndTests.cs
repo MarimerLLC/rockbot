@@ -604,7 +604,7 @@ public class McpTasksEndToEndTests
         {
             if (File.Exists(harness.TaskLedgerPath))
             {
-                using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(harness.TaskLedgerPath));
+                using var doc = JsonDocument.Parse(SharedFile.ReadAllText(harness.TaskLedgerPath));
                 var entry = doc.RootElement.GetProperty("entries").EnumerateArray()
                     .FirstOrDefault(e => e.GetProperty("taskId").GetString() == taskId);
                 if (entry.ValueKind == JsonValueKind.Object && match(entry))

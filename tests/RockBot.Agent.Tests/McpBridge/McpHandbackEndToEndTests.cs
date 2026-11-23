@@ -119,30 +119,11 @@ public class McpHandbackEndToEndTests
 
     private static List<PendingQuestionEntry> ReadLedger(BridgeHarness harness)
     {
-        using var document = JsonDocument.Parse(ReadSharedFile(harness.LedgerPath));
+        using var document = JsonDocument.Parse(SharedFile.ReadAllText(harness.LedgerPath));
         Assert.AreEqual(PendingQuestionLedger.CurrentVersion, document.RootElement.GetProperty("version").GetInt32());
         return JsonSerializer.Deserialize<List<PendingQuestionEntry>>(
             document.RootElement.GetProperty("entries").GetRawText(),
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
-    }
-
-    /// <summary>
-    /// Reads a file the bridge may be replacing at that moment. On Windows, the atomic replace
-    /// briefly holds the file, so a poll that lands on it gets a sharing violation; retry it.
-    /// </summary>
-    private static string ReadSharedFile(string path)
-    {
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                return File.ReadAllText(path);
-            }
-            catch (IOException) when (attempt < 20 && File.Exists(path))
-            {
-                Thread.Sleep(10);
-            }
-        }
     }
 
     [TestMethod]
@@ -175,7 +156,7 @@ public class McpHandbackEndToEndTests
         Assert.AreEqual(BridgeHarness.ServerName, answered.ServerName);
         Assert.AreEqual("search_mail", answered.ToolName);
         Assert.AreEqual(PendingQuestionStatus.Answered, ReadLedger(harness).Single().Status);
-        Assert.IsFalse(File.ReadAllText(harness.LedgerPath).Contains("\"work\""), "the ledger never holds answer values");
+        Assert.IsFalse(SharedFile.ReadAllText(harness.LedgerPath).Contains("\"work\""), "the ledger never holds answer values");
     }
 
     [TestMethod]

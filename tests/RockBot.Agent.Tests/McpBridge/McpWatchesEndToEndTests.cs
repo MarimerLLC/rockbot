@@ -103,7 +103,7 @@ public class McpWatchesEndToEndTests
 
         // The ledger keeps the hash of what was delivered, never the content.
         await WaitUntilAsync(() => Ledger(harness).Single().LastHash == update.ContentHash, "the ledger to record the delivery");
-        Assert.IsFalse(File.ReadAllText(harness.WatchLedgerPath).Contains("everyone voted"), "content is never written");
+        Assert.IsFalse(SharedFile.ReadAllText(harness.WatchLedgerPath).Contains("everyone voted"), "content is never written");
     }
 
     [TestMethod]

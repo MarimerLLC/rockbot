@@ -506,20 +506,10 @@ public class McpHandbackEscalationTests
 
     private static List<PendingQuestionEntry> ReadLedger(BridgeHarness harness)
     {
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(File.ReadAllText(harness.LedgerPath));
-                return JsonSerializer.Deserialize<List<PendingQuestionEntry>>(
-                    document.RootElement.GetProperty("entries").GetRawText(),
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
-            }
-            catch (IOException) when (attempt < 20)
-            {
-                Thread.Sleep(25);
-            }
-        }
+        using var document = JsonDocument.Parse(SharedFile.ReadAllText(harness.LedgerPath));
+        return JsonSerializer.Deserialize<List<PendingQuestionEntry>>(
+            document.RootElement.GetProperty("entries").GetRawText(),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
     }
 
     /// <summary>The subagents a test has running, and the primary session each was spawned from.</summary>

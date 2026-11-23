@@ -27,7 +27,7 @@ public class McpBridgeSurfaceEndToEndTests
 
     private static string? PersistedId(BridgeHarness harness)
     {
-        using var doc = JsonDocument.Parse(File.ReadAllText(harness.ConfigPath));
+        using var doc = JsonDocument.Parse(SharedFile.ReadAllText(harness.ConfigPath));
         return doc.RootElement.GetProperty("mcpServers").GetProperty(BridgeHarness.ServerName)
             .TryGetProperty("id", out var id) ? id.GetString() : null;
     }
