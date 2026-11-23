@@ -58,7 +58,7 @@ public class McpWatchHandOverEndToEndTests
 
         var listing = (await harness.ListWatchesAsync(Primary)).Message!;
         StringAssert.Contains(listing, watchId);
-        StringAssert.Contains(listing, $"Set up by subagent {Subagent}, which has exited");
+        StringAssert.Contains(listing, "Set up by subagent task-1, which has exited");
         var entry = LedgerEntry(harness, watchId);
         Assert.AreEqual(Primary, entry.SessionId);
         Assert.AreEqual(Subagent, entry.HandedOverFrom);
@@ -93,6 +93,31 @@ public class McpWatchHandOverEndToEndTests
         var ended = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindWatchEnded);
         Assert.AreEqual(Primary, ended.SessionId);
         Assert.AreEqual(watchId, ended.TaskId);
+    }
+
+    [TestMethod]
+    [Timeout(30_000, CooperativeCancellation = true)]
+    public async Task AnEndingThatSkipsTheHandOver_StillReachesItsConversation()
+    {
+        var subagents = new McpHandbackEscalationTests.FakeSubagentSessions().Running(Subagent, Primary);
+        var store = new WatchableResources();
+        store.Set("poll", "v1");
+        await using var harness = await McpWatchesEndToEndTests.StartAsync(store, subagentSessions: subagents);
+        var watchId = await WatchAsync(harness, Subagent);
+        subagents.Forget(Subagent);
+
+        // Turning the server's watches off ends them directly, with no delivery to hand this one over first.
+        harness.EditPersistedEntry(BridgeHarness.ServerName, e => e.Subscriptions = null);
+        await harness.ReloadConfigAsync();
+
+        var ended = await harness.WaitForTaskResultAsync(r => r.Kind == McpTaskResult.KindWatchEnded);
+        Assert.AreEqual(Primary, ended.SessionId);
+        Assert.AreEqual(watchId, ended.TaskId);
+        StringAssert.Contains(ended.Content, "reconfigured");
+        var entry = LedgerEntry(harness, watchId);
+        Assert.AreEqual(Primary, entry.SessionId);
+        Assert.AreEqual(Subagent, entry.HandedOverFrom);
+        Assert.AreEqual(McpWatchEntryStatus.Ended, entry.Status);
     }
 
     [TestMethod]

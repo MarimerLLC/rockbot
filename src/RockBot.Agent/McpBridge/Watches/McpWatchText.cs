@@ -251,7 +251,8 @@ internal static class McpWatchText
                 builder.Append("\n- ").Append(Describe(w)).Append(" (watch_id \"").Append(w.WatchId)
                     .Append("\"), ends by ").Append(lifetimeEnd(w).ToString("yyyy-MM-dd")).Append(" UTC at the latest.");
                 if (w.HandedOverFrom is { } from)
-                    builder.Append(" Set up by subagent ").Append(Flatten(from)).Append(", which has exited; it is this conversation's now.");
+                    builder.Append(" Set up by subagent ").Append(Flatten(Handback.HandbackSessions.SubagentTaskId(from)))
+                        .Append(", which has exited; it is this conversation's now.");
                 var covering = rules.Where(r => r.Matches(w.Server, w.Uri)).ToList();
                 if (covering.Count > 0)
                     builder.Append(" Standing rule(s): ").Append(string.Join(", ", covering.Select(r => $"\"{r.RuleId}\""))).Append('.');

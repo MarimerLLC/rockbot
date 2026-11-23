@@ -96,7 +96,7 @@ public sealed partial class McpBridgeService
         }
 
         // A watch this conversation inherited from an exited subagent is found as its own (#865).
-        await HandOverExitedSubagentWatchesAsync();
+        await HandOverExitedSubagentWatchesAsync(waitForBusy: false);
 
         await _watchGate.WaitAsync(ct);
         try
@@ -184,6 +184,11 @@ public sealed partial class McpBridgeService
             await _watchLedger.AddAsync(entry, CancellationToken.None);
             var watch = new ActiveWatch(entry, confirmed: false);
             _watches[entry.WatchId] = watch;
+
+            // A subagent's watch handed over to this conversation while this request ran (#865):
+            // the conversation keeps its own, as a hand-over to a conversation that watches it does.
+            if (DuplicateOf(watch) is { Entry.HandedOverFrom: not null } inherited)
+                await EndWatchAsync(inherited, $"the subagent that watched it has exited, and its conversation already watches it (watch_id \"{entry.WatchId}\")", notify: false);
 
             var failure = await SubscribeAsync(name, uri, ct);
             if (failure is not null)
@@ -280,7 +285,7 @@ public sealed partial class McpBridgeService
     private async Task<McpWatchResourceResponse> ListWatchesAsync(McpListWatchesRequest req, CancellationToken ct)
     {
         // Including what this conversation inherits from subagents that have exited (#865).
-        await HandOverExitedSubagentWatchesAsync();
+        await HandOverExitedSubagentWatchesAsync(waitForBusy: false);
         var mine = req.SessionId is null ? [] : SessionWatchEntries(req.SessionId);
         var rules = await _watchRules.ActiveAsync(ct);
         return new McpWatchResourceResponse
@@ -411,7 +416,7 @@ public sealed partial class McpBridgeService
     {
         var uri = req.Uri?.Trim() ?? "";
         // A watch this conversation inherited from an exited subagent is its own to stop (#865).
-        await HandOverExitedSubagentWatchesAsync();
+        await HandOverExitedSubagentWatchesAsync(waitForBusy: false);
         var watch = req.SessionId is null ? null : FindWatch(req.SessionId, req.ServerName ?? "", uri);
         if (watch is null)
         {
@@ -918,8 +923,11 @@ public sealed partial class McpBridgeService
 
             // The session's own call on this server most likely made this change (#853): it is
             // recorded for the session, without a turn that would only repeat what it did.
+            // A watch handed over from an exited subagent (#865): that subagent's own last call counts too.
+            var grace = TimeSpan.FromSeconds(Math.Max(0, _options.WatchEchoGraceSeconds));
             var cause = _options.WatchEchoSuppression && notifiedAt is { } at
-                ? _recentCalls.CauseOf(entry.SessionId, entry.Server, at, TimeSpan.FromSeconds(Math.Max(0, _options.WatchEchoGraceSeconds)))
+                ? _recentCalls.CauseOf(entry.SessionId, entry.Server, at, grace)
+                  ?? (entry.HandedOverFrom is { } from ? _recentCalls.CauseOf(from, entry.Server, at, grace) : null)
                 : null;
 
             var rules = await _watchRules.MatchingAsync(entry.Server, entry.Uri, ct);
@@ -1212,7 +1220,31 @@ public sealed partial class McpBridgeService
             if (!entry.IsActive)
             {
                 if (entry.NotifySession)
+                {
+                    // No subagent survives a restart: its ending goes to its conversation (#865).
+                    if (HasExitedSubagentOwner(entry) && PrimaryOf(entry) is { } primary)
+                    {
+                        var subagent = entry.SessionId;
+                        try
+                        {
+                            await _watchLedger.UpdateAsync(entry.WatchId, e =>
+                            {
+                                e.HandedOverFrom = subagent;
+                                e.SessionId = primary;
+                            }, CancellationToken.None);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Delivered to the conversation all the same; a later restart redirects it again.
+                            _logger.LogWarning(ex, "Could not record the ending of watch {WatchId} passing to {Primary}", entry.WatchId, primary);
+                        }
+
+                        entry.HandedOverFrom = subagent;
+                        entry.SessionId = primary;
+                    }
+
                     TrackParked(DeliverWatchEndedAsync(entry));
+                }
                 continue;
             }
 
@@ -1357,8 +1389,9 @@ public sealed partial class McpBridgeService
             Kind = McpTaskResult.KindWatchExpiring,
             Content = McpWatchText.Expiring(entry, MaxLifetimeEnd(entry), Math.Max(1, _options.WatchMaxLifetimeDays)),
             ResourceUri = entry.Uri,
-            // One warning per lifetime: a watch kept going is warned again before its new end.
-            ContentHash = $"expiring-{MaxLifetimeEnd(entry):yyyyMMddHHmmss}",
+            // One warning per lifetime: a watch kept going is warned again before its new end. One
+            // handed over from a subagent (#865) is warned again for its new owner, not taken for a repeat.
+            ContentHash = $"expiring-{MaxLifetimeEnd(entry):yyyyMMddHHmmss}{(entry.HandedOverFrom is null ? "" : "-handed-over")}",
             RunOrigin = entry.RunOrigin,
             UserAskedFor = entry.UserAskedFor,
             OnChange = entry.OnChange,
@@ -1417,7 +1450,11 @@ public sealed partial class McpBridgeService
     /// changes as ordinary watch turns. Done lazily: before a delivery, when a conversation lists,
     /// watches or unwatches, at startup, and at each expiry check.
     /// </summary>
-    private async Task HandOverExitedSubagentWatchesAsync()
+    /// <param name="waitForBusy">
+    /// False for an agent's request: a watch whose gate is held (a read of a slow server) is
+    /// skipped rather than waited for. Its delivery hands it over itself.
+    /// </param>
+    private async Task HandOverExitedSubagentWatchesAsync(bool waitForBusy = true)
     {
         if (SubagentSessions is null)
             return;
@@ -1426,7 +1463,15 @@ public sealed partial class McpBridgeService
         {
             try
             {
-                await watch.ReadGate.WaitAsync(_lifetime.Token);
+                if (!waitForBusy)
+                {
+                    if (!await watch.ReadGate.WaitAsync(TimeSpan.Zero))
+                        continue;
+                }
+                else
+                {
+                    await watch.ReadGate.WaitAsync(_lifetime.Token);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -1474,13 +1519,15 @@ public sealed partial class McpBridgeService
             return;
         }
 
-        // Write-ahead: the bridge's copy changes only once the ledger holds the change.
+        // Write-ahead: the bridge's copy changes only once the ledger holds the change. An expiry
+        // warning the subagent got is cleared with its notice below, so the new owner is warned too.
         try
         {
             await _watchLedger.UpdateAsync(entry.WatchId, e =>
             {
                 e.SessionId = primary;
                 e.HandedOverFrom = subagent;
+                e.ExpiryWarnedAt = null;
             }, CancellationToken.None);
         }
         catch (Exception ex)
@@ -1492,6 +1539,7 @@ public sealed partial class McpBridgeService
 
         entry.SessionId = primary;
         entry.HandedOverFrom = subagent;
+        entry.ExpiryWarnedAt = null;
 
         // The subagent's whiteboard notices about it no longer hold; at worst they stay until their TTL.
         if (_workingMemory is not null)
@@ -1511,7 +1559,22 @@ public sealed partial class McpBridgeService
 
         _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) passed from exited subagent {Subagent} to {Primary}",
             entry.WatchId, entry.Server, entry.Uri, subagent, primary);
+
+        // The conversation started its own watch of it meanwhile (the check above ran first): it
+        // keeps that one. WatchResourceAsync ends this same watch if it sees the race first.
+        if (DuplicateOf(watch) is { } racing)
+        {
+            await EndWatchAsync(watch, $"the subagent that watched it has exited, and its conversation already watches it (watch_id \"{racing.WatchId}\")", notify: false);
+        }
     }
+
+    /// <summary>Another watch of the same session on the same resource (a hand-over that raced a new watch, #865).</summary>
+    private ActiveWatch? DuplicateOf(ActiveWatch watch) =>
+        _watches.Values.FirstOrDefault(w =>
+            !ReferenceEquals(w, watch)
+            && string.Equals(w.Entry.SessionId, watch.Entry.SessionId, StringComparison.Ordinal)
+            && string.Equals(w.Entry.Server, watch.Entry.Server, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(w.Entry.Uri, watch.Entry.Uri, StringComparison.Ordinal));
 
     /// <summary>True when a subagent owns the watch and has exited (not when subagents aren't known here).</summary>
     private bool HasExitedSubagentOwner(McpWatchEntry entry) =>
