@@ -442,6 +442,17 @@ internal sealed class BridgeHarness : IAsyncDisposable
     /// <summary>Where the bridge keeps its watch ledger in this run.</summary>
     public string WatchLedgerPath => Path.Combine(_configDir, "mcp", "watches.json");
 
+    /// <summary>
+    /// The watch ledger's entries as the file holds them, read with <see cref="SharedFile.ReadAllText"/>
+    /// (the bridge may be replacing the file as a test polls it).
+    /// </summary>
+    public RockBot.Agent.McpBridge.Watches.McpWatchEntry[] ReadWatchLedger()
+    {
+        using var doc = JsonDocument.Parse(SharedFile.ReadAllText(WatchLedgerPath));
+        return doc.RootElement.GetProperty("entries").Deserialize<RockBot.Agent.McpBridge.Watches.McpWatchEntry[]>(
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+    }
+
     /// <summary>Sends an <c>mcp_cancel_task</c> request.</summary>
     public async Task<McpCancelTaskResponse> CancelTaskAsync(string taskId, string sessionId)
     {
