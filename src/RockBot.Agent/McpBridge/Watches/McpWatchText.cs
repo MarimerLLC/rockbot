@@ -13,6 +13,7 @@ internal static class McpWatchText
 {
     public const string WatchToolName = McpManagementExecutor.WatchResourceToolName;
     public const string UnwatchToolName = McpManagementExecutor.UnwatchResourceToolName;
+    public const string ListWatchesToolName = McpManagementExecutor.ListWatchesToolName;
     public const string SetRuleToolName = McpManagementExecutor.SetWatchRuleToolName;
 
     /// <summary>The working-memory category of a watch's content.</summary>
@@ -169,7 +170,8 @@ internal static class McpWatchText
     /// The user's instructions for a change to a watch whose subagent has exited (#855): the change
     /// is folded into the primary session as a late notification, whose turn points to the content
     /// in working memory; these follow it. Null when the watch has no instructions and no standing
-    /// rule covers it. Doesn't suggest unwatching: the watch is the subagent's, not the primary's.
+    /// rule covers it. Since #865 the bridge hands an exited subagent's watch to the primary before
+    /// delivering, so this is only for a change already on its way to the subagent as it exited.
     /// </summary>
     public static string? FoldedInstructions(McpTaskResult message)
     {
@@ -181,18 +183,27 @@ internal static class McpWatchText
     }
 
     /// <summary>
-    /// What follows a folded ending or expiry warning of an exited subagent's watch. The warning's
-    /// own advice (renew it as it is, stop it, pass the instructions as on_change) is for the
-    /// session that owns the watch; from the primary none of it works, so it's corrected here.
+    /// What follows a folded ending or expiry warning of an exited subagent's watch. The payload
+    /// was written for the subagent. A watch still running passes to this conversation (#865), so
+    /// it can keep or stop it here; one that ended can only be watched anew.
     /// </summary>
-    public static string FoldedEndingNote(McpTaskResult message) =>
-        $"[rockbot] That watch (watch_id \"{message.TaskId}\") belonged to the subagent, which has exited, so this " +
-        "conversation can't renew or stop it; disregard the payload's advice on doing so. If it still needs watching, " +
-        $"{WatchToolName}(server_name: \"{Flatten(message.ServerName)}\", uri: \"{Flatten(message.ResourceUri ?? message.ToolName)}\") " +
-        "here starts a new watch owned by this conversation; it gets the user's standing watch rules." +
-        (message.OnChange is null
-            ? ""
-            : " It doesn't get that watch's own instructions: only the user can give those again, so tell the user it needs them.");
+    public static string FoldedEndingNote(McpTaskResult message)
+    {
+        var call = $"{WatchToolName}(server_name: \"{Flatten(message.ServerName)}\", uri: \"{Flatten(message.ResourceUri ?? message.ToolName)}\")";
+        if (message.Kind == McpTaskResult.KindWatchExpiring)
+        {
+            return $"[rockbot] That watch (watch_id \"{message.TaskId}\") was set up by the subagent, which has exited, so it " +
+                   $"passes to this conversation: {ListWatchesToolName} shows it. To keep it, call {call} here without " +
+                   $"on_change; it runs on with its instructions as they are. {UnwatchToolName} stops it.";
+        }
+
+        return $"[rockbot] That watch (watch_id \"{message.TaskId}\") was set up by the subagent, which has exited. " +
+               $"If it still needs watching, {call} here starts a new watch owned by this conversation; it gets the " +
+               "user's standing watch rules." +
+               (message.OnChange is null
+                   ? ""
+                   : " It doesn't get that watch's own instructions: only the user can give those again, so tell the user it needs them.");
+    }
 
     /// <summary>
     /// The standing rules and the watch's own instructions, quoted as the user's, then what to do
@@ -239,6 +250,8 @@ internal static class McpWatchText
             {
                 builder.Append("\n- ").Append(Describe(w)).Append(" (watch_id \"").Append(w.WatchId)
                     .Append("\"), ends by ").Append(lifetimeEnd(w).ToString("yyyy-MM-dd")).Append(" UTC at the latest.");
+                if (w.HandedOverFrom is { } from)
+                    builder.Append(" Set up by subagent ").Append(Flatten(from)).Append(", which has exited; it is this conversation's now.");
                 var covering = rules.Where(r => r.Matches(w.Server, w.Uri)).ToList();
                 if (covering.Count > 0)
                     builder.Append(" Standing rule(s): ").Append(string.Join(", ", covering.Select(r => $"\"{r.RuleId}\""))).Append('.');

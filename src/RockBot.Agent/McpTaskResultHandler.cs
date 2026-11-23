@@ -400,8 +400,9 @@ internal sealed class McpTaskResultHandler(
             RunOrigin: message.RunOrigin,
             UserAskedFor: message.UserAskedFor,
             // A change carries the user's instructions for the watch (#855). An ending or expiry
-            // warning has them in its content, but its advice on keeping the watch is for the
-            // session that owns it, which the primary isn't.
+            // warning has them in its content, written for the subagent; the note says what the
+            // primary can do, as the watch passes to it (#865). Normally the bridge hands the
+            // watch over before delivering, so this path is for one already on its way.
             Instructions: message.Kind switch
             {
                 McpTaskResult.KindResourceUpdated => McpWatchText.FoldedInstructions(message),

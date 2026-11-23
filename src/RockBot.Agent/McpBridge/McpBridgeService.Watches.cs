@@ -95,6 +95,9 @@ public sealed partial class McpBridgeService
                 return Refuse(McpWatchText.InstructionsTooLong(onChange.Length));
         }
 
+        // A watch this conversation inherited from an exited subagent is found as its own (#865).
+        await HandOverExitedSubagentWatchesAsync();
+
         await _watchGate.WaitAsync(ct);
         try
         {
@@ -164,6 +167,7 @@ public sealed partial class McpBridgeService
             {
                 WatchId = NewWatchId(),
                 SessionId = sessionId,
+                PrimarySessionId = PrimaryOfSubagent(sessionId),
                 Server = name,
                 ServerId = server.Config.Id,
                 Uri = uri,
@@ -275,6 +279,8 @@ public sealed partial class McpBridgeService
     /// <summary><c>mcp_list_watches</c>: this session's watches and the standing watch rules (#853).</summary>
     private async Task<McpWatchResourceResponse> ListWatchesAsync(McpListWatchesRequest req, CancellationToken ct)
     {
+        // Including what this conversation inherits from subagents that have exited (#865).
+        await HandOverExitedSubagentWatchesAsync();
         var mine = req.SessionId is null ? [] : SessionWatchEntries(req.SessionId);
         var rules = await _watchRules.ActiveAsync(ct);
         return new McpWatchResourceResponse
@@ -404,6 +410,8 @@ public sealed partial class McpBridgeService
     private async Task<McpWatchResourceResponse> UnwatchResourceAsync(McpUnwatchResourceRequest req, CancellationToken ct)
     {
         var uri = req.Uri?.Trim() ?? "";
+        // A watch this conversation inherited from an exited subagent is its own to stop (#865).
+        await HandOverExitedSubagentWatchesAsync();
         var watch = req.SessionId is null ? null : FindWatch(req.SessionId, req.ServerName ?? "", uri);
         if (watch is null)
         {
@@ -847,6 +855,11 @@ public sealed partial class McpBridgeService
             if (!_watches.ContainsKey(watch.WatchId))
                 return;
 
+            // The subagent that watched it has exited: the change goes to its conversation (#865).
+            await HandOverUnderGateAsync(watch);
+            if (!_watches.ContainsKey(watch.WatchId))
+                return;
+
             if (_time.GetUtcNow() >= MaxLifetimeEnd(entry))
             {
                 await EndWatchAsync(watch, ExpiredReason(entry), notify: true);
@@ -1030,13 +1043,22 @@ public sealed partial class McpBridgeService
             return;
 
         var entry = watch.Entry;
+
+        // An exited subagent's watch: its ending is news for the conversation that takes its watches (#865).
+        var handOverTo = notify && HasExitedSubagentOwner(entry) ? PrimaryOf(entry) : null;
+        if (handOverTo is not null)
+        {
+            entry.HandedOverFrom = entry.SessionId;
+            entry.SessionId = handOverTo;
+        }
+
         entry.Status = McpWatchEntryStatus.Ended;
         entry.Reason = reason;
         entry.NotifySession = notify;
         entry.EndedAt = _time.GetUtcNow();
         try
         {
-            await _watchLedger.EndAsync(entry.WatchId, reason, notify, CancellationToken.None);
+            await _watchLedger.EndAsync(entry.WatchId, reason, notify, CancellationToken.None, handOverTo);
         }
         catch (Exception ex)
         {
@@ -1215,6 +1237,9 @@ public sealed partial class McpBridgeService
                 await EndWatchAsync(watch, ExpiredReason(entry), notify: true);
         }
 
+        // No subagent survives a restart: their watches pass to their conversations now (#865).
+        await HandOverExitedSubagentWatchesAsync();
+
         foreach (var server in _watches.Values.Select(w => w.Entry.Server).Distinct(StringComparer.OrdinalIgnoreCase).ToList())
         {
             EnsureWatchStream(server);
@@ -1259,6 +1284,9 @@ public sealed partial class McpBridgeService
     /// </summary>
     internal async Task ExpireWatchesAsync()
     {
+        // Warnings and endings go to whoever owns a watch now (#865).
+        await HandOverExitedSubagentWatchesAsync();
+
         var now = _time.GetUtcNow();
         // Past either date: a stored renewal date can lie beyond the maximum lifetime (the maximum was
         // lowered, or the entry predates it), and the maximum must not wait on a read that may never come.
@@ -1380,6 +1408,130 @@ public sealed partial class McpBridgeService
 
     private string ExpiredReason(McpWatchEntry entry) =>
         $"it reached its maximum lifetime of {Math.Max(1, _options.WatchMaxLifetimeDays)} day(s)";
+
+    // ── Subagents' watches (#865) ───────────────────────────────────────────
+
+    /// <summary>
+    /// A subagent's watch outlives the subagent. Once it has exited, the watch passes to the user
+    /// conversation that spawned it, which can then list, renew and stop it, and hears of its
+    /// changes as ordinary watch turns. Done lazily: before a delivery, when a conversation lists,
+    /// watches or unwatches, at startup, and at each expiry check.
+    /// </summary>
+    private async Task HandOverExitedSubagentWatchesAsync()
+    {
+        if (SubagentSessions is null)
+            return;
+
+        foreach (var watch in _watches.Values.Where(w => HasExitedSubagentOwner(w.Entry)).ToList())
+        {
+            try
+            {
+                await watch.ReadGate.WaitAsync(_lifetime.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            try
+            {
+                await HandOverUnderGateAsync(watch);
+            }
+            finally
+            {
+                watch.ReadGate.Release();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Hands <paramref name="watch"/> to its subagent's primary session if that subagent has
+    /// exited. The caller holds the watch's read gate, so no delivery reads it half-changed.
+    /// </summary>
+    private async Task HandOverUnderGateAsync(ActiveWatch watch)
+    {
+        var entry = watch.Entry;
+        if (!_watches.ContainsKey(watch.WatchId) || !HasExitedSubagentOwner(entry))
+            return;
+
+        var subagent = entry.SessionId;
+        var primary = PrimaryOf(entry);
+        if (primary is null)
+        {
+            // Its changes could reach no one: the fold-back into a primary needs one too.
+            _logger.LogWarning("Watch {WatchId} ({Server} {Uri}) of exited subagent {Subagent} has no conversation to pass to; ending it",
+                entry.WatchId, entry.Server, entry.Uri, subagent);
+            await EndWatchAsync(watch, "the subagent that watched it has exited, and no conversation could take the watch over", notify: false);
+            return;
+        }
+
+        if (FindWatch(primary, entry.Server, entry.Uri) is { } theirs)
+        {
+            // The conversation hears of each change once, through its own watch.
+            _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) of exited subagent {Subagent}: {Primary} already watches it ({Theirs}); ending it",
+                entry.WatchId, entry.Server, entry.Uri, subagent, primary, theirs.WatchId);
+            await EndWatchAsync(watch, $"the subagent that watched it has exited, and its conversation already watches it (watch_id \"{theirs.WatchId}\")", notify: false);
+            return;
+        }
+
+        // Write-ahead: the bridge's copy changes only once the ledger holds the change.
+        try
+        {
+            await _watchLedger.UpdateAsync(entry.WatchId, e =>
+            {
+                e.SessionId = primary;
+                e.HandedOverFrom = subagent;
+            }, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // Tried again at the next delivery, request or check.
+            _logger.LogWarning(ex, "Could not record watch {WatchId} passing from {Subagent} to {Primary}", entry.WatchId, subagent, primary);
+            return;
+        }
+
+        entry.SessionId = primary;
+        entry.HandedOverFrom = subagent;
+
+        // The subagent's whiteboard notices about it no longer hold; at worst they stay until their TTL.
+        if (_workingMemory is not null)
+        {
+            foreach (var notice in new[] { Tasks.McpTaskText.ExpiringNotice, Tasks.McpTaskText.EndedNotice })
+            {
+                try
+                {
+                    await _workingMemory.DeleteAsync(Tasks.McpTaskText.WatchNoticeKey(subagent, entry.Server, entry.WatchId, notice));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not clear a notice of watch {WatchId} from {Subagent}", entry.WatchId, subagent);
+                }
+            }
+        }
+
+        _logger.LogInformation("Watch {WatchId} ({Server} {Uri}) passed from exited subagent {Subagent} to {Primary}",
+            entry.WatchId, entry.Server, entry.Uri, subagent, primary);
+    }
+
+    /// <summary>True when a subagent owns the watch and has exited (not when subagents aren't known here).</summary>
+    private bool HasExitedSubagentOwner(McpWatchEntry entry) =>
+        SubagentSessions is { } subagents
+        && Handback.HandbackSessions.IsSubagentSession(entry.SessionId)
+        && !subagents.IsActive(entry.SessionId);
+
+    /// <summary>The user conversation a subagent's watch passes to, or null when there is none.</summary>
+    private string? PrimaryOf(McpWatchEntry entry) =>
+        entry.PrimarySessionId is { } recorded && Handback.HandbackSessions.IsUserSession(recorded)
+            ? recorded
+            : PrimaryOfSubagent(entry.SessionId);
+
+    /// <summary>The user conversation that spawned the subagent <paramref name="sessionId"/>, or null.</summary>
+    private string? PrimaryOfSubagent(string sessionId) =>
+        Handback.HandbackSessions.IsSubagentSession(sessionId)
+        && SubagentSessions?.ResolvePrimarySession(sessionId) is { } primary
+        && Handback.HandbackSessions.IsUserSession(primary)
+            ? primary
+            : null;
 
     // ── Lookups ─────────────────────────────────────────────────────────────
 

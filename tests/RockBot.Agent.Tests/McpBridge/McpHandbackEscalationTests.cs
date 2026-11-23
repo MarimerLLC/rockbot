@@ -537,6 +537,13 @@ public class McpHandbackEscalationTests
 
         public void Finish(string subagent) => _active.TryRemove(subagent, out _);
 
+        /// <summary>The subagent's record is gone too, as when its tombstone expires or the agent restarts.</summary>
+        public void Forget(string subagent)
+        {
+            Finish(subagent);
+            _primaries.TryRemove(subagent, out _);
+        }
+
         public bool IsSubagentSession(string sessionId) => sessionId.StartsWith("subagent/", StringComparison.Ordinal);
 
         public bool IsActive(string sessionId) => _active.ContainsKey(sessionId);

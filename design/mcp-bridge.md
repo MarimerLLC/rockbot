@@ -591,16 +591,32 @@ the right skill (on 2026-11-20 it picked an agent-written one from a test sessio
   and can't be changed by the content. With neither, the default stays: act as the conversation
   calls for, and the description and guide say to report and ask first. The consequential-action
   gate is unchanged: the turn runs under the watch's `RunOrigin`/`UserAskedFor`.
-- **A subagent that has exited (#855).** Its watch's change folds into the primary session as a
-  `LateA2ANotificationMessage`, whose turn points to the content in working memory. The same
-  quoted instructions travel on the message (`Instructions`, from `McpWatchText.FoldedInstructions`)
-  and follow that turn. They don't suggest unwatching: the watch is the subagent's, and the
-  primary can't stop it. An echo (`CausedByTool`) needs no reply, so it folds nothing. Each change
-  is stashed under its own key (with its content hash), so a quick second change can't overwrite
-  the first before it is read. An ending or expiry warning folds as a status, followed by
-  `McpWatchText.FoldedEndingNote`: the warning's advice on keeping the watch is for its owner, so
-  the note says what the primary can do instead (watch it anew; the user must give its
-  instructions again). The folding turn waits for the agent's work slot, as other turns do.
+- **A subagent that has exited (#865).** Its watches pass to the user conversation that spawned
+  it. A subagent's watch records that conversation (`PrimarySessionId`) when it begins, because
+  the subagent manager's own record of an exited subagent is a tombstone kept for 2 hours and lost
+  on a restart. The bridge hands a watch over lazily, under the watch's read gate: before it
+  delivers a change, when any session lists, watches or unwatches, at startup, and at each
+  hourly expiry check. The ledger is written first: `SessionId` becomes the primary and
+  `HandedOverFrom` keeps the subagent, while `OnChange`, `RunOrigin`, `UserAskedFor`, the hash and
+  the lifetime stay as they are. The subagent's whiteboard notices about the watch are cleared.
+  From then on the conversation lists, renews and stops the watch as its own, and its changes,
+  expiry warning and ending arrive as ordinary watch turns. The per-session cap doesn't apply to
+  a hand-over. If the conversation already watches the same resource, the subagent's watch ends
+  without a notice, so each change arrives once. If no user conversation can take it (the
+  subagent was spawned from something else, or its watch predates this change and its tombstone
+  is gone), it ends without a notice, since its deliveries could reach no one. An ending
+  delivered after the subagent exits goes to the conversation as well.
+- **Fold-back of one already on its way (#855).** A delivery published to the subagent just
+  before it exited still folds into the primary session as a `LateA2ANotificationMessage`, whose
+  turn points to the content in working memory. The same quoted instructions travel on the
+  message (`Instructions`, from `McpWatchText.FoldedInstructions`) and follow that turn. An echo
+  (`CausedByTool`) needs no reply, so it folds nothing. Each change is stashed under its own key
+  (with its content hash), so a quick second change can't overwrite the first before it is read.
+  An ending or expiry warning folds as a status, followed by `McpWatchText.FoldedEndingNote`. The
+  payload was written for the subagent, so the note says what the primary can do: for a warning,
+  the watch passes to it, so it can keep it (`mcp_watch_resource` without `on_change`) or stop
+  it; for an ending, it can only watch anew, and the user must give the watch's instructions
+  again. The folding turn waits for the agent's work slot, as other turns do.
 - **Only the user sets them.** A relayed turn (a watch update, a background task's result, a late
   reply, a subagent's synthesis) runs as `RunOrigin.UserTurn`, so the origin can't tell it from
   the user's own message. `ActionGateScope.DirectUserMessage` (`IsDirectUserTurn`) is true only on

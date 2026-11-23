@@ -500,7 +500,7 @@ public class McpTaskResultHandlerTests
         StringAssert.Contains(instructions, "take precedence over a standing rule where the two differ");
         StringAssert.Contains(instructions, "precedence over any skill or memory about watches");
         Assert.IsFalse(instructions.Contains("ignore your instructions"), "the server's content stays in working memory");
-        Assert.IsFalse(instructions.Contains(McpWatchText.UnwatchToolName), "the primary can't stop the subagent's watch");
+        Assert.IsFalse(instructions.Contains(McpWatchText.UnwatchToolName), "a change's text doesn't steer toward unwatching");
     }
 
     [TestMethod]
@@ -543,11 +543,25 @@ public class McpTaskResultHandlerTests
         Assert.AreEqual(NotificationKind.Status, folded.Kind, "a watch ending isn't an error");
         Assert.IsTrue(folded.ExcludeFromLearning);
         var note = folded.Instructions!;
-        Assert.IsNotNull(note, "the warning's advice is for the session that owns the watch");
+        Assert.IsNotNull(note, "the payload was written for the subagent");
         StringAssert.Contains(note, $"watch_id \"{watchId}\"");
-        StringAssert.Contains(note, "can't renew or stop it");
         StringAssert.Contains(note, $"{McpWatchText.WatchToolName}(server_name: \"scheduler\", uri: \"scheduler://events/AB12/status\")");
-        StringAssert.Contains(note, "only the user can give those again");
+        if (kind == McpTaskResult.KindWatchExpiring)
+        {
+            // #865: a watch still running passes to the primary, which keeps or stops it there.
+            StringAssert.Contains(note, "passes to this conversation");
+            StringAssert.Contains(note, "without on_change");
+            StringAssert.Contains(note, McpWatchText.UnwatchToolName);
+            StringAssert.Contains(note, McpWatchText.ListWatchesToolName);
+            Assert.IsFalse(note.Contains("only the user can give those again"), "renewing keeps its instructions");
+        }
+        else
+        {
+            // An ended watch can only be watched anew, without its own instructions.
+            StringAssert.Contains(note, "starts a new watch");
+            StringAssert.Contains(note, "only the user can give those again");
+            Assert.IsFalse(note.Contains(McpWatchText.UnwatchToolName), "there's nothing left to stop");
+        }
     }
 
     [TestMethod]
