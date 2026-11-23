@@ -51,12 +51,19 @@ internal sealed class McpWatchLedger
     /// <summary>
     /// Records that the watch ended. With <paramref name="notify"/>, it stays unsettled until
     /// <see cref="MarkSettledAsync"/> (its ending must reach the session); otherwise it settles now.
+    /// With <paramref name="handOverTo"/>, the ending goes to that session instead: an exited
+    /// subagent's primary (#865).
     /// </summary>
-    public Task<bool> EndAsync(string watchId, string reason, bool notify, CancellationToken ct = default) =>
+    public Task<bool> EndAsync(string watchId, string reason, bool notify, CancellationToken ct = default, string? handOverTo = null) =>
         UpdateAsync(watchId, e =>
         {
             if (e.Status == McpWatchEntryStatus.Ended)
                 return;
+            if (handOverTo is not null && !string.Equals(e.SessionId, handOverTo, StringComparison.Ordinal))
+            {
+                e.HandedOverFrom = e.SessionId;
+                e.SessionId = handOverTo;
+            }
             var now = _ledger.Time.GetUtcNow();
             e.Status = McpWatchEntryStatus.Ended;
             e.Reason = reason;
@@ -91,6 +98,16 @@ internal sealed class McpWatchEntry : ILedgerEntry<McpWatchEntry>
 
     /// <summary>The run namespace that watches: <c>session/{id}</c> or <c>subagent/{id}</c>.</summary>
     public string SessionId { get; set; } = "";
+
+    /// <summary>
+    /// For a subagent's watch, the user conversation that spawned the subagent, recorded when the
+    /// watch began (#865). The watch passes to it once the subagent exits; recorded here because
+    /// the subagent's own record of it is short-lived and doesn't survive a restart.
+    /// </summary>
+    public string? PrimarySessionId { get; set; }
+
+    /// <summary>The subagent session the watch was handed over from when that subagent exited (#865).</summary>
+    public string? HandedOverFrom { get; set; }
 
     public string Server { get; set; } = "";
 

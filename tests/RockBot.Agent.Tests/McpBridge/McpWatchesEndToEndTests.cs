@@ -33,11 +33,13 @@ public class McpWatchesEndToEndTests
         bool subscribable = true,
         Action<McpBridgeOptions>? configureBridge = null,
         TimeProvider? timeProvider = null,
-        RockBot.Host.IWorkingMemory? workingMemory = null) =>
+        RockBot.Host.IWorkingMemory? workingMemory = null,
+        RockBot.Host.ISubagentSessionResolver? subagentSessions = null) =>
         BridgeHarness.StartAsync(
             [EchoTool(), .. store.Tools()],
             resources: store.Resources(),
             workingMemory: workingMemory,
+            subagentSessions: subagentSessions,
             configure: e => e.Subscriptions = policy ? true : null,
             configureBridge: o =>
             {
@@ -73,12 +75,7 @@ public class McpWatchesEndToEndTests
         }
     }
 
-    private static McpWatchEntry[] Ledger(BridgeHarness harness)
-    {
-        using var doc = JsonDocument.Parse(File.ReadAllText(harness.WatchLedgerPath));
-        return doc.RootElement.GetProperty("entries").Deserialize<McpWatchEntry[]>(
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
-    }
+    private static McpWatchEntry[] Ledger(BridgeHarness harness) => harness.ReadWatchLedger();
 
     [TestMethod]
     [Timeout(30_000, CooperativeCancellation = true)]

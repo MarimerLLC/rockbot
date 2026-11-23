@@ -72,12 +72,8 @@ public class McpWatchInstructionsEndToEndTests
         return response.WatchId!;
     }
 
-    private static McpWatchEntry LedgerEntry(BridgeHarness harness, string watchId)
-    {
-        using var doc = JsonDocument.Parse(File.ReadAllText(harness.WatchLedgerPath));
-        return doc.RootElement.GetProperty("entries").Deserialize<McpWatchEntry[]>(
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!.Single(e => e.WatchId == watchId);
-    }
+    private static McpWatchEntry LedgerEntry(BridgeHarness harness, string watchId) =>
+        harness.ReadWatchLedger().Single(e => e.WatchId == watchId);
 
     private static async Task WaitUntilAsync(Func<bool> condition, string what, int timeoutMs = 10_000)
     {

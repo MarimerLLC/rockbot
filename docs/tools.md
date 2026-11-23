@@ -794,7 +794,8 @@ What happens:
   `McpBridge:WatchEchoGraceSeconds`, 10, after the call). Calls to tools the server marks
   read-only don't count.
 - **Who can watch.** A user conversation or a subagent, as for tasks. Wisps, workers, scheduled
-  tasks and patrols can't.
+  tasks and patrols can't. When a subagent exits, its watches pass to the conversation that
+  started it, which can then list, keep and stop them; their changes arrive there as its own.
 - **Restarts.** Watches are written to `McpBridge:WatchLedgerPath` (default `mcp/watches.json`):
   server, URI, session and the last delivered hash, never the content.
 - **Endings.** The agent unwatches; the resource is gone; the server stops acknowledging it, is
