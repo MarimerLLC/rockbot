@@ -24,17 +24,14 @@
        (chat.js, rockbot.theme), else the system's colour scheme. Every page gets it, including
        the static /login and /access-denied pages, which have no circuit. *@
     <script>
-        try {
-            var rbTheme = localStorage.getItem('rockbot.theme');
-            if (rbTheme === 'dark' || (rbTheme !== 'light' && window.matchMedia
-                && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        (function () {
+            var systemDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            var saved = null;
+            try { saved = localStorage.getItem('rockbot.theme'); } catch (e) { /* storage blocked */ }
+            if (saved === 'dark' || (saved !== 'light' && systemDark)) {
                 document.body.classList.add('dark-mode');
             }
-        } catch (e) {
-            if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-                document.body.classList.add('dark-mode');
-            }
-        }
+        })();
     </script>
     @* No render mode here on purpose: it would make every routed page interactive, and /login
        must not allocate a SignalR circuit for an anonymous visitor. Chat.razor opts itself in. *@

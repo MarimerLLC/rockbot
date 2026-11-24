@@ -17,17 +17,29 @@ window.rbSnapshot = (function () {
     // localStorage holds about 5 MB of UTF-16 per origin; leave the rest of it alone. A longer
     // transcript keeps its most recent messages.
     const MAX_CHARS = 1500000;
-    const SAVE_DELAY_MS = 1500;
+    // A backup save while the page is open; the one that matters is on leaving the tab.
+    const SAVE_DELAY_MS = 10000;
+    // Within this of the bottom, the reader counts as following the conversation.
+    const PINNED_PX = 48;
     const RESTORING = 'rb-snapshot';
     const INTERACTIONS = ['wheel', 'touchmove', 'keydown', 'pointerdown'];
+    // Markup that can run or load something; never put back from storage.
+    const UNSAFE = 'script, iframe, object, embed, link, meta, style, base, frame, frameset';
+    const idle = window.requestIdleCallback || function (f) { return setTimeout(f, 0); };
 
     let snapshotHtml = null; // shown while restoring
+    let snapshotCount = 0;   // messages in the snapshot
     let restoring = false;   // the snapshot is on screen, the live transcript hidden
     let ended = false;       // endRestore has run: the live transcript is on screen
     let interacted = false;  // the reader has touched the page, so a scroll may be theirs
     let signedOut = false;
+    // Until the live transcript has this many messages, don't save over the snapshot (the
+    // history didn't load, so the live one is behind it).
+    let holdSavesUntil = 0;
     // Where the transcript on screen should sit: { fromBottom: px } or { lastMessage: true }.
     let desired = null;
+    let placedShell = null;  // the elements already positioned; only a new one is placed again
+    let placedLive = null;
     let watched = null;      // the live .chat-messages being saved from
     let liveObserver = null;
     let saveTimer = null;
@@ -35,6 +47,12 @@ window.rbSnapshot = (function () {
     function live() { return document.querySelector('.chat-messages:not(.chat-snapshot)'); }
     function shell() { return document.querySelector('.chat-snapshot'); }
     function onScreen() { return restoring ? shell() : live(); }
+
+    // The transcript's messages, without the "Thinking" line (it comes and goes on its own).
+    function messages(el) {
+        return Array.prototype.filter.call(el.querySelectorAll('.message-wrapper'),
+            function (m) { return !m.querySelector('.thinking-bubble'); });
+    }
 
     function read() {
         try {
@@ -51,6 +69,28 @@ window.rbSnapshot = (function () {
         try { window.localStorage.removeItem(KEY); } catch (e) { /* nothing to clear */ }
     }
 
+    // Puts the stored transcript into the snapshot element. Storage is not trusted: anything that
+    // could run is dropped (a template parses without running or loading anything). The copy's
+    // controls have no handlers behind them, so they are disabled, and a form in it (an MCP
+    // question) must not submit natively and reload the page.
+    function fill(s) {
+        const t = document.createElement('template');
+        t.innerHTML = snapshotHtml;
+        t.content.querySelectorAll(UNSAFE).forEach(function (n) { n.remove(); });
+        t.content.querySelectorAll('*').forEach(function (n) {
+            for (const a of Array.from(n.attributes)) {
+                const name = a.name.toLowerCase();
+                const url = /^(href|src|action|formaction|xlink:href|srcdoc)$/.test(name);
+                if (name.startsWith('on') || name === 'srcdoc'
+                    || (url && /^\s*(javascript|data|vbscript):/i.test(a.value) && !/^\s*data:image\//i.test(a.value)))
+                    n.removeAttribute(a.name);
+            }
+        });
+        t.content.querySelectorAll('input, textarea, select, button').forEach(function (c) { c.disabled = true; });
+        s.replaceChildren(t.content);
+        s.addEventListener('submit', function (e) { e.preventDefault(); }, true);
+    }
+
     // Sets a scroll position without the smooth animation .chat-messages has in CSS.
     function jumpTo(el, top) {
         const previous = el.style.scrollBehavior;
@@ -63,18 +103,19 @@ window.rbSnapshot = (function () {
         return Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop);
     }
 
-    // The top of the last message: where Chat.razor scrolls a new message to.
-    function lastMessageTop(el) {
-        const msgs = el.querySelectorAll('.message-wrapper');
-        if (!msgs.length) return el.scrollHeight;
-        const last = msgs[msgs.length - 1];
-        return last.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+    // The top of a message: where Chat.razor scrolls a new message to.
+    function messageTop(el, m) {
+        return m.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
     }
 
     function place(el) {
         if (!el || !desired) return;
-        if (desired.lastMessage) jumpTo(el, lastMessageTop(el));
-        else jumpTo(el, el.scrollHeight - el.clientHeight - desired.fromBottom);
+        if (desired.lastMessage) {
+            const msgs = el.querySelectorAll('.message-wrapper');
+            jumpTo(el, msgs.length ? messageTop(el, msgs[msgs.length - 1]) : el.scrollHeight);
+        } else {
+            jumpTo(el, el.scrollHeight - el.clientHeight - desired.fromBottom);
+        }
     }
 
     function noteInteraction() { interacted = true; }
@@ -89,20 +130,22 @@ window.rbSnapshot = (function () {
     // Blazor's first interactive render replaces the prerendered page with new elements (and a
     // resumed circuit can do it again later): an empty .chat-snapshot and a .chat-messages
     // scrolled to the top. Mutation callbacks run before the next paint, so putting both back
-    // here means neither is ever seen.
+    // here means neither is ever seen. Only a new element is placed: re-placing on every change
+    // would fight the reader's own scrolling.
     function onPageMutation() {
         if (restoring) {
             const s = shell();
-            if (s && !s.firstChild) s.innerHTML = snapshotHtml;
-            place(s);
-        } else if (!ended) {
-            place(live());
+            if (s && s !== placedShell) {
+                fill(s);
+                place(s);
+                placedShell = s;
+            }
         } else {
             const el = live();
-            if (el && el !== watched) {
-                place(el);
-                watchLive(el);
-            }
+            if (!el || el === placedLive) return;
+            place(el);
+            placedLive = el;
+            if (ended) watchLive(el);
         }
     }
 
@@ -126,6 +169,10 @@ window.rbSnapshot = (function () {
         if (signedOut || !ended) return;
         const el = live();
         if (!el) return;
+        if (holdSavesUntil > 0) {
+            if (messages(el).length < holdSavesUntil) return;
+            holdSavesUntil = 0;
+        }
         try {
             window.localStorage.setItem(KEY, JSON.stringify(capture(el)));
         } catch (e) {
@@ -135,7 +182,7 @@ window.rbSnapshot = (function () {
     }
 
     function saveSoon() {
-        if (saveTimer === null) saveTimer = setTimeout(save, SAVE_DELAY_MS);
+        if (saveTimer === null) saveTimer = setTimeout(function () { idle(save); }, SAVE_DELAY_MS);
     }
 
     // After the restore: keep the snapshot current with the live transcript and its position.
@@ -158,13 +205,18 @@ window.rbSnapshot = (function () {
         restoring = !!snapshot && !!shell();
         if (restoring) {
             snapshotHtml = snapshot.html;
-            shell().innerHTML = snapshotHtml;
+            const s = shell();
+            fill(s);
+            snapshotCount = messages(s).length;
             document.body.classList.add(RESTORING);
             desired = { fromBottom: snapshot.fromBottom || 0 };
+            place(s);
+            placedShell = s;
         } else {
             desired = { lastMessage: true };
+            placedLive = live();
+            place(placedLive);
         }
-        place(onScreen());
 
         for (const type of INTERACTIONS)
             document.addEventListener(type, noteInteraction, { passive: true, capture: true });
@@ -187,24 +239,44 @@ window.rbSnapshot = (function () {
         }, true);
     }
 
-    // The live transcript has caught up with the server: show it, where the reader was in the
-    // snapshot (or at the last message), and keep the snapshot current from now on.
-    function endRestore() {
+    // The live transcript is ready: show it, where the reader was in the snapshot (or at the last
+    // message), and keep the snapshot current from now on. caughtUp is false when the history
+    // didn't load: the live transcript may then be behind the snapshot, which is kept until the
+    // live one has as many messages. With onlyIfComplete, a live transcript shorter than the
+    // snapshot doesn't end the restore yet. Returns whether the restore is over.
+    function endRestore(caughtUp, onlyIfComplete) {
         const el = live();
-        if (ended || !el) return;
+        if (ended || !el) return true;
+        if (onlyIfComplete && restoring && messages(el).length < snapshotCount) return false;
         ended = true;
         for (const type of INTERACTIONS)
             document.removeEventListener(type, noteInteraction, { capture: true });
+
+        let top = null;
         if (restoring) {
+            // Where the reader had the snapshot, read while it is still laid out.
+            const s = shell();
+            const wasPinned = !s || fromBottom(s) <= PINNED_PX;
+            const shellTop = s ? s.scrollTop : 0;
             restoring = false;
             document.body.classList.remove(RESTORING);
-            const s = shell();
+            if (!caughtUp) holdSavesUntil = snapshotCount;
+
+            // What came in while the page was away goes below what the snapshot had. A reader who
+            // was following along starts at the first new message, read top to bottom, as
+            // Chat.razor does for one that arrives live; anyone else stays where they were.
+            const msgs = messages(el);
+            if (msgs.length > snapshotCount)
+                top = wasPinned ? messageTop(el, msgs[snapshotCount]) : shellTop;
             if (s) s.replaceChildren();
         }
         snapshotHtml = null;
-        place(el);
+        if (top !== null) jumpTo(el, top);
+        else place(el);
+        placedLive = el;
         watchLive(el);
         save();
+        return true;
     }
 
     return { start: start, endRestore: endRestore };
@@ -217,8 +289,8 @@ window.chatHelpers = {
         document.title = title;
     },
 
-    endRestore: function () {
-        window.rbSnapshot.endRestore();
+    endRestore: function (caughtUp, onlyIfComplete) {
+        return window.rbSnapshot.endRestore(!!caughtUp, !!onlyIfComplete);
     },
 
     isDarkMode: function () {
