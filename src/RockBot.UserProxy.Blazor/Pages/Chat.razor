@@ -319,6 +319,10 @@
         }
     </div>
 
+    @* The transcript this browser last showed, on screen while the page catches up with the server
+       (chat.js fills it; Blazor must never render children into it). Hidden unless restoring. *@
+    <div class="chat-messages chat-snapshot flex-grow-1" inert="@ModalOpen"></div>
+
     @{
         var plans = ChatVisibility.VisibleTaskLists(state, _detailLevel);
     }
@@ -531,6 +535,11 @@
     private int _drawnMessageCount;
     private bool _viewSwitched;
 
+    // True until the first render's loads (detail level, history, status) are done. Meanwhile the
+    // browser shows its saved snapshot, positioned by chat.js, so nothing here scrolls; ending it
+    // swaps the live transcript in at the same place.
+    private bool _restoring = true;
+
     // Simple view shows a subagent result RockBot never answered once its grace runs out, with
     // no event to prompt a render then; this timer prompts it.
     private Timer? _visibilityTimer;
@@ -612,14 +621,13 @@
             try { _displayZone = TimeZoneInfo.FindSystemTimeZoneById(tzId); }
             catch { _displayZone = TimeZoneInfo.Utc; }
 
-            // The view this browser last chose; ApplyDarkMode's render below picks it up.
+            // The view this browser last chose; the render below picks it up.
             var level = await JSRuntime.InvokeAsync<string>("chatHelpers.getDetailLevel");
             _detailLevel = level == "detailed" ? ChatDetailLevel.Detailed : ChatDetailLevel.Simple;
 
-            // Check for system dark mode preference
-            IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval",
-                "window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches");
-            await ApplyDarkMode();
+            // The theme is already on the page (App.razor's inline script); the toggle follows it.
+            IsDarkMode = await JSRuntime.InvokeAsync<bool>("chatHelpers.isDarkMode");
+            StateHasChanged();
 
             // Load history after the real SignalR circuit is established.
             // This runs only on first render (never during static prerendering),
@@ -646,6 +654,9 @@
             {
                 ChatState.Apply(new ErrorReported($"Could not load conversation history: {ex.Message}"));
             }
+
+            // The transcript has caught up (or can't): the live one replaces the snapshot.
+            await EndRestoreAsync();
 
             // Reconcile active status indicators against the agent's ground truth.
             // This clears stale subagent spinners/header badges that persist in the
@@ -683,9 +694,11 @@
         // or a message Simple view leaves out, should not move the scroll position), and not
         // when a view switch changed what is drawn. Scroll to the TOP of the new message so long
         // responses are read top-to-bottom. The count follows the drawn transcript down too
-        // (a /clear, a switch to Simple), so the next new message still scrolls.
+        // (a /clear, a switch to Simple), so the next new message still scrolls. While the page
+        // is restoring, what arrives is the transcript catching up, not something new: chat.js
+        // keeps it where the reader was.
         var drawn = _drawnMessageCount;
-        var grew = drawn > _renderedMessageCount && !_viewSwitched;
+        var grew = drawn > _renderedMessageCount && !_viewSwitched && !_restoring;
         _renderedMessageCount = drawn;
         _viewSwitched = false;
         if (grew)
@@ -695,6 +708,27 @@
         }
 
         ScheduleVisibilityRender(ChatVisibility.NextVisibilityChange(ChatState.State, _detailLevel, ChatState.UtcNow));
+    }
+
+    /// <summary>
+    /// Swaps the browser's saved snapshot for the live transcript, once (chat.js keeps the scroll
+    /// position across the swap). From here on new messages scroll into view as usual.
+    /// </summary>
+    private async Task EndRestoreAsync()
+    {
+        if (!_restoring)
+            return;
+
+        _restoring = false;
+        _renderedMessageCount = _drawnMessageCount;
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("chatHelpers.endRestore");
+        }
+        catch (JSException)
+        {
+            // chat.js didn't load: there was no snapshot on screen to swap out.
+        }
     }
 
     /// <summary>Arms the timer for the next time Simple view draws something with no event to prompt it.</summary>
@@ -824,6 +858,9 @@
     {
         if (string.IsNullOrWhiteSpace(currentMessage) && _stagedAttachments.Count == 0)
             return;
+
+        // Sent before the history has loaded: the message belongs on the live transcript, now.
+        await EndRestoreAsync();
 
         var messageContent = currentMessage.Trim();
         currentMessage = string.Empty;
@@ -1080,19 +1117,11 @@
         return firstLine.Length <= maxLength ? firstLine : firstLine[..(maxLength - 1)] + "\u2026";
     }
 
+    // Remembered per browser, so the next load opens in the same theme before it is painted.
     private async Task ToggleDarkMode()
     {
         IsDarkMode = !IsDarkMode;
-        await ApplyDarkMode();
-    }
-
-    private async Task ApplyDarkMode()
-    {
-        await JSRuntime.InvokeVoidAsync("eval",
-            IsDarkMode
-                ? "document.body.classList.add('dark-mode')"
-                : "document.body.classList.remove('dark-mode')");
-        StateHasChanged();
+        await JSRuntime.InvokeVoidAsync("chatHelpers.setDarkMode", IsDarkMode);
     }
 
     // ── Save flow ──────────────────────────────────────────────────────────
