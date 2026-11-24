@@ -319,6 +319,10 @@
         }
     </div>
 
+    @* The transcript this browser last showed, on screen while the page catches up with the server
+       (chat.js fills it; Blazor must never render children into it). Hidden unless restoring. *@
+    <div class="chat-messages chat-snapshot flex-grow-1" inert="@ModalOpen"></div>
+
     @{
         var plans = ChatVisibility.VisibleTaskLists(state, _detailLevel);
     }
@@ -531,6 +535,11 @@
     private int _drawnMessageCount;
     private bool _viewSwitched;
 
+    // True until the first render's loads (detail level, history, status) are done. Meanwhile the
+    // browser shows its saved snapshot, positioned by chat.js, so nothing here scrolls; ending it
+    // swaps the live transcript in at the same place.
+    private bool _restoring = true;
+
     // Simple view shows a subagent result RockBot never answered once its grace runs out, with
     // no event to prompt a render then; this timer prompts it.
     private Timer? _visibilityTimer;
@@ -604,60 +613,79 @@
 
         if (firstRender)
         {
-            await JSRuntime.InvokeVoidAsync("chatHelpers.preventEnterNewline", messageInput);
-            await JSRuntime.InvokeVoidAsync("chatHelpers.initInputHistory", messageInput);
-            await JSRuntime.InvokeVoidAsync("chatHelpers.focusInputOnWindowFocus", messageInput);
-
-            var tzId = await JSRuntime.InvokeAsync<string>("chatHelpers.getBrowserTimezone");
-            try { _displayZone = TimeZoneInfo.FindSystemTimeZoneById(tzId); }
-            catch { _displayZone = TimeZoneInfo.Utc; }
-
-            // The view this browser last chose; ApplyDarkMode's render below picks it up.
-            var level = await JSRuntime.InvokeAsync<string>("chatHelpers.getDetailLevel");
-            _detailLevel = level == "detailed" ? ChatDetailLevel.Detailed : ChatDetailLevel.Simple;
-
-            // Check for system dark mode preference
-            IsDarkMode = await JSRuntime.InvokeAsync<bool>("eval",
-                "window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches");
-            await ApplyDarkMode();
-
-            // Load history after the real SignalR circuit is established.
-            // This runs only on first render (never during static prerendering),
-            // which avoids a 10-second blank-page wait and prevents duplicate
-            // messages when the singleton ChatStateService outlives the component.
+            // Whatever happens below, the snapshot must not outlive it: the live transcript is
+            // hidden behind it until the restore ends.
             try
             {
-                var info = await ProxyService.GetAgentInfoAsync(timeout: TimeSpan.FromSeconds(5));
-                if (info is not null)
-                    ChatState.Apply(new AgentInfoReceived(info.AgentName, info.AgentVersion));
-            }
-            catch { /* non-fatal — header falls back to defaults */ }
+                await JSRuntime.InvokeVoidAsync("chatHelpers.preventEnterNewline", messageInput);
+                await JSRuntime.InvokeVoidAsync("chatHelpers.initInputHistory", messageInput);
+                await JSRuntime.InvokeVoidAsync("chatHelpers.focusInputOnWindowFocus", messageInput);
 
-            try
-            {
-                // With the broadcast sessions' output (#809): this view shows it live, so a
-                // reload has to bring it back too.
-                var history = await ProxyService.GetHistoryAsync(SessionId, timeout: TimeSpan.FromSeconds(10),
-                    includeBroadcast: true);
-                if (history is not null && history.Turns.Count > 0)
-                    ChatState.Apply(BlazorUserFrontend.HistoryEvent(history, SessionId, DateTimeOffset.UtcNow));
-            }
-            catch (Exception ex)
-            {
-                ChatState.Apply(new ErrorReported($"Could not load conversation history: {ex.Message}"));
-            }
+                var tzId = await JSRuntime.InvokeAsync<string>("chatHelpers.getBrowserTimezone");
+                try { _displayZone = TimeZoneInfo.FindSystemTimeZoneById(tzId); }
+                catch { _displayZone = TimeZoneInfo.Utc; }
 
-            // Reconcile active status indicators against the agent's ground truth.
-            // This clears stale subagent spinners/header badges that persist in the
-            // singleton ChatStateService across page reloads, and seeds indicators
-            // for subagents that started before this UI connected.
-            try
-            {
-                var status = await ProxyService.GetActiveStatusAsync(SessionId, timeout: TimeSpan.FromSeconds(5));
-                if (status is not null)
-                    ChatState.Apply(new ActiveStatusReconciled(status));
+                // The view this browser last chose; the render below picks it up.
+                var level = await JSRuntime.InvokeAsync<string>("chatHelpers.getDetailLevel");
+                _detailLevel = level == "detailed" ? ChatDetailLevel.Detailed : ChatDetailLevel.Simple;
+
+                // The theme is already on the page (App.razor's inline script); the toggle follows it.
+                IsDarkMode = await JSRuntime.InvokeAsync<bool>("chatHelpers.isDarkMode");
+                StateHasChanged();
+
+                // This pod already holds the conversation: show it now, not after the loads below
+                // (up to 15s when the agent is slow). Only when it is at least as long as the
+                // snapshot: it may be just an earlier failed load's error.
+                if (ChatVisibility.VisibleMessages(ChatState.State, _detailLevel, ChatState.UtcNow).Count > 0)
+                    await EndRestoreAsync(caughtUp: false, onlyIfComplete: true);
+
+                // Load history after the real SignalR circuit is established.
+                // This runs only on first render (never during static prerendering),
+                // which avoids a 10-second blank-page wait and prevents duplicate
+                // messages when the singleton ChatStateService outlives the component.
+                try
+                {
+                    var info = await ProxyService.GetAgentInfoAsync(timeout: TimeSpan.FromSeconds(5));
+                    if (info is not null)
+                        ChatState.Apply(new AgentInfoReceived(info.AgentName, info.AgentVersion));
+                }
+                catch { /* non-fatal — header falls back to defaults */ }
+
+                var historyLoaded = false;
+                try
+                {
+                    // With the broadcast sessions' output (#809): this view shows it live, so a
+                    // reload has to bring it back too.
+                    var history = await ProxyService.GetHistoryAsync(SessionId, timeout: TimeSpan.FromSeconds(10),
+                        includeBroadcast: true);
+                    historyLoaded = history is not null;
+                    if (history is not null && history.Turns.Count > 0)
+                        ChatState.Apply(BlazorUserFrontend.HistoryEvent(history, SessionId, DateTimeOffset.UtcNow));
+                }
+                catch (Exception ex)
+                {
+                    ChatState.Apply(new ErrorReported($"Could not load conversation history: {ex.Message}"));
+                }
+
+                // The transcript has caught up (or can't): the live one replaces the snapshot.
+                await EndRestoreAsync(caughtUp: historyLoaded);
+
+                // Reconcile active status indicators against the agent's ground truth.
+                // This clears stale subagent spinners/header badges that persist in the
+                // singleton ChatStateService across page reloads, and seeds indicators
+                // for subagents that started before this UI connected.
+                try
+                {
+                    var status = await ProxyService.GetActiveStatusAsync(SessionId, timeout: TimeSpan.FromSeconds(5));
+                    if (status is not null)
+                        ChatState.Apply(new ActiveStatusReconciled(status));
+                }
+                catch { /* non-fatal — stale indicators clear on next user message */ }
             }
-            catch { /* non-fatal — stale indicators clear on next user message */ }
+            finally
+            {
+                await EndRestoreAsync(caughtUp: false);
+            }
         }
 
         if (_focusSavedModal && _showSavedModal)
@@ -683,9 +711,11 @@
         // or a message Simple view leaves out, should not move the scroll position), and not
         // when a view switch changed what is drawn. Scroll to the TOP of the new message so long
         // responses are read top-to-bottom. The count follows the drawn transcript down too
-        // (a /clear, a switch to Simple), so the next new message still scrolls.
+        // (a /clear, a switch to Simple), so the next new message still scrolls. While the page
+        // is restoring, what arrives is the transcript catching up, not something new: chat.js
+        // keeps it where the reader was.
         var drawn = _drawnMessageCount;
-        var grew = drawn > _renderedMessageCount && !_viewSwitched;
+        var grew = drawn > _renderedMessageCount && !_viewSwitched && !_restoring;
         _renderedMessageCount = drawn;
         _viewSwitched = false;
         if (grew)
@@ -695,6 +725,40 @@
         }
 
         ScheduleVisibilityRender(ChatVisibility.NextVisibilityChange(ChatState.State, _detailLevel, ChatState.UtcNow));
+    }
+
+    /// <summary>
+    /// Swaps the browser's saved snapshot for the live transcript, once (chat.js keeps the scroll
+    /// position across the swap). From here on new messages scroll into view as usual.
+    /// <paramref name="caughtUp"/> is true only when the history loaded, so the live transcript
+    /// may replace the browser's saved one. With <paramref name="onlyIfComplete"/>, a live
+    /// transcript shorter than the snapshot leaves the restore running.
+    /// </summary>
+    private async Task EndRestoreAsync(bool caughtUp, bool onlyIfComplete = false)
+    {
+        if (!_restoring)
+            return;
+
+        try
+        {
+            if (!await JSRuntime.InvokeAsync<bool>("chatHelpers.endRestore", caughtUp, onlyIfComplete))
+                return;
+        }
+        catch (JSException)
+        {
+            // chat.js didn't load: there was no snapshot on screen to swap out.
+        }
+        catch (JSDisconnectedException)
+        {
+            // The page is gone; so is its snapshot.
+        }
+        catch (TaskCanceledException)
+        {
+            // The browser didn't answer in time; the next load starts over.
+        }
+
+        _restoring = false;
+        _renderedMessageCount = _drawnMessageCount;
     }
 
     /// <summary>Arms the timer for the next time Simple view draws something with no event to prompt it.</summary>
@@ -824,6 +888,9 @@
     {
         if (string.IsNullOrWhiteSpace(currentMessage) && _stagedAttachments.Count == 0)
             return;
+
+        // Sent before the history has loaded: the message belongs on the live transcript, now.
+        await EndRestoreAsync(caughtUp: false);
 
         var messageContent = currentMessage.Trim();
         currentMessage = string.Empty;
@@ -1080,19 +1147,11 @@
         return firstLine.Length <= maxLength ? firstLine : firstLine[..(maxLength - 1)] + "\u2026";
     }
 
+    // Remembered per browser, so the next load opens in the same theme before it is painted.
     private async Task ToggleDarkMode()
     {
         IsDarkMode = !IsDarkMode;
-        await ApplyDarkMode();
-    }
-
-    private async Task ApplyDarkMode()
-    {
-        await JSRuntime.InvokeVoidAsync("eval",
-            IsDarkMode
-                ? "document.body.classList.add('dark-mode')"
-                : "document.body.classList.remove('dark-mode')");
-        StateHasChanged();
+        await JSRuntime.InvokeVoidAsync("chatHelpers.setDarkMode", IsDarkMode);
     }
 
     // ── Save flow ──────────────────────────────────────────────────────────

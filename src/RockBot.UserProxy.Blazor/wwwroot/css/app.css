@@ -10,7 +10,8 @@
    - Category tints (subagent orange, A2A blue, scheduled amber, saved indigo) carry meaning.
    - No glow in product chrome; the one exception is a live header activity slot.
    - No emoji; icons are monochrome stroke SVG in currentColor (Components/RbIcon.razor).
-   Dark mode is the body.dark-mode class, set by Chat.razor. */
+   Dark mode is the body.dark-mode class: set before first paint by App.razor's inline script
+   (this browser's saved choice, else the system's), then by the chat page's toggle. */
 
 /* ── App-level token overrides ─────────────────────────────────────────── */
 
@@ -61,6 +62,17 @@ h1:focus {
     padding: var(--rb-space-4);
     overflow-y: auto;
     scroll-behavior: smooth;
+}
+
+/* The transcript this browser last showed (chat.js), on screen while the page catches up with
+   the server; the live transcript stays hidden until then. */
+.chat-snapshot,
+body.rb-snapshot .chat-messages:not(.chat-snapshot) {
+    display: none;
+}
+
+body.rb-snapshot .chat-snapshot {
+    display: block;
 }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
